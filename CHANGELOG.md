@@ -76,8 +76,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already-terminated operation is silently ignored while its identity remains in the per-target
   terminal history (bounded to `2 * num_players` identities per target handle), while a different
   live sequence (including a lower one) is left to the operation comparator, and a retry skips
-  exact terminal identities so it still opens a fresh attempt; a replay older than that bounded
-  history needs the protocol-level terminal epoch tracked in #516; a malformed backfill chunk is
+  exact terminal identities so it still opens a fresh attempt. The unbounded-safe guard is the
+  protocol-level terminal epoch carried by every operation and abort: the authority admits only
+  its next epoch, a stale proposal is answered with that epoch so the requester can advance and
+  retry, and a participant discards any prepare below its next epoch even after every bounded
+  exact history has evicted the operation (#516). An abort carries the operation's canonical target
+  set, so a participant that saw the abort but missed the prepare still records the fence and
+  rejects the delayed replay. A participant that missed every prepare and abort copy can still
+  accept a delayed authority prepare when its own next epoch is unchanged; it then times out and
+  fails closed unless the authority's later abort reaches it, so losing both message families on
+  a partition remains fail-closed by design. Only the operation's
+  authority (the deterministic coordinator, or the fallback after the failover grace) can abort an
+  admitted attempt; a non-authority participant's abort no longer fail-closes the whole session,
+  so one faulty endpoint cannot halt a live match; a malformed backfill chunk is
   rejected before it can reset or clear an accepted donor grid; the strict-majority ready quorum
   and shared participant set still decide the certificate, so a single faulty or hostile peer can
   only decline to contribute. A deterministic coordinator (or acting fallback) that conflicts with an already
@@ -292,6 +303,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking:** the wire protocol version is now `5`. `DropOperationId` carries a monotone
+  terminal-attempt epoch and `DropAbort` carries the sender's next acceptable epoch plus the
+  operation's canonical target list. Every coordinated-drop control message's operation grows by
+  four bytes; an abort adds a second four-byte epoch field plus the length-prefixed target list.
+  The authority admits only its next epoch, so a delayed
+  terminal prepare can never reopen an attempt after the bounded exact-identity window has evicted
+  it; a stale proposal is answered with the next epoch and the requester can retry immediately.
+  Upgrade every peer in a session to v5; v4 headers are rejected at the handshake.
 - **Breaking:** the wire protocol version is now `4`. `DropOperationId` carries a
   `participant_set_digest`, so every coordinated-drop control message is eight bytes larger; the
   hot-join `StateSnapshot` carries the era's certified-dropped slot list so a fresh joiner derives

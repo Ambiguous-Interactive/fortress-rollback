@@ -127,6 +127,14 @@ CHECK_INPUT_PREFIXES: dict[str, tuple[str, ...]] = {
     ),
     "vale-advisory": ("docs/", ".vale/", ".vale.ini"),
     "link-check": ("docs/", "wiki/", "src/", "tests/", "README.md"),
+    "rustdoc-links": (
+        "src/",
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain.toml",
+        "scripts/docs/check-rustdoc-links.py",
+        "scripts/build/cargo_linker.py",
+    ),
     "doc-claims": (
         "src/",
         "tests/",
@@ -821,6 +829,33 @@ def plan_checks(
                 fix_hint=(
                     "Use ? when any error should fail, or match only the exact "
                     "expected error such as PredictionThreshold."
+                ),
+            )
+        )
+
+    if (
+        run_all
+        or rust_source_changed
+        or any(
+            path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
+            for path in changed_files
+        )
+    ):
+        checks.append(
+            PlannedCheck(
+                check_id="rustdoc-links",
+                description=(
+                    "run the CI rustdoc passes, including private and "
+                    "feature-gated intra-doc links"
+                ),
+                command=[
+                    PYTHON_EXECUTABLE,
+                    "scripts/docs/check-rustdoc-links.py",
+                ],
+                fix_hint=(
+                    "Fix the unresolved or private intra-doc link. Use a plain "
+                    "code span when the item is not reachable without "
+                    "rustdoc::private_intra_doc_links."
                 ),
             )
         )

@@ -715,6 +715,23 @@ participant-set digest into the operation identity and validating it on every
 prepare are Rust-level obligations pinned by the deterministic split-view
 simulation row and the participant-derivation unit guards.
 
+Protocol v5 adds a monotone terminal-attempt epoch to the operation identity
+and aborts. The epoch does not change the safety argument: it is an additional
+admission guard that only removes stale prepare transitions (an authority
+admits only its next epoch, and a participant rejects an epoch below its next).
+An abort carries the operation's canonical target set so a participant that saw
+the abort but missed the prepare still records the fence; a participant that
+missed both message families can still admit a delayed prepare and then times
+out, which stays fail-closed. The epoch
+never admits an operation that the participant-set, target-generation, or
+coordinator-generation rules would reject, and a commit still requires the
+strict-majority ready quorum. `AtMostOneCommittedCut` is therefore preserved
+without a new model. The guard is pinned by the deterministic eviction/replay
+tests, the reactivation and coordinator-generation freshness tests, and the
+`wire_golden_v5` exact-byte fixtures; the epoch is scoped to the coordinator
+identity, so a new coordinator generation or a hot-join authority change starts
+a fresh space rather than importing agreed state.
+
 `specs/tla/CoordinatedPeerDrop.tla` models two serialized operation IDs over two
 membership/target eras with independent per-survivor commit. The runtime defers
 a prepare received while a prior commit closes, discards its stale participant
@@ -791,6 +808,7 @@ implementation/test obligations.
 | Graceful-drop barrier model | TLA+ | ✅ Implemented (`specs/tla/CoordinatedPeerDrop.tla`) |
 | Coordinated-drop coordinator failover | TLA+ | ✅ Implemented (`specs/tla/CoordinatorFailover.tla` + competing-cut safety companion) |
 | Coordinated-drop split-view participant sets | TLA+ | ✅ Implemented (`specs/tla/CoordinatorSplitView.tla` + manual local-view demo-fail) |
+| Coordinated-drop terminal-epoch replay guard | Rust tests + exact-byte goldens | ✅ Implemented (`src/sessions/p2p_session.rs`, `src/network/wire_golden_v5.rs`) |
 
 ---
 
@@ -798,6 +816,7 @@ implementation/test obligations.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.2     | 2026-11-21 | Documented the protocol-v5 terminal-attempt epoch admission guard and why it preserves `AtMostOneCommittedCut` |
 | 1.1     | 2026-07-12 | Added the coordinated graceful-drop safety model and D14 mutation gate |
 | 1.0     | 2025-12-06 | Complete specification with invariants, components, protocol |
 | 0.1     | 2025-12-06 | Initial draft                                                |

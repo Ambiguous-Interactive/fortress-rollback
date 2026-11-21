@@ -51,7 +51,7 @@ pub const EXPECTED_DIGEST: u128 = 0x56cc_01bd_3e28_a54e_0956_a2fc_e302_6d0b;
 /// `wasm32-unknown-unknown` and Godot `wasm32-unknown-emscripten` probes, so a
 /// width, layout, or endianness change in the message codec fails where the
 /// target actually executes it.
-pub const EXPECTED_WIRE_CODEC_DIGEST: u64 = 16_544_470_270_034_666_878;
+pub const EXPECTED_WIRE_CODEC_DIGEST: u64 = 1_284_801_995_974_345_814;
 
 /// Returns whether this target's wire codec matches the pinned digest.
 #[must_use]

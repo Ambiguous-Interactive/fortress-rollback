@@ -509,7 +509,11 @@ pub mod __internal {
 /// Protocol v3 adds the current-history donor and target-acknowledgement drop
 /// report stages; released v2 peers cannot decode those values and must fail
 /// closed at the header check instead of handshaking.
-pub const PROTOCOL_VERSION: u8 = 4;
+/// Protocol v4 binds coordinated-drop operations to the agreed participant set.
+/// Protocol v5 adds the monotone terminal-attempt epoch to every coordinated
+/// drop operation and abort so an evicted terminal operation can never be
+/// replayed (issue #516).
+pub const PROTOCOL_VERSION: u8 = 5;
 
 /// Internally, -1 represents no frame / invalid frame.
 ///
