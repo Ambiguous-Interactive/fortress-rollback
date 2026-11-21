@@ -2098,20 +2098,38 @@ impl<T: Config> P2PSession<T> {
             .try_reserve_exact(targets.len())
             .map_err(|_err| DropAbortReason::ResourceLimit)?;
         copied.extend_from_slice(targets);
+        // A same-handle generation change may only move forward. A delayed
+        // abort or prepare from a generation this endpoint has moved past must
+        // not replace a newer era's entry, or the newer generation's epoch
+        // would reset to zero and a delayed prepare could pass the gate.
+        let coordinator_handle = PlayerHandle::new(usize::from(operation.coordinator));
+        let local_generation = self.local_coordinated_drop_generation(coordinator_handle);
+        let incoming_generation_acceptable = self.coordinated_drop_target_generation_acceptable(
+            coordinator_handle,
+            operation.coordinator_generation,
+        );
         if let Some(entry) = self.coordinated_drop.terminal_epochs.get_mut(&key) {
-            if entry.coordinator == operation.coordinator
-                && entry.coordinator_generation == operation.coordinator_generation
-            {
-                entry.next = entry.next.max(next);
-                entry.targets = copied;
-            } else {
-                *entry = TerminalEpochEntry {
-                    coordinator: operation.coordinator,
-                    coordinator_generation: operation.coordinator_generation,
-                    targets: copied,
-                    next,
+            if entry.coordinator == operation.coordinator {
+                if entry.coordinator_generation == operation.coordinator_generation {
+                    entry.next = entry.next.max(next);
+                    entry.targets = copied;
+                    return Ok(());
+                }
+                let Some(local) = local_generation else {
+                    return Ok(());
                 };
+                let stored_is_the_newer_era = entry.coordinator_generation == local.wrapping_add(1)
+                    && operation.coordinator_generation == local;
+                if !incoming_generation_acceptable || stored_is_the_newer_era {
+                    return Ok(());
+                }
             }
+            *entry = TerminalEpochEntry {
+                coordinator: operation.coordinator,
+                coordinator_generation: operation.coordinator_generation,
+                targets: copied,
+                next,
+            };
             return Ok(());
         }
         if self.coordinated_drop.terminal_epochs.len() >= self.num_players.saturating_mul(2).max(1)
@@ -4985,7 +5003,11 @@ impl<T: Config> P2PSession<T> {
                     .get(&PlayerHandle::new(usize::from(target.handle))),
                 Some(PlayerType::Remote(_))
             )
-        })
+        }) && self
+            .coordinated_drop_participants(&abort.targets)
+            .first()
+            .copied()
+            == Some(abort.operation.coordinator)
     }
 
     fn coordinated_drop_accept_abort(&mut self, abort: DropAbort, source: Option<u16>) {
@@ -20241,6 +20263,57 @@ mod tests {
             session.coordinated_drop_epoch_next(0, 0, &targets),
             0,
             "an unknown coordinator-heard time is not evidence of silence"
+        );
+    }
+
+    #[test]
+    fn stale_coordinator_generation_abort_cannot_reset_a_newer_epoch() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let participants = vec![0, 1, 2, 3];
+        let operation = |generation, terminal_epoch| DropOperationId {
+            coordinator: 0,
+            coordinator_generation: generation,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &participants,
+            ),
+            terminal_epoch,
+        };
+        // The coordinator's newer era has already advanced this target set.
+        session
+            .coordinated_drop_record_epoch(operation(1, 0), &targets, 1)
+            .expect("seed the newer era");
+        // A delayed abort from the predecessor era must not replace it.
+        session.coordinated_drop_accept_abort(
+            DropAbort {
+                operation: operation(0, 0),
+                reason: DropAbortReason::Superseded,
+                terminal_epoch: 0,
+                targets: targets.clone(),
+            },
+            Some(0),
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 1, &targets),
+            1,
+            "a stale coordinator generation cannot reset the newer era's epoch"
+        );
+        let delayed = DropPrepare {
+            operation: operation(1, 0),
+            targets,
+            participants,
+        };
+        session
+            .coordinated_drop_accept_prepare(delayed, Some(0))
+            .expect("the delayed prepare is a peer artifact");
+        assert!(
+            session.coordinated_drop.active.is_none(),
+            "the newer era's epoch still fences its delayed operation"
         );
     }
 
