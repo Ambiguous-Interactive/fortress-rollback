@@ -427,6 +427,17 @@ pub(crate) struct DropOperationId {
     /// keeps artifacts from an earlier membership era from colliding with a
     /// retry that names a different participant set.
     pub participant_set_digest: u64,
+    /// Monotone terminal-attempt epoch minted by the operation's authority.
+    ///
+    /// The value is the authority's *next acceptable* epoch for this target set
+    /// at the time the operation is proposed; admission consumes it and
+    /// advances the authority's next epoch. An operation from an older epoch is
+    /// a terminal replay and is rejected even after the bounded exact-identity
+    /// window has evicted it (issue #516). Epochs are scoped to the coordinator
+    /// identity (`coordinator`, `coordinator_generation`), so a new coordinator
+    /// generation or a hot-join authority change starts a fresh space rather
+    /// than importing agreed state.
+    pub terminal_epoch: u32,
 }
 
 /// One player slot owned by the endpoint being gracefully dropped.
@@ -552,10 +563,27 @@ pub(crate) enum DropAbortReason {
 }
 
 /// Closes an uncommitted coordinated graceful-drop attempt.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DropAbort {
     pub operation: DropOperationId,
     pub reason: DropAbortReason,
+    /// The sending authority's next acceptable terminal epoch for the
+    /// operation's target set.
+    ///
+    /// An authority includes this on every abort so a requester whose proposal
+    /// was rejected as stale can advance its epoch and retry without waiting
+    /// for the operation deadline. Receivers only apply it when the abort comes
+    /// from an authority; a peer cannot poison an epoch.
+    pub terminal_epoch: u32,
+    /// Canonical target slots the operation covers.
+    ///
+    /// The authority includes the target set so a participant that missed the
+    /// prepare (or every prepare for the operation) can still fence a delayed
+    /// replay: the abort updates the terminal-epoch entry even when no local
+    /// attempt matches. Receivers validate the digest, ordering, and roster
+    /// bound before using it, and fall back to the active attempt's targets
+    /// when the list is empty (legacy peers and local internal aborts).
+    pub targets: Vec<DropTarget>,
 }
 
 /// A participant's claim that its **current** retained history can serve the
@@ -680,14 +708,14 @@ impl MessageBody {
             Self::JoinAborted(_) => 8 + FRAME,       // handle: usize, frame
             Self::Goodbye(_) => 1,                   // reason: u8
             Self::DropPrepare(prepare) => {
-                24 // DropOperationId
+                28 // DropOperationId
                     + LEN_PREFIX
                     + prepare.targets.len() * 4 // DropTarget
                     + LEN_PREFIX
                     + prepare.participants.len() * 2 // u16 handles
             },
             Self::DropReport(report) => {
-                24 // DropOperationId
+                28 // DropOperationId
                     + 2 // participant
                     + 4 // DropReportStage discriminant
                     + FRAME // exposed_confirmed
@@ -697,7 +725,7 @@ impl MessageBody {
                     + report.receipts.len() * (2 + FRAME + FRAME)
             },
             Self::DropBackfill(backfill) => {
-                24 // DropOperationId
+                28 // DropOperationId
                     + 2 // donor
                     + FRAME // range_start
                     + 2 // chunk_index
@@ -707,8 +735,14 @@ impl MessageBody {
                     + LEN_PREFIX
                     + backfill.bytes.len()
             },
-            Self::DropCommit(_) => 24 + FRAME + 8,
-            Self::DropAbort(_) => 24 + 4, // operation + DropAbortReason discriminant
+            Self::DropCommit(_) => 28 + FRAME + 8,
+            Self::DropAbort(abort) => {
+                28 // DropOperationId
+                    + 4 // DropAbortReason discriminant
+                    + 4 // next terminal epoch
+                    + LEN_PREFIX
+                    + abort.targets.len() * 4 // DropTarget
+            },
         };
 
         DISCRIMINANT + payload
@@ -1160,6 +1194,8 @@ mod tests {
                 MessageBody::DropAbort(DropAbort {
                     operation: DropOperationId::default(),
                     reason: DropAbortReason::Superseded,
+                    terminal_epoch: 0,
+                    targets: Vec::new(),
                 }),
                 MessageKind::DropAbort,
             ),

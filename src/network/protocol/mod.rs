@@ -2568,7 +2568,7 @@ impl<T: Config> UdpProtocol<T> {
                 self.on_drop_control_message(DropControlMessage::Commit(*body));
             },
             MessageBody::DropAbort(body) => {
-                self.on_drop_control_message(DropControlMessage::Abort(*body));
+                self.on_drop_control_message(DropControlMessage::Abort(body.clone()));
             },
             #[cfg(feature = "hot-join")]
             MessageBody::JoinRequest(body) => self.on_join_request(body),
@@ -4924,6 +4924,7 @@ mod tests {
                     sequence: 1,
                     target_set_digest: 0,
                     participant_set_digest: 0,
+                    terminal_epoch: 0,
                 },
                 participant: 1,
                 stage,
@@ -4956,6 +4957,7 @@ mod tests {
                     sequence: 1,
                     target_set_digest: 0,
                     participant_set_digest: 0,
+                    terminal_epoch: 0,
                 },
                 participant: 1,
                 stage: DropReportStage::TargetAck,
@@ -10181,6 +10183,7 @@ mod tests {
             sequence: 4,
             target_set_digest: 5,
             participant_set_digest: 0,
+            terminal_epoch: 0,
         };
         [
             DropControlMessage::Prepare(DropPrepare {
@@ -10222,6 +10225,8 @@ mod tests {
             DropControlMessage::Abort(DropAbort {
                 operation,
                 reason: DropAbortReason::Superseded,
+                terminal_epoch: 0,
+                targets: Vec::new(),
             }),
         ]
     }

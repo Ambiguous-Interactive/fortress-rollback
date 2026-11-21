@@ -1,4 +1,4 @@
-//! Immutable protocol-v3 wire fixtures.
+//! Immutable protocol-v4 wire fixtures.
 //!
 //! Changing any literal in this released-version file requires a protocol-version
 //! bump. `scripts/hooks/check-wire-golden-immutable.py` enforces that rule.
@@ -129,6 +129,7 @@ fn operation() -> DropOperationId {
         sequence: 0x1020_3040,
         target_set_digest: 0x0102_0304_0506_0708,
         participant_set_digest: 0x1112_1314_1516_1718,
+        terminal_epoch: 0,
     }
 }
 
@@ -278,6 +279,8 @@ pub(super) fn fixtures() -> Vec<(&'static str, Message)> {
         MessageBody::DropAbort(DropAbort {
             operation: operation(),
             reason: DropAbortReason::ConflictingHistory,
+            terminal_epoch: 0,
+            targets: Vec::new(),
         }),
     ];
     bodies
@@ -351,13 +354,46 @@ pub(super) fn expected(body: &MessageBody) -> &'static [u8] {
 }
 
 #[test]
-fn every_protocol_v4_variant_has_immutable_exact_bytes() {
-    super::assert_wire_golden_suite(WIRE_GOLDEN_VERSION, fixtures(), expected);
+fn every_protocol_v4_variant_is_rejected_after_the_v5_bump() {
+    const {
+        assert!(
+            crate::PROTOCOL_VERSION > WIRE_GOLDEN_VERSION,
+            "released v4 fixtures become a rejection suite after a version bump"
+        );
+    }
+    for (variant, message) in fixtures() {
+        let expected_bytes = expected(&message.body);
+        // Every drop body gained the terminal epoch in v5, so the frozen v4
+        // body can no longer decode under the current generic struct. The
+        // version gate must still reject it before body decoding.
+        if !matches!(
+            &message.body,
+            MessageBody::DropPrepare(_)
+                | MessageBody::DropReport(_)
+                | MessageBody::DropBackfill(_)
+                | MessageBody::DropCommit(_)
+                | MessageBody::DropAbort(_)
+        ) {
+            let generic: Message =
+                super::decode_value(expected_bytes).expect("fixture must generically decode");
+            assert_eq!(
+                generic.body, message.body,
+                "generic body decode for {variant}"
+            );
+            assert_eq!(generic.header.protocol_version, WIRE_GOLDEN_VERSION);
+        }
+        let error =
+            super::decode_message(expected_bytes).expect_err("released v4 packet must reject");
+        assert!(
+            error.to_string().contains("unsupported protocol version 4"),
+            "v4 rejection for {variant}: {error}"
+        );
+    }
 }
 
 #[cfg(not(feature = "hot-join"))]
 #[test]
-fn hot_join_v4_goldens_are_recognized_when_feature_is_disabled() {
+fn hot_join_v4_goldens_reject_at_the_version_before_feature_dispatch() {
     for (_, message) in fixtures().into_iter().filter(|(_, message)| {
         matches!(
             &message.body,
@@ -371,9 +407,7 @@ fn hot_join_v4_goldens_are_recognized_when_feature_is_disabled() {
         )
     }) {
         let error = super::decode_message(expected(&message.body))
-            .expect_err("disabled hot-join fixture must reject");
-        assert!(error
-            .to_string()
-            .contains("requires the disabled hot-join feature"));
+            .expect_err("released v4 hot-join fixture must reject");
+        assert!(error.to_string().contains("unsupported protocol version 4"));
     }
 }

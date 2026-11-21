@@ -125,6 +125,7 @@ fn operation() -> DropOperationId {
         sequence: 0x1020_3040,
         target_set_digest: 0x0102_0304_0506_0708,
         participant_set_digest: 0x1112_1314_1516_1718,
+        terminal_epoch: 0,
     }
 }
 
@@ -274,6 +275,8 @@ pub(super) fn fixtures() -> Vec<(&'static str, Message)> {
         MessageBody::DropAbort(DropAbort {
             operation: operation(),
             reason: DropAbortReason::ConflictingHistory,
+            terminal_epoch: 0,
+            targets: Vec::new(),
         }),
     ];
     bodies

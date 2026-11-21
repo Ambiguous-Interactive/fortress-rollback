@@ -433,6 +433,25 @@ def test_plan_checks_runs_link_check_for_rust_files() -> None:
     assert "link-check" in _ids(checks)
 
 
+def test_plan_checks_runs_rustdoc_links_for_rust_sources() -> None:
+    """A source change mirrors the CI private/feature-gated rustdoc pass."""
+    checks = plan_checks({"src/lib.rs"})
+    rustdoc_check = next(c for c in checks if c.check_id == "rustdoc-links")
+    assert rustdoc_check.command == [
+        PYTHON_EXECUTABLE,
+        "scripts/docs/check-rustdoc-links.py",
+    ]
+    # Detection + reporting only; the correct link fix is visibility-dependent.
+    assert rustdoc_check.fix_command is None
+    assert rustdoc_check.fix_hint is not None
+    assert "private_intra_doc_links" in rustdoc_check.fix_hint
+
+
+def test_plan_checks_skips_rustdoc_links_for_markdown_only_changes() -> None:
+    checks = plan_checks({"docs/user-guide.md"})
+    assert "rustdoc-links" not in _ids(checks)
+
+
 def test_plan_checks_runs_doc_claims_for_rust_files() -> None:
     """A .rs change triggers Rust semantic-claim checks."""
     checks = plan_checks({"src/lib.rs"})
