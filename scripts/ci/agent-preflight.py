@@ -133,6 +133,7 @@ CHECK_INPUT_PREFIXES: dict[str, tuple[str, ...]] = {
         "Cargo.lock",
         "rust-toolchain.toml",
         "scripts/docs/check-rustdoc-links.py",
+        "scripts/build/cargo_linker.py",
     ),
     "doc-claims": (
         "src/",
