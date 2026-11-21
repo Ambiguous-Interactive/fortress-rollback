@@ -832,7 +832,14 @@ def plan_checks(
             )
         )
 
-    if run_all or rust_source_changed:
+    if (
+        run_all
+        or rust_source_changed
+        or any(
+            path in {"Cargo.toml", "Cargo.lock", "rust-toolchain.toml"}
+            for path in changed_files
+        )
+    ):
         checks.append(
             PlannedCheck(
                 check_id="rustdoc-links",
@@ -851,6 +858,8 @@ def plan_checks(
                 ),
             )
         )
+
+    if run_all or rust_source_changed:
         unbounded_alloc_command = [
             PYTHON_EXECUTABLE,
             "scripts/hooks/check-unbounded-alloc.py",

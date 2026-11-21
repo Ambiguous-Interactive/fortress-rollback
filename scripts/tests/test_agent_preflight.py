@@ -462,6 +462,15 @@ def test_plan_checks_skips_rustdoc_links_for_markdown_only_changes() -> None:
     assert "rustdoc-links" not in _ids(checks)
 
 
+@pytest.mark.parametrize("changed_file", ["Cargo.lock", "Cargo.toml", "rust-toolchain.toml"])
+def test_plan_checks_runs_rustdoc_links_for_manifest_only_changes(
+    changed_file: str,
+) -> None:
+    """Dependency/toolchain-only changes can still alter rustdoc resolution."""
+    checks = plan_checks({changed_file})
+    assert "rustdoc-links" in _ids(checks)
+
+
 def test_plan_checks_runs_doc_claims_for_rust_files() -> None:
     """A .rs change triggers Rust semantic-claim checks."""
     checks = plan_checks({"src/lib.rs"})
