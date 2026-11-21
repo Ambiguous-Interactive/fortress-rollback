@@ -5115,13 +5115,13 @@ impl<T: Config> P2PSession<T> {
         }
     }
 
-    /// Whether `source` is the authority allowed to terminate the active
+    /// Whether `source` is the acting authority allowed to terminate the active
     /// attempt.
     ///
-    /// The deterministic coordinator is always authoritative. The deterministic
-    /// fallback becomes authoritative only after this endpoint has promoted it
-    /// or observed the full failover silence window, matching the prepare
-    /// admission rules.
+    /// The caller already accepts the operation's exact coordinator. The
+    /// deterministic fallback becomes authoritative only after this endpoint has
+    /// promoted it or observed the full failover silence window, matching the
+    /// prepare admission rules.
     fn coordinated_drop_abort_source_is_authority(&self, source: Option<u16>) -> bool {
         let Some(source) = source else {
             return false;
@@ -5129,8 +5129,7 @@ impl<T: Config> P2PSession<T> {
         let Some(active) = self.coordinated_drop.active.as_ref() else {
             return false;
         };
-        let coordinator = active.participants.first().copied();
-        if coordinator == Some(source) || active.acting_coordinator == Some(source) {
+        if active.acting_coordinator == Some(source) {
             return true;
         }
         let fallback = Self::coordinated_drop_fallback_coordinator(&active.participants);
@@ -20318,6 +20317,40 @@ mod tests {
     }
 
     #[test]
+    fn abort_target_set_must_name_its_coordinator() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let operation = DropOperationId {
+            // The canonical participant set for this target set starts with 0.
+            coordinator: 1,
+            coordinator_generation: 0,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &[0, 1, 2, 3],
+            ),
+            terminal_epoch: 0,
+        };
+        session.coordinated_drop_accept_abort(
+            DropAbort {
+                operation,
+                reason: DropAbortReason::Superseded,
+                terminal_epoch: 1,
+                targets: targets.clone(),
+            },
+            Some(1),
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(1, 0, &targets),
+            0,
+            "an abort whose target set does not name its coordinator is a peer artifact"
+        );
+    }
+
+    #[test]
     fn new_coordinator_generation_starts_a_fresh_epoch_space() {
         let mut session = five_player_majority_session(PlayerHandle::new(0));
         let targets = vec![DropTarget {
@@ -20348,7 +20381,7 @@ mod tests {
             .coordinated_drop_accept_prepare(
                 DropPrepare {
                     operation: rejoined,
-                    targets,
+                    targets: targets.clone(),
                     participants,
                 },
                 Some(0),
@@ -20362,6 +20395,11 @@ mod tests {
                 .map(|active| active.operation),
             Some(rejoined),
             "the new generation is not blocked by its predecessor's epoch"
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 1, &targets),
+            1,
+            "admission replaces the predecessor era's epoch with the new era's next"
         );
     }
 
