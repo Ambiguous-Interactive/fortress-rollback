@@ -5021,6 +5021,13 @@ impl<T: Config> P2PSession<T> {
     }
 
     fn coordinated_drop_accept_abort(&mut self, abort: DropAbort, source: Option<u16>) {
+        // A fence at the epoch ceiling cannot be consumed by a later operation
+        // (advancing it overflows), so accepting one would permanently block
+        // drops for that target set. Reject it before recording.
+        if abort.terminal_epoch == u32::MAX {
+            Self::coordinated_drop_discard_artifact("abort", DropAbortReason::ResourceLimit);
+            return;
+        }
         if !self.coordinated_drop_abort_targets_are_valid(&abort) {
             Self::coordinated_drop_discard_artifact("abort", abort.reason);
             return;
@@ -20510,6 +20517,39 @@ mod tests {
             session.coordinated_drop_epoch_next(0, 0, &targets),
             1,
             "promotion consumes the operation epoch so a retry is not stale"
+        );
+    }
+
+    #[test]
+    fn abort_fence_at_the_epoch_ceiling_is_rejected() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let operation = DropOperationId {
+            coordinator: 0,
+            coordinator_generation: 0,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &[0, 1, 2, 3],
+            ),
+            terminal_epoch: 0,
+        };
+        session.coordinated_drop_accept_abort(
+            DropAbort {
+                operation,
+                reason: DropAbortReason::Superseded,
+                terminal_epoch: u32::MAX,
+                targets: targets.clone(),
+            },
+            Some(0),
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            0,
+            "an unconsumable epoch fence must not be recorded"
         );
     }
 
