@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795242390007,
+  "lastUpdate": 1795302020630,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "fc6a5f55eef3967f191a17bfea9594a578896c6d",
-          "message": "docs(dst): record measured fleet-search rejections (#420) (#424)\n\n## Summary\n\nCompletes the remaining fleet-search comparison in #420 by recording\nmeasured rejections for prefix-replay branching and LDFI-lite, and\nrefreshes lockfile patch updates across every workspace.\n\nPLAN.md now carries only the calendar-bound seven-window organic\npresence ratchet (#403).\n\nCloses #420.\n\n## Measured comparison\n\n### Prefix-replay branching: rejected\n\n- Four 250-step rare-state prefixes (`input_queue_length = 2`,\n`max_prediction = 1`, clean network, `ContinueWithout`) x 64 matched\nsuffixes = 256 branches / 256,000 simulated steps.\n- Every branch reproduced its prefix cumulative trace hash exactly at\nthe cut.\n- Branch arm: only the `0x15` prefix vector (prediction-limit, nudge,\ninput-ring), zero new organic vectors, 3 per-ID peer-count buckets, 0\nfailures.\n- Matched fresh-seed arm: `0x15` and `0x17` (adds floor-round), floor\nrow in 86/256 schedules, 7 buckets, 0 failures.\n- Replaying a prefix consumes suffix reach without a session-state\nsnapshot API; no state discovery per compute.\n\n### LDFI-lite: rejected\n\n- 16 matched 1,000-step green schedules with a bounded 4,096-delivery\nlog and greedy support removal.\n- Greedy support sets of 1-4 deliveries in 15/16 schedules; the\nremaining schedule still confirmed after every candidate was removed.\n- Support removal lowered the target's final confirmed frame by one\nframe in 15/15 tested schedules, with 0 oracle failures.\n- 240 matched random drop sets of the same size lowered it in 0/240,\nwith 0 oracle failures; baseline had 0 failures.\n- LDFI-lite is a stronger targeted confirmation perturbation (15/15 vs\n0/240) but observed no oracle failure in the matched green arms, so the\ndelivery ring, drop-set plumbing, and greedy re-run search are not\nretained.\n\n### Detector control\n\nThe state-discovery arm does not consume oracle failures. The shared\noracle's failure path is pinned by the existing `corrupt_state_from`\nnegative control\n(`artifact_reproduction_rejects_mutated_progress_evidence`, which\nasserts a corrupted run fails). The zero-failure LDFI result is \"no\noracle failure observed in the matched green arms,\" not a claim that the\nfleet is defect-free.\n\nThe experiment instrumentation was removed after recording the result;\nthe reusable measurements and method live in the fleet-search roadmap.\n\n## Verification\n\n- `cargo tf`: 2,738 passed.\n- `cargo tfull`: 3,195 passed, 75 skipped.\n- `cargo fmt --all --check`: passed.\n- `python3 scripts/ci/agent-preflight.py --full --auto-fix`: all checks\npassed.\n- `python3 scripts/hooks/check-plan-hygiene.py`: passed.\n- `python3 scripts/hooks/validate-agent-skills.py`: 49 skills valid.\n- `npx markdownlint` and `typos` on changed docs: passed.\n- `python3 scripts/release/workspace_locks.py check`: passed.",
-          "timestamp": "2026-11-15T04:15:33Z",
-          "tree_id": "e15399845227ead8a8f7e0e837e8f82512bf85d6",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/fc6a5f55eef3967f191a17bfea9594a578896c6d"
-        },
-        "date": 1794716868094,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 27243,
-            "range": "± 549",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 16724,
-            "range": "± 334",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 493,
-            "range": "± 5",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 615,
-            "range": "± 12",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 5667,
-            "range": "± 285",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 3133,
             "range": "± 181",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2503ddd4352b87d385b07d640cef4b02defdfc41",
+          "message": "fix: make coordinated-drop terminal replay unbounded-safe (#519)\n\n## Description\n\nCloses #516. The bounded per-target exact-identity history from #514\ncould evict\nan aborted or superseded coordinated-drop operation. A delayed `Prepare`\nfor\nthat operation then reopened `Inventory`, peers that still remembered it\nas\nclosed did not answer, the two-second deadline fired, and the whole\nhealthy\nsession entered the fail-closed disconnect state. A delayed abort could\nalso\nend an admitted attempt from any peer, giving one faulty endpoint a\nsession-kill\nprimitive.\n\nProtocol v5 gives terminal history a protocol-level, monotone\nterminal-attempt\nepoch:\n\n- `DropOperationId` carries `terminal_epoch`; `DropAbort` carries the\nsender's\n  next acceptable epoch.\n- The authority (deterministic coordinator, or the acting fallback after\nthe\ngrace) admits only its next epoch. A stale or future proposal is\njournaled\nand answered with `Superseded` carrying the next epoch, so the requester\n  advances and retries instead of reopening a terminal operation.\n- Participants follow the authority: they consume the epoch on\nadmission,\nadvance it from an authoritative abort or commit, and discard any\nauthority\nprepare below their next epoch even after every bounded exact history\nhas\n  evicted the operation.\n- Epochs are scoped to `(coordinator, coordinator_generation)` and keyed\nby the\ncanonical target handle set. A new coordinator generation or a\ncoordinator\nchange starts a fresh space; a reactivated target carries the epoch\nforward.\n- Prepares now validate the coordinator generation against the current\n  connected era, closing the rejoin-generation replay path.\n- Only the authority can terminate an admitted attempt. A non-authority\n  participant's abort is a discarded artifact instead of a session-wide\nfail-close, and a peer proposal cannot replace an attempt that already\nleft\n  inventory. Neither change weakens the strict-majority quorum.\n\nThe exact-identity watermark remains as a secondary fast-path guard and\nnow\nincludes the epoch so a fresh retry is never mistaken for a stale\nproposal's\nidentity.\n\n### CAP posture\n\nThe epoch is admission state, not agreed state: it only rejects stale\nprepares\nand never admits an operation that the participant-set,\ntarget-generation, or\ncoordinator-generation rules would reject. Commits still require the\nstrict-majority ready quorum, so `AtMostOneCommittedCut` and the\nexisting TLA\nmodels are unchanged (argument recorded in `docs/specs/formal-spec.md`).\nA\nsplit-view heal where the acting fallback advanced an epoch beyond the\nreal\ncoordinator's view still fails closed, which is the intended CP choice.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [x] 💥 Breaking change (fix or feature that would cause existing\n  functionality to change)\n- [x] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\nThe wire version bump is breaking for mixed-version sessions: v5 rejects\nv4\nheaders at the handshake, as v4 did to v3.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective\n- [x] `cargo fmt && cargo clippy --workspace --all-targets --features\n  tokio,json,hot-join -- -D warnings` is clean\n- [x] `cargo nextest run` passes\n\n### If Applicable\n\n- [x] Documentation updated (`CHANGELOG.md`,\n`docs/specs/api-contracts.md`,\n  `docs/specs/formal-spec.md`, wiki mirrors, design-decision log)\n- [x] `CHANGELOG.md` entry for the user-facing wire/behavior change\n- [x] No new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `evicted_terminal_prepare_is_rejected_by_the_terminal_epoch`\n(authority\nevicts both bounded histories, stale replay stays a peer artifact, retry\n  consumes the next epoch)\n- `stale_terminal_epoch_prepare_is_rejected_at_a_participant`\n- `new_coordinator_generation_starts_a_fresh_epoch_space`\n- `reactivated_target_generation_carries_the_terminal_epoch_forward`\n- `record_epoch_is_monotone_for_one_authority`\n- `participant_accepts_an_authority_epoch_ahead_of_its_view`\n- `authority_rejects_a_future_epoch_without_consuming_it`\n- `non_authority_abort_cannot_terminate_a_live_attempt`\n- `non_authority_abort_after_the_fallback_grace_remains_rejected`\n- `fallback_abort_requires_silence_and_the_full_grace` (3-row table)\n- `peer_prepare_cannot_fail_close_a_mid_backfill_attempt`\n-\n`authority_prepare_with_a_newer_epoch_still_yields_a_mid_backfill_attempt`\n- `stale_coordinator_generation_prepare_cannot_reopen_an_attempt`\n- `abort_before_prepare_fences_a_delayed_replay`\n- `epoch_table_reclaims_stale_target_sets_before_refusing`\n- `rejected_proposal_abort_does_not_walk_the_requester_epoch`\n- `fallback_abort_without_a_local_attempt_fences_the_replay`\n- `fallback_abort_without_a_local_attempt_requires_coordinator_silence`\n- `fallback_abort_without_a_local_attempt_requires_a_known_heard_time`\n- `stale_coordinator_generation_abort_cannot_reset_a_newer_epoch`\n- `abort_fence_at_the_epoch_ceiling_fences_the_replay`\n-\n`newer_epoch_for_the_same_handles_at_a_new_generation_yields_mid_backfill`\n- `two_participant_fallback_abort_is_not_authoritative`\n-\n`authority_prepare_for_a_different_target_set_does_not_force_a_mid_backfill_yield`\n-\n`empty_target_abort_for_a_different_operation_does_not_touch_the_active_epoch`\n- `promoted_fallback_consumes_the_operation_epoch`\n- `wire_golden_v5` active suite; v4 is a released rejection suite; the\n  cross-platform replay-fixture wire digest is refreshed.\n\n**Manual testing performed:**\n\n| Check | Result |\n| --- | --- |\n| Epoch checks disabled (red) | 3/3 epoch tests fail; aborts\nsource-scoping and generation fence each fail their guard |\n| Epoch checks enabled (green) | 3/3 epoch tests pass |\n| Full workspace nextest (`tokio,json,hot-join,violation-census`) |\n**3,716 passed, 77 skipped, 0 failed** |\n| `cargo clippy --workspace --all-targets --features tokio,json,hot-join\n-- -D warnings` | clean |\n| `cargo test --doc` | 169 passed, 55 ignored |\n| `cargo doc --no-deps --workspace` | clean |\n| `python3 scripts/ci/agent-preflight.py --full --auto-fix` | all checks\npass, including the new private/feature-gated rustdoc pass now wired for\nRust source changes |\n| `public_api_census.py --check` | 2,769 symbols match |\n| `check-links.py`, `check-doc-claims.sh`, `markdownlint` | clean |\n| Cross-target `cargo check` (wasm32-unknown-unknown, wasm32-wasip1,\nwasm32-unknown-emscripten, aarch64-linux, i686-linux) | pass |\n| aarch64 QEMU epoch tests | 3/3 pass |\n| aarch64 QEMU `wire_golden_v5` | 1/1 pass |\n| i686 native epoch tests + `wire_codec_digest_is_pinned` | 3/3 and 1/1\npass |\n| Browser/Emscripten probe builds | pass (browser runtime lane remains\nCI evidence; no local Chrome) |\n| `fortress-replay-fixture` | 6 passed |\n| `staggered_two_drops_opposite_order_survivors_converge_no_desync` | 1\npassed (regression fixed by trusting the sender epoch verbatim) |\n| Targeted epoch/abort mutation run | 67 mutants: 51 caught, 12\nunviable, 4 initially missed. Three were killed with dedicated\ntests/deduplication; the focused re-run (20 mutants) has 16 caught, 3\nunviable, and one equivalent survivor (`targets.len() > num_players` ->\n`>=`; a valid remote-only target set has at most `num_players - 1`\nhandles). |\n\n## Risks and rollback\n\n- The wire bump means a mixed v4/v5 session fails at the handshake;\nupgrade all\npeers together. Roll back by reverting this PR (the v4 golden remains in\nthe\n  tree as a rejection suite, so a revert needs no fixture regeneration).\n- A participant that missed every prepare/abort copy for an operation\ncan still\naccept a delayed authority prepare when its own next epoch is lower; it\nthen\ntimes out and fails closed unless the authority answers its report. The\ndemonstrated authority-side replay is closed; this partition/reorder\ncorner\n  stays fail-closed by design.\n- The bounded epoch map is capped at `2 * num_players`; overflow refuses\nthe\n  operation instead of evicting a live epoch.\n\n## Related Issues\n\n- Closes #516\n- Follow-up to #514 / #512.",
+          "timestamp": "2026-11-21T22:47:46Z",
+          "tree_id": "9e2d128e6dc2659288d10bf4e0282c399fb7fd88",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/2503ddd4352b87d385b07d640cef4b02defdfc41"
+        },
+        "date": 1795302019196,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 40050,
+            "range": "± 206",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 25419,
+            "range": "± 686",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1091,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1245,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 2764,
+            "range": "± 171",
             "unit": "ns/iter"
           }
         ]
