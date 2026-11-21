@@ -4998,11 +4998,26 @@ impl<T: Config> P2PSession<T> {
             .active
             .as_ref()
             .is_some_and(|active| active.operation == abort.operation);
+        let now = self.coordinated_drop_now();
         // The named coordinator is authoritative for its own operations even
-        // when this endpoint missed the prepare. An acting fallback's abort is
-        // accepted only for an attempt this endpoint admitted and promoted.
+        // when this endpoint missed the prepare. The deterministic fallback is
+        // authoritative for an operation without a local attempt only while the
+        // coordinator is silent; the abort's target list derives the participant
+        // set (and therefore the fallback handle).
+        let fallback_authority = if abort.targets.is_empty() {
+            false
+        } else {
+            let participants = self.coordinated_drop_participants(&abort.targets);
+            participants.len() >= 2
+                && Self::coordinated_drop_fallback_coordinator(&participants) == source
+                && Self::coordinated_drop_silent_since(
+                    self.coordinated_drop_last_coordinator_heard(abort.operation),
+                    now,
+                )
+        };
         let fence_authority = source == Some(abort.operation.coordinator)
-            || (active_matches && self.coordinated_drop_abort_source_is_authority(source));
+            || (active_matches && self.coordinated_drop_abort_source_is_authority(source))
+            || (!active_matches && fallback_authority);
         if !fence_authority {
             // Only the operation's authority can end an admitted attempt. A
             // non-authority participant that gives up stops reporting and the
@@ -20107,6 +20122,74 @@ mod tests {
         assert_eq!(
             session.coordinated_drop_epoch_next(0, 0, &current_targets),
             1
+        );
+    }
+
+    #[test]
+    fn fallback_abort_without_a_local_attempt_fences_the_replay() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let operation = DropOperationId {
+            coordinator: 0,
+            coordinator_generation: 0,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &[0, 1, 2, 3],
+            ),
+            terminal_epoch: 0,
+        };
+        // The local endpoint is the deterministic fallback (participants[1]).
+        session.coordinated_drop_accept_abort(
+            DropAbort {
+                operation,
+                reason: DropAbortReason::Superseded,
+                terminal_epoch: 1,
+                targets: targets.clone(),
+            },
+            Some(1),
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            1,
+            "a silent coordinator lets the fallback's no-attempt abort fence the epoch"
+        );
+    }
+
+    #[test]
+    fn fallback_abort_without_a_local_attempt_requires_coordinator_silence() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let operation = DropOperationId {
+            coordinator: 0,
+            coordinator_generation: 0,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &[0, 1, 2, 3],
+            ),
+            terminal_epoch: 0,
+        };
+        session.coordinated_drop_record_coordinator_heard(operation);
+        session.coordinated_drop_accept_abort(
+            DropAbort {
+                operation,
+                reason: DropAbortReason::Superseded,
+                terminal_epoch: 1,
+                targets: targets.clone(),
+            },
+            Some(1),
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            0,
+            "a recently heard coordinator makes a fallback abort premature"
         );
     }
 
