@@ -305,9 +305,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Breaking:** the wire protocol version is now `5`. `DropOperationId` carries a monotone
   terminal-attempt epoch and `DropAbort` carries the sender's next acceptable epoch plus the
-  operation's canonical target list. Every coordinated-drop control message grows by four bytes;
-  an abort additionally carries a length-prefixed target list so a participant that missed the
-  prepare can still record the fence. The authority admits only its next epoch, so a delayed
+  operation's canonical target list. Every coordinated-drop control message's operation grows by
+  four bytes; an abort adds a second four-byte epoch field plus the length-prefixed target list.
+  The authority admits only its next epoch, so a delayed
   terminal prepare can never reopen an attempt after the bounded exact-identity window has evicted
   it; a stale proposal is answered with the next epoch and the requester can retry immediately.
   Upgrade every peer in a session to v5; v4 headers are rejected at the handshake.

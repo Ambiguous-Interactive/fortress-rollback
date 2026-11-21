@@ -3386,7 +3386,17 @@ impl<T: Config> P2PSession<T> {
             // replace a non-inventory attempt.
             let authority_source = source == Some(prepare.operation.coordinator)
                 || acting.is_some_and(|acting| source == Some(acting));
+            // Epochs are scoped to the authority and target set. A prepare for a
+            // different target set (or a different coordinator era) cannot use
+            // its epoch to win this conflict; leave that to the identity
+            // comparator.
+            let same_epoch_space = prepare.operation.target_set_digest
+                == active.operation.target_set_digest
+                && prepare.operation.coordinator == active.operation.coordinator
+                && prepare.operation.coordinator_generation
+                    == active.operation.coordinator_generation;
             let newer_authority_epoch = authority_source
+                && same_epoch_space
                 && prepare.operation.terminal_epoch > active.operation.terminal_epoch;
             let incoming_wins = newer_authority_epoch
                 || Self::coordinated_drop_operation_cmp(prepare.operation, active.operation)
@@ -5058,13 +5068,17 @@ impl<T: Config> P2PSession<T> {
         // active (the authority abort overtook its prepare). The authority's
         // target list lets the late prepare find the fence instead of reopening
         // the terminal operation.
-        let targets = if abort.targets.is_empty() {
+        let targets = if !abort.targets.is_empty() {
+            abort.targets.clone()
+        } else if active_matches {
             self.coordinated_drop
                 .active
                 .as_ref()
                 .map_or_else(Vec::new, |active| active.targets.clone())
         } else {
-            abort.targets.clone()
+            // An empty-target abort can only describe a different operation; it
+            // must not change the active attempt's epoch scope.
+            Vec::new()
         };
         if !targets.is_empty() {
             // The abort's field is the sender's next acceptable epoch. Trust it
@@ -5474,12 +5488,35 @@ impl<T: Config> P2PSession<T> {
                     >= COORDINATED_DROP_FALLBACK_GRACE
         });
         if promote {
-            if let Some(active) = self.coordinated_drop.active.as_mut() {
+            let promoted = if let Some(active) = self.coordinated_drop.active.as_mut() {
                 active.acting_coordinator = Some(active.local_participant);
                 trace!(
                     "Taking over coordinated drop {} as acting coordinator after the deterministic coordinator was silent for the failover grace",
                     active.operation.sequence
                 );
+                Some((active.operation, active.targets.clone()))
+            } else {
+                None
+            };
+            // Promotion makes this endpoint the acting authority. Consume the
+            // operation's epoch here: a locally initiated fallback operation
+            // never passed through the authority admission that consumes it, so
+            // a retry after an abort would otherwise reuse the old epoch and be
+            // rejected as stale.
+            if let Some((operation, targets)) = promoted {
+                if let Some(next) = operation.terminal_epoch.checked_add(1) {
+                    if let Err(reason) =
+                        self.coordinated_drop_record_epoch(operation, &targets, next)
+                    {
+                        report_violation!(
+                            ViolationSeverity::Warning,
+                            ViolationKind::InternalError,
+                            "could not retain the promoted fallback's terminal epoch for {:?}: {:?}",
+                            operation,
+                            reason
+                        );
+                    }
+                }
             }
         }
     }
@@ -20347,6 +20384,132 @@ mod tests {
             session.coordinated_drop_epoch_next(1, 0, &targets),
             0,
             "an abort whose target set does not name its coordinator is a peer artifact"
+        );
+    }
+
+    #[test]
+    fn authority_prepare_for_a_different_target_set_does_not_force_a_mid_backfill_yield() {
+        let (mut session, active_operation) = participant_drop_attempt(PlayerHandle::new(1));
+        let active_digest = active_operation.target_set_digest;
+        {
+            let active = session
+                .coordinated_drop
+                .active
+                .as_mut()
+                .expect("the attempt is active");
+            active.phase = CoordinatedDropPhase::Backfill;
+            active.cut = Some(Frame::new(3));
+        }
+        let mut candidate = None;
+        for handle in [2_u16, 3] {
+            let targets = vec![DropTarget {
+                handle,
+                generation: 0,
+            }];
+            let participants: Vec<u16> = (0_u16..5).filter(|h| *h != handle).collect();
+            let digest = P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets);
+            if digest > active_digest {
+                candidate = Some(DropPrepare {
+                    operation: DropOperationId {
+                        coordinator: 0,
+                        coordinator_generation: 0,
+                        sequence: 1,
+                        target_set_digest: digest,
+                        participant_set_digest:
+                            P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                                &participants,
+                            ),
+                        terminal_epoch: active_operation.terminal_epoch.saturating_add(1),
+                    },
+                    targets,
+                    participants,
+                });
+                break;
+            }
+        }
+        let different = candidate.expect("one other target set sorts after the active one");
+        session
+            .coordinated_drop_accept_prepare(different, Some(0))
+            .expect("a different target set's epoch cannot force a mid-backfill yield");
+        assert_eq!(
+            session
+                .coordinated_drop
+                .active
+                .as_ref()
+                .map(|active| (active.operation, active.phase)),
+            Some((active_operation, CoordinatedDropPhase::Backfill)),
+            "the authority's different-target prepare loses to the identity comparator"
+        );
+    }
+
+    #[test]
+    fn empty_target_abort_for_a_different_operation_does_not_touch_the_active_epoch() {
+        let (mut session, active_operation) = participant_drop_attempt(PlayerHandle::new(1));
+        let active_targets = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .expect("the attempt is active")
+            .targets
+            .clone();
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &active_targets),
+            1,
+            "fixture admission consumes the active epoch"
+        );
+        session.coordinated_drop_accept_abort(
+            DropAbort {
+                operation: DropOperationId {
+                    sequence: active_operation.sequence.saturating_add(1),
+                    ..active_operation
+                },
+                reason: DropAbortReason::Superseded,
+                terminal_epoch: 5,
+                targets: Vec::new(),
+            },
+            Some(0),
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &active_targets),
+            1,
+            "an empty-target abort for another operation must not change the active epoch"
+        );
+        assert!(session.coordinated_drop.active.is_some());
+    }
+
+    #[test]
+    fn promoted_fallback_consumes_the_operation_epoch() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        session
+            .begin_coordinated_drop(PlayerHandle::new(4))
+            .expect("a local fallback request opens a speculative attempt");
+        let targets = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .expect("the attempt is active")
+            .targets
+            .clone();
+        let now = session.coordinated_drop_now();
+        if let Some(active) = session.coordinated_drop.active.as_mut() {
+            active.started_at = now - COORDINATED_DROP_FALLBACK_GRACE;
+            active.coordinator_heard_at =
+                Some(now - COORDINATED_DROP_FALLBACK_GRACE - web_time::Duration::from_millis(1));
+        }
+        session.drive_coordinator_fallback();
+        assert_eq!(
+            session
+                .coordinated_drop
+                .active
+                .as_ref()
+                .and_then(|active| active.acting_coordinator),
+            Some(1),
+            "the local fallback is promoted"
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            1,
+            "promotion consumes the operation epoch so a retry is not stale"
         );
     }
 

@@ -447,6 +447,16 @@ def test_plan_checks_runs_rustdoc_links_for_rust_sources() -> None:
     assert "private_intra_doc_links" in rustdoc_check.fix_hint
 
 
+def test_rustdoc_links_cache_includes_the_lockfile() -> None:
+    """Dependency resolution changes can alter rustdoc link outcomes."""
+    paths = agent_preflight._check_input_paths(
+        "rustdoc-links", ["Cargo.lock", "src/lib.rs", "README.md"]
+    )
+    assert "Cargo.lock" in paths
+    assert "src/lib.rs" in paths
+    assert "README.md" not in paths
+
+
 def test_plan_checks_skips_rustdoc_links_for_markdown_only_changes() -> None:
     checks = plan_checks({"docs/user-guide.md"})
     assert "rustdoc-links" not in _ids(checks)
