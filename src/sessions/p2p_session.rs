@@ -5008,12 +5008,17 @@ impl<T: Config> P2PSession<T> {
             false
         } else {
             let participants = self.coordinated_drop_participants(&abort.targets);
-            participants.len() >= 2
+            // Without a local attempt we cannot compare `started_at`; require a
+            // recorded coordinator-heard time that is already past the full
+            // grace. An unknown last-heard time is not evidence of silence, and
+            // accepting a premature fallback abort would let a large epoch
+            // fence later valid coordinator prepares.
+            self.coordinated_drop_last_coordinator_heard(abort.operation)
+                .is_some_and(|heard_at| {
+                    now.saturating_duration_since(heard_at) >= COORDINATED_DROP_FALLBACK_GRACE
+                })
+                && participants.len() >= 2
                 && Self::coordinated_drop_fallback_coordinator(&participants) == source
-                && Self::coordinated_drop_silent_since(
-                    self.coordinated_drop_last_coordinator_heard(abort.operation),
-                    now,
-                )
         };
         let fence_authority = source == Some(abort.operation.coordinator)
             || (active_matches && self.coordinated_drop_abort_source_is_authority(source))
@@ -20143,6 +20148,19 @@ mod tests {
             terminal_epoch: 0,
         };
         // The local endpoint is the deterministic fallback (participants[1]).
+        // Seed a coordinator-heard time already past the full grace.
+        session.coordinated_drop_record_coordinator_heard(operation);
+        let old_heard = session.coordinated_drop_now()
+            - COORDINATED_DROP_FALLBACK_GRACE
+            - web_time::Duration::from_millis(1);
+        if let Some((_heard_operation, heard_at)) = session
+            .coordinated_drop
+            .coordinator_heard_operations
+            .iter_mut()
+            .next()
+        {
+            *heard_at = old_heard;
+        }
         session.coordinated_drop_accept_abort(
             DropAbort {
                 operation,
@@ -20190,6 +20208,39 @@ mod tests {
             session.coordinated_drop_epoch_next(0, 0, &targets),
             0,
             "a recently heard coordinator makes a fallback abort premature"
+        );
+    }
+
+    #[test]
+    fn fallback_abort_without_a_local_attempt_requires_a_known_heard_time() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let operation = DropOperationId {
+            coordinator: 0,
+            coordinator_generation: 0,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &[0, 1, 2, 3],
+            ),
+            terminal_epoch: 0,
+        };
+        session.coordinated_drop_accept_abort(
+            DropAbort {
+                operation,
+                reason: DropAbortReason::Superseded,
+                terminal_epoch: 1,
+                targets: targets.clone(),
+            },
+            Some(1),
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            0,
+            "an unknown coordinator-heard time is not evidence of silence"
         );
     }
 
