@@ -5641,10 +5641,11 @@ fn pct_lagging_survivor_does_not_fake_a_freeze_divergence() {
     let report = run(&schedule, &options);
     assert_eq!(
         report.final_confirmed,
-        vec![378, 372, 372, 372, 316],
-        "the regression depends on the lagging-survivor interleaving (the failover relay and \
-         commit-adoption paths shifted the PCT schedule by a few frames while preserving the \
-         lagging-survivor shape)"
+        vec![386, 379, 379, 379, 316],
+        "the regression depends on the lagging-survivor interleaving (the failover relay, \
+         commit-adoption, and provisional-Ready paths shifted the PCT schedule by a few frames \
+         while preserving the lagging-survivor shape: three survivors within one frame and the \
+         removed target frozen below them)"
     );
     assert!(
         !report

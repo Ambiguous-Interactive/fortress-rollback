@@ -257,7 +257,18 @@ struct CoordinatedDropAttempt<A> {
     phase: CoordinatedDropPhase,
     reports: BTreeMap<u16, DropReport>,
     ready: std::collections::BTreeSet<u16>,
+    /// Ready transcripts accepted after the expected cut digest was established
+    /// by an authority or by independently verified local history.
     ready_transcripts: BTreeMap<u16, (Frame, u64)>,
+    /// Ready transcripts observed before the expected cut digest exists.
+    ///
+    /// Agreement on the selected frame alone does not establish agreement on
+    /// the history at that frame, so a non-authority Ready is retained here and
+    /// does not count toward the quorum. It is promoted only if its digest
+    /// matches the digest later established by an authority or by local
+    /// verification; a mismatching provisional report is discarded. Bounded by
+    /// the participant set.
+    provisional_ready: BTreeMap<u16, (Frame, u64)>,
     committed_acks: std::collections::BTreeSet<u16>,
     cut: Option<Frame>,
     cut_digest: Option<u64>,
@@ -3018,6 +3029,7 @@ impl<T: Config> P2PSession<T> {
             reports,
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: None,
             cut_digest: None,
@@ -3622,6 +3634,7 @@ impl<T: Config> P2PSession<T> {
             reports,
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: None,
             cut_digest: None,
@@ -3893,10 +3906,18 @@ impl<T: Config> P2PSession<T> {
                         }
                     }
                     active.cut = Some(report.cut);
-                    active.cut_digest = Some(report.cut_digest);
+                    // The effective coordinator originated this Ready, so its
+                    // digest is authoritative. It also promotes any matching
+                    // provisional participant transcript.
+                    Self::coordinated_drop_establish_ready_digest(
+                        active,
+                        report.cut,
+                        report.cut_digest,
+                    )?;
                     active
                         .ready_transcripts
                         .insert(report.participant, (report.cut, report.cut_digest));
+                    active.ready.insert(report.participant);
                     // Re-enter Backfill so this node verifies/backfills its own
                     // history and emits Ready at the coordinator's cut.
                     active.phase = CoordinatedDropPhase::Backfill;
@@ -3907,11 +3928,7 @@ impl<T: Config> P2PSession<T> {
                         &active.participants,
                         active.acting_coordinator,
                     );
-                    if active.cut != Some(report.cut)
-                        || active
-                            .cut_digest
-                            .is_some_and(|digest| digest != report.cut_digest)
-                    {
+                    if active.cut != Some(report.cut) {
                         // The deterministic coordinator or the acting
                         // fallback disagreeing with the locked certificate is
                         // a genuine cut conflict; a stray participant's claim
@@ -3925,22 +3942,74 @@ impl<T: Config> P2PSession<T> {
                         }
                         return Err(DropAbortReason::ConflictingHistory);
                     }
-                    if let Some(existing) = active.ready_transcripts.get(&report.participant) {
-                        if *existing != (report.cut, report.cut_digest) {
-                            Self::coordinated_drop_discard_artifact(
-                                "report",
-                                DropAbortReason::ConflictingHistory,
-                            );
-                            return Ok(());
-                        }
-                    } else {
-                        active
-                            .ready_transcripts
-                            .insert(report.participant, (report.cut, report.cut_digest));
-                        relay = true;
+                    match active.cut_digest {
+                        Some(expected) if expected != report.cut_digest => {
+                            if !conflicting_authority {
+                                Self::coordinated_drop_discard_artifact(
+                                    "report",
+                                    DropAbortReason::ConflictingHistory,
+                                );
+                                return Ok(());
+                            }
+                            return Err(DropAbortReason::ConflictingHistory);
+                        },
+                        Some(_) => {
+                            Self::coordinated_drop_promote_provisional_ready(active);
+                            if let Some(existing) =
+                                active.ready_transcripts.get(&report.participant)
+                            {
+                                if *existing != (report.cut, report.cut_digest) {
+                                    Self::coordinated_drop_discard_artifact(
+                                        "report",
+                                        DropAbortReason::ConflictingHistory,
+                                    );
+                                    return Ok(());
+                                }
+                            } else {
+                                active
+                                    .ready_transcripts
+                                    .insert(report.participant, (report.cut, report.cut_digest));
+                                relay = true;
+                            }
+                            active.ready.insert(report.participant);
+                        },
+                        None if conflicting_authority => {
+                            Self::coordinated_drop_establish_ready_digest(
+                                active,
+                                report.cut,
+                                report.cut_digest,
+                            )?;
+                            active
+                                .ready_transcripts
+                                .insert(report.participant, (report.cut, report.cut_digest));
+                            active.ready.insert(report.participant);
+                            relay = true;
+                        },
+                        None => {
+                            // Agreement on the selected frame alone does not
+                            // establish agreement on the history at that
+                            // frame. Keep a non-authority transcript
+                            // provisional until an authority or local
+                            // verification locks the expected digest.
+                            match active.provisional_ready.get(&report.participant) {
+                                Some(existing) if *existing != (report.cut, report.cut_digest) => {
+                                    Self::coordinated_drop_discard_artifact(
+                                        "report",
+                                        DropAbortReason::ConflictingHistory,
+                                    );
+                                    return Ok(());
+                                },
+                                Some(_) => {},
+                                None => {
+                                    active.provisional_ready.insert(
+                                        report.participant,
+                                        (report.cut, report.cut_digest),
+                                    );
+                                    relay = true;
+                                },
+                            }
+                        },
                     }
-                    active.cut_digest.get_or_insert(report.cut_digest);
-                    active.ready.insert(report.participant);
                 }
             },
             DropReportStage::Committed => {
@@ -5234,6 +5303,50 @@ impl<T: Config> P2PSession<T> {
             && now.saturating_duration_since(active.started_at) >= COORDINATED_DROP_FALLBACK_GRACE
     }
 
+    /// Promotes provisional Ready transcripts that match the established cut
+    /// digest and drops reports that agree on the frame but disagree on its
+    /// history. Until this runs, a provisional report never counts toward the
+    /// strict-majority quorum.
+    fn coordinated_drop_promote_provisional_ready(active: &mut CoordinatedDropAttempt<T::Address>) {
+        let (Some(cut), Some(digest)) = (active.cut, active.cut_digest) else {
+            return;
+        };
+        let provisional = std::mem::take(&mut active.provisional_ready);
+        for (participant, (reported_cut, reported_digest)) in provisional {
+            if reported_cut == cut && reported_digest == digest {
+                active
+                    .ready_transcripts
+                    .insert(participant, (reported_cut, reported_digest));
+                active.ready.insert(participant);
+            }
+        }
+    }
+
+    /// Locks the expected cut digest from a Ready authority or from locally
+    /// verified history, then promotes matching provisional transcripts.
+    ///
+    /// Returns whether this call established the digest. A differing digest is
+    /// a genuine conflict with an already locked expectation.
+    fn coordinated_drop_establish_ready_digest(
+        active: &mut CoordinatedDropAttempt<T::Address>,
+        cut: Frame,
+        digest: u64,
+    ) -> Result<bool, DropAbortReason> {
+        if active.cut != Some(cut) {
+            return Err(DropAbortReason::ConflictingHistory);
+        }
+        if let Some(existing) = active.cut_digest {
+            if existing != digest {
+                return Err(DropAbortReason::ConflictingHistory);
+            }
+            Self::coordinated_drop_promote_provisional_ready(active);
+            return Ok(false);
+        }
+        active.cut_digest = Some(digest);
+        Self::coordinated_drop_promote_provisional_ready(active);
+        Ok(true)
+    }
+
     fn coordinated_drop_mark_ready(&mut self) -> Result<(), DropAbortReason> {
         let (operation, participant, targets, cut) = {
             let active = self
@@ -5278,7 +5391,9 @@ impl<T: Config> P2PSession<T> {
         {
             return Err(DropAbortReason::ConflictingHistory);
         }
-        active.cut_digest = Some(digest);
+        // Independently verified local history is an authoritative digest
+        // source: lock it before counting any provisional participant report.
+        Self::coordinated_drop_establish_ready_digest(active, cut, digest)?;
         active.phase = CoordinatedDropPhase::Ready;
         active.ready.insert(participant);
         active.ready_transcripts.insert(participant, (cut, digest));
@@ -5917,14 +6032,17 @@ impl<T: Config> P2PSession<T> {
 
         let deferred_ready_error = self.coordinated_drop.active.as_mut().and_then(|active| {
             let cut = active.cut?;
+            let expected = active.cut_digest?;
             for (&participant, &(reported_cut, digest)) in &active.ready_transcripts {
-                if reported_cut != cut
-                    || active.cut_digest.is_some_and(|existing| existing != digest)
-                {
+                if reported_cut != cut {
                     return Some(DropAbortReason::ConflictingHistory);
                 }
-                active.cut_digest.get_or_insert(digest);
-                active.ready.insert(participant);
+                // Only transcripts matching the established digest count toward
+                // the quorum. A disparate claim is a peer artifact, not a
+                // conflict with an authority-established expectation.
+                if digest == expected {
+                    active.ready.insert(participant);
+                }
             }
             None
         });
@@ -11130,7 +11248,11 @@ impl<T: Config> P2PSession<T> {
     /// until the two-second operation deadline for a late announcement before
     /// failing closed. Every
     /// installed value is still verified against the certified cut digest
-    /// before any participant reports ready.
+    /// before any participant reports ready. A Ready report observed before
+    /// that digest is established is provisional: it does not count toward the
+    /// quorum until the operation authority or the receiver's independently
+    /// verified local history locks the digest, after which only matching
+    /// transcripts count.
     /// Only the resulting all-survivor certificate commits the operation.
     /// Participant loss, missing/conflicting history, resource refusal, or a
     /// two-second operation timeout fails closed by returning the session to
@@ -11291,6 +11413,11 @@ impl<T: Config> P2PSession<T> {
     ///   is already marked disconnected — either by a previous `remove_player`
     ///   call, by auto-removal under [`DisconnectBehavior::ContinueWithout`],
     ///   or by a previous explicit [`Self::disconnect_player`] call.
+    /// - Returns [`InvalidRequestKind::WrongProtocolState`] if the session has
+    ///   already failed closed with a latched confirmed ceiling. A terminal
+    ///   session rejects a new local removal before it can mutate membership or
+    ///   create an attempt; an acknowledgement for a certificate that was
+    ///   already issued still follows its normal path.
     /// - Returns a [`FortressError::InternalErrorStructured`] (e.g.
     ///   [`InternalErrorKind::DisconnectStatusNotFound`] or
     ///   [`InternalErrorKind::IndexOutOfBounds`]) if an internal invariant is
@@ -11301,11 +11428,22 @@ impl<T: Config> P2PSession<T> {
     /// [`InvalidRequestKind::DisconnectInvalidHandle`]: crate::error::InvalidRequestKind::DisconnectInvalidHandle
     /// [`InvalidRequestKind::DisconnectLocalPlayer`]: crate::error::InvalidRequestKind::DisconnectLocalPlayer
     /// [`InvalidRequestKind::PlayerAlreadyRemoved`]: crate::error::InvalidRequestKind::PlayerAlreadyRemoved
+    /// [`InvalidRequestKind::WrongProtocolState`]: crate::error::InvalidRequestKind::WrongProtocolState
     /// [`InternalErrorKind::DisconnectStatusNotFound`]: crate::error::InternalErrorKind::DisconnectStatusNotFound
     /// [`InternalErrorKind::IndexOutOfBounds`]: crate::error::InternalErrorKind::IndexOutOfBounds
     #[must_use = "remove_player errors should be handled"]
     pub fn remove_player(&mut self, player_handle: PlayerHandle) -> Result<(), FortressError> {
         let _violation_scope = self.scoped_violation_observer();
+        // A latched confirmed ceiling is terminal. Reject the intent before the
+        // hot-join close-first path or an attempt can mutate membership state.
+        // Ordinary initial synchronization is not halted and remains admitted.
+        if self.halt_confirmed_ceiling.is_some() {
+            return Err(InvalidRequestKind::WrongProtocolState {
+                current_state: "Halted",
+                expected_state: "Running",
+            }
+            .into());
+        }
         let player_type = self.player_reg.handles.get(&player_handle).ok_or(
             InvalidRequestKind::DisconnectInvalidHandle {
                 handle: player_handle,
@@ -16359,6 +16497,11 @@ impl<T: Config> P2PSession<T> {
                                 self.enter_fail_closed_disconnect_state_at(
                                     confirmed_before_disconnect,
                                 );
+                                return;
+                            }
+                            // A terminal session already has a latched ceiling;
+                            // further timeout observations cannot start work.
+                            if self.halt_confirmed_ceiling.is_some() {
                                 return;
                             }
                             if let Err(error) = self.begin_coordinated_drop_with_origin(
@@ -22579,6 +22722,7 @@ mod tests {
             reports: BTreeMap::new(),
             ready,
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
             cut_digest: Some(0),
@@ -22757,6 +22901,7 @@ mod tests {
             reports: BTreeMap::new(),
             ready,
             ready_transcripts,
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
             cut_digest: Some(0),
@@ -22862,6 +23007,7 @@ mod tests {
             reports,
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
             cut_digest: None,
@@ -23059,6 +23205,48 @@ mod tests {
             sent_message_count(&session, crate::metrics::MessageKind::DropReport),
             before,
             "a failed-closed session must not emit new witness reports"
+        );
+    }
+
+    #[test]
+    fn halted_session_rejects_a_new_local_removal_before_mutating_state() {
+        let mut session = five_player_majority_session(PlayerHandle::new(0));
+        session.enter_fail_closed_disconnect_state_at(Frame::new(3));
+        let prepare_sends = sent_message_count(&session, crate::metrics::MessageKind::DropPrepare);
+        assert_eq!(session.halt_confirmed_ceiling, Some(Frame::new(3)));
+
+        assert_eq!(
+            session.remove_player(PlayerHandle::new(1)),
+            Err(FortressError::InvalidRequestStructured {
+                kind: InvalidRequestKind::WrongProtocolState {
+                    current_state: "Halted",
+                    expected_state: "Running",
+                },
+            }),
+            "a terminal session must reject a new coordinated removal"
+        );
+        assert!(
+            session.coordinated_drop.active.is_none(),
+            "the rejected removal must not create an attempt"
+        );
+        assert!(
+            session.coordinated_drop.queued.is_empty()
+                && session.coordinated_drop.queued_automatic.is_empty(),
+            "the rejected removal must not enqueue an intent"
+        );
+        assert!(
+            !session.local_connect_status[1].disconnected,
+            "the rejected removal must not mutate membership"
+        );
+        assert_eq!(
+            sent_message_count(&session, crate::metrics::MessageKind::DropPrepare),
+            prepare_sends,
+            "the rejected removal must not emit its initial control messages"
+        );
+        assert_eq!(
+            session.halt_confirmed_ceiling,
+            Some(Frame::new(3)),
+            "rejecting the removal must not change the terminal ceiling"
         );
     }
 
@@ -24385,6 +24573,7 @@ mod tests {
             )]),
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
             cut_digest: None,
@@ -24516,6 +24705,7 @@ mod tests {
             reports,
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
             cut_digest: None,
@@ -24700,6 +24890,7 @@ mod tests {
             reports,
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
             cut_digest: None,
@@ -24897,6 +25088,7 @@ mod tests {
             ]),
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
             cut_digest: None,
@@ -25842,6 +26034,7 @@ mod tests {
             reports: BTreeMap::new(),
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: None,
             cut_digest: None,
@@ -26103,6 +26296,7 @@ mod tests {
                 reports: BTreeMap::new(),
                 ready: std::collections::BTreeSet::new(),
                 ready_transcripts: BTreeMap::new(),
+                provisional_ready: BTreeMap::new(),
                 committed_acks: std::collections::BTreeSet::new(),
                 cut: None,
                 cut_digest: None,
@@ -26297,6 +26491,7 @@ mod tests {
             reports: BTreeMap::new(),
             ready,
             ready_transcripts,
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
             cut_digest: Some(0),
@@ -26439,6 +26634,7 @@ mod tests {
             reports: BTreeMap::new(),
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
             cut_digest: Some(cut_digest),
@@ -26697,6 +26893,7 @@ mod tests {
             reports: BTreeMap::new(),
             ready,
             ready_transcripts,
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
             cut_digest: Some(0),
@@ -28699,6 +28896,123 @@ mod tests {
     }
 
     #[test]
+    fn non_authority_ready_cannot_lock_the_digest_or_count() {
+        let mut session = five_player_majority_session(PlayerHandle::new(2));
+        session
+            .begin_coordinated_drop(PlayerHandle::new(4))
+            .expect("begin drop");
+        let operation = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .expect("active")
+            .operation;
+        session
+            .coordinated_drop_accept_report_from(inventory_cut_report(operation, 0, 10), Some(0))
+            .expect("coordinator cut announcement locks the cut");
+
+        session
+            .coordinated_drop_accept_report_from(ready_report(operation, 3, 10, 7), Some(3))
+            .expect("a pre-digest participant Ready is provisional");
+        let active = session.coordinated_drop.active.as_ref().expect("active");
+        assert_eq!(
+            active.cut_digest, None,
+            "a non-authority Ready must not establish the expected digest"
+        );
+        assert!(
+            !active.ready.contains(&3),
+            "a provisional Ready must not count toward the quorum"
+        );
+
+        session
+            .coordinated_drop_accept_report_from(ready_report(operation, 0, 10, 8), Some(0))
+            .expect("the coordinator's Ready establishes the digest");
+        let active = session.coordinated_drop.active.as_ref().expect("active");
+        assert_eq!(active.cut_digest, Some(8));
+        assert!(active.ready.contains(&0));
+        assert!(
+            !active.ready.contains(&3),
+            "a provisional digest that disagrees with authority must not be promoted"
+        );
+
+        session
+            .coordinated_drop_accept_report_from(ready_report(operation, 3, 10, 8), Some(3))
+            .expect("a matching retry is accepted after the digest is established");
+        let active = session.coordinated_drop.active.as_ref().expect("active");
+        assert!(active.ready.contains(&3));
+    }
+
+    #[test]
+    fn matching_provisional_ready_is_promoted_when_authority_locks_the_digest() {
+        let mut session = five_player_majority_session(PlayerHandle::new(2));
+        session
+            .begin_coordinated_drop(PlayerHandle::new(4))
+            .expect("begin drop");
+        let operation = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .expect("active")
+            .operation;
+        session
+            .coordinated_drop_accept_report_from(inventory_cut_report(operation, 0, 10), Some(0))
+            .expect("coordinator cut announcement locks the cut");
+        session
+            .coordinated_drop_accept_report_from(ready_report(operation, 3, 10, 7), Some(3))
+            .expect("participant Ready arrives before the authority digest");
+
+        session
+            .coordinated_drop_accept_report_from(ready_report(operation, 0, 10, 7), Some(0))
+            .expect("the coordinator's matching Ready locks the digest");
+        let active = session.coordinated_drop.active.as_ref().expect("active");
+        assert_eq!(active.cut_digest, Some(7));
+        assert!(
+            active.ready.contains(&0) && active.ready.contains(&3),
+            "the matching provisional Ready is promoted once authority establishes the digest"
+        );
+    }
+
+    #[test]
+    fn local_history_locks_the_digest_despite_a_conflicting_provisional_ready() {
+        let mut session = five_player_majority_session(PlayerHandle::new(0));
+        let (operation, cut) = staged_post_inventory_backfill_attempt(&mut session);
+        let targets = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .expect("active")
+            .targets
+            .clone();
+        let missing: Vec<_> = (3..=5_u8)
+            .map(|value| PlayerInput::new(Frame::new(i32::from(value)), value))
+            .collect();
+        session
+            .sync_layer
+            .install_missing_backfill(PlayerHandle::new(3), &missing)
+            .expect("local history becomes complete");
+        let digest = session
+            .coordinated_drop_cut_digest(&targets, cut)
+            .expect("local cut digest");
+        session
+            .coordinated_drop_accept_report_from(
+                ready_report(operation, 1, cut.as_i32(), digest.wrapping_add(1)),
+                Some(1),
+            )
+            .expect("the conflicting participant Ready is provisional");
+
+        session
+            .coordinated_drop_mark_ready()
+            .expect("independently verified local history establishes the digest");
+        let active = session.coordinated_drop.active.as_ref().expect("active");
+        assert_eq!(active.cut_digest, Some(digest));
+        assert!(active.ready.contains(&0));
+        assert!(
+            !active.ready.contains(&1),
+            "the conflicting provisional digest must not count"
+        );
+    }
+
+    #[test]
     fn ready_conflicts_are_authority_scoped() {
         let mut session = five_player_majority_session(PlayerHandle::new(2));
         session
@@ -29414,6 +29728,7 @@ mod tests {
             reports: BTreeMap::new(),
             ready: std::collections::BTreeSet::new(),
             ready_transcripts: BTreeMap::new(),
+            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(0)),
             cut_digest: Some(0),

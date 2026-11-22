@@ -94,7 +94,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   authority (the deterministic coordinator, or the fallback after the failover grace) can abort an
   admitted attempt; a non-authority participant's abort no longer fail-closes the whole session,
   so one faulty endpoint cannot halt a live match; a malformed backfill chunk is
-  rejected before it can reset or clear an accepted donor grid; the strict-majority ready quorum
+  rejected before it can reset or clear an accepted donor grid; a non-authority Ready report is
+  provisional until the operation authority or independently verified local history establishes
+  the expected cut digest, so it can neither lock a divergent digest nor count toward the quorum;
+  a new local removal on a session whose confirmed ceiling is already latched is rejected with
+  `WrongProtocolState` before any membership or attempt mutation. The strict-majority ready quorum
   and shared participant set still decide the certificate, so a single faulty or hostile peer can
   only decline to contribute. A deterministic coordinator (or acting fallback) that conflicts with an already
   locked cut or digest still fails the session closed, as do local invariant or allocation
