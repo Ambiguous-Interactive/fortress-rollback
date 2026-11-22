@@ -3359,11 +3359,11 @@ mod tests {
         // `encoded_len` matches the serialized length exactly for each.
         assert_eq!(tiny.encoded_len(), encode(&tiny).unwrap().len());
         assert_eq!(heavy.encoded_len(), encode(&heavy).unwrap().len());
+        let heavy_len = heavy.encoded_len();
+        let tiny_len = tiny.encoded_len();
         assert!(
-            heavy.encoded_len() > tiny.encoded_len() + 200,
-            "loaded Input must dwarf KeepAlive on the wire ({} vs {})",
-            heavy.encoded_len(),
-            tiny.encoded_len()
+            heavy_len > tiny_len + 200,
+            "loaded Input must dwarf KeepAlive on the wire"
         );
     }
 
