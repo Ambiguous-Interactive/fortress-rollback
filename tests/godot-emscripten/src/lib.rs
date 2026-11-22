@@ -50,14 +50,16 @@ struct SocketHealth {
     sends: Cell<u64>,
 }
 
+type Inbox = Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>;
+
 struct MemorySocket {
     local_address: u8,
     peer_address: u8,
     /// Wire-encoded datagrams. Delivering bytes (not `Message` values) runs the
     /// real encode/decode codec under Emscripten, so a width or layout
     /// regression in the network protocol fails on the 32-bit target.
-    inbox: Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
-    peer_inbox: Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
+    inbox: Inbox,
+    peer_inbox: Inbox,
     health: Rc<SocketHealth>,
 }
 
@@ -121,8 +123,8 @@ struct SessionPair {
     first: P2PSession<ProbeConfig>,
     second: P2PSession<ProbeConfig>,
     health: Rc<SocketHealth>,
-    first_inbox: Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
-    second_inbox: Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
+    first_inbox: Inbox,
+    second_inbox: Inbox,
 }
 
 /// Multi-endpoint wire-encoded mesh used by the certified-snapshot probe.
@@ -210,13 +212,7 @@ fn create_socket_mesh(addresses: &[u8]) -> (Vec<MeshSocket>, Rc<SocketHealth>) {
     (sockets, health)
 }
 
-fn create_socket_pair() -> (
-    MemorySocket,
-    MemorySocket,
-    Rc<SocketHealth>,
-    Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
-    Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
-) {
+fn create_socket_pair() -> (MemorySocket, MemorySocket, Rc<SocketHealth>, Inbox, Inbox) {
     let first_inbox = Rc::new(RefCell::new(VecDeque::new()));
     let second_inbox = Rc::new(RefCell::new(VecDeque::new()));
     let health = Rc::new(SocketHealth::default());
