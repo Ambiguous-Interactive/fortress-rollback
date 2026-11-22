@@ -1,362 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795308570016,
+  "lastUpdate": 1795320702139,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Informational Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "e4d48fb0224f88d96c98facabb80ed65f67e5f92",
-          "message": "fix: bound checksum history, retain rollback-window inputs, single-pass RLE (#427)\n\n## Description\n\nThree independently reproduced issues from a full\ncorrectness/performance sweep, aggregated into one PR.\n\n### 1. Peer-controlled checksum history could grow without bound\n\n`UdpProtocol::on_checksum_report` bounded `pending_checksums` only\nrelative to the incoming, peer-controlled `body.frame`. A strictly\ndescending `ChecksumReport` stream made the `retain` keep every existing\nentry, so each legal 32-byte datagram permanently added a `BTreeMap`\nnode — with desync detection off, the protocol heuristic was the only\nbound, and with detection on the whole map was scanned every\n`advance_frame`.\n\nRed evidence (new test before the fix):\n\n```text\nthread '...checksum_history_stays_bounded_for_descending_frame_reports' panicked:\ndescending reports grew checksum history to 64 (cap 8)\n```\n\nFix: keep the frame-relative retain as the in-order fast path and add an\nunconditional post-insert count cap that drops the lowest frames. Tests\ncover `DesyncDetection::On`/`Off`, `max_checksum_history` 1 and 8, exact\nsaturation, the highest frame surviving, and arbitrary (including\ndescending) report order in the existing proptest.\n\n### 2. Confirmation discarded inputs a clamped rollback still needs\n\n`SyncLayer::set_last_confirmed_frame` discarded every input below\n`confirmed - 1`, while `P2PSession::adjust_gamestate` clamps a\ngossip-lowered disconnect target UP to `rollback_window_floor()`\n(`current - max_prediction`). When the session was not pinned at the\nprediction limit, the re-simulation requested a frame the queue had just\ndiscarded and returned `SynchronizedInputsFailed`; `disconnect_frame`\nstayed armed, so every later `advance_frame` failed too.\n\nRed evidence (new end-to-end test: `current = 12`, `max_prediction = 4`,\nlowered target 2):\n\n```text\npanicked at src/sessions/p2p_session.rs: a clamped disconnect rollback must stay live:\nInternalErrorStructured { kind: SynchronizedInputsFailed { frame: Frame(8) } }\n```\n\nFix: keep normal confirmation discarding through `confirmed - 1`, and\nwhen the rollback target is actually clamped below the prediction-window\nfloor, raise it to `SyncLayer::oldest_retained_input_frame()` — the\nnewest of every live queue's oldest retained confirmed input. In sparse\nmode it advances to the first frame that also has a loadable saved\ncheckpoint. Empty queues (a peer dropped before its first input, or a\nhot-join reactivated slot) do not constrain that floor; they are served\nby frozen/default or reactivation-floor semantics. The rollback then\nre-simulates from the oldest available history and clears\n`disconnect_frame`. The sparse checkpoint walk only commits to a\nloadable frame strictly before `current_frame`; if none exists, the\nrollback fails closed rather than silently clearing the armed\ndisconnect.\n\nAn initial attempt that globally retained the window floor caused a\ndeterministic hot-join participant-loss regression (`Running` vs\n`Synchronizing` in `npeer_no_desync_battery_survivor_drop_variants`), so\nthat approach was reverted before this PR head. The new test verifies\ntwo successful advances, a cleared `disconnect_frame`, and a real\nre-simulation;\n`incomplete_resimulation_does_not_record_completed_rollback` now forces\na genuinely missing-input failure via\n`truncate_input_queues_for_test(0)`.\n\n### 3. Single-pass RLE encoding for small network buffers\n\n`rle::try_encode` scanned every buffer twice (exact length pre-scan,\nthen write). Buffers up to 4 KiB now reserve a conservative fallible\ncapacity (`n + ceil(n/2) + 16`) and encode in one pass; larger buffers\nkeep exact two-pass sizing. The write loop is shared, so encoded bytes\nare unchanged. Empty input still returns without allocating. A new\nproptest asserts the capacity bound covers every output up to 4 KiB.\n\nMeasured with `cargo bench --bench compression -- --quick 'RLE\nencode|Compression pipeline'` (criterion comparison against the saved\npre-change baseline):\n\n| Benchmark | Before | After | Delta |\n| --- | ---: | ---: | ---: |\n| `RLE encode/random/256` | ~410 ns | 118 ns | −71% |\n| `RLE encode/zeros/256` | ~293 ns | 103 ns | −64% |\n| `RLE encode/random/64` | ~138 ns | 59 ns | −58% |\n| `RLE encode/random/16` | ~64 ns | 32 ns | −50% |\n| `Compression pipeline/fighting_encode_8b/32` | ~549 ns | 419 ns | −24%\n|\n| `Compression pipeline/active_encode_8b/32` | ~333 ns | 270 ns | −18% |\n\nNo changelog entry for the RLE-only performance change: the enforced\nunreleased-code rule rejects non-breaking `Changed` entries while\n`[Unreleased]` has an `Added` section. The two correctness fixes carry\n`**Pre-existing:**` Fixed entries.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**:\n  - No `unwrap()` in production code\n  - No `expect()` in production code\n  - No `panic!()` or `todo!()`\n  - All fallible operations return `Result`\n- [x] I have added tests that prove each fix is effective\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (`ProtocolConfig`\nrustdoc, TLA abstraction note, defensive-programming skill rule)\n- [x] I have added `CHANGELOG.md` entries for the user-facing fixes\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `checksum_history_stays_bounded_for_descending_frame_reports` — red\nbefore the fix, covers both detection modes and cap 1/8.\n- `prop_checksum_history_bounded` — now feeds arbitrary report order and\nasserts the cap after every insert.\n-\n`gossip_lowered_rollback_target_resimulates_within_the_rollback_window`\n— red before the fix; two successful advances, a cleared armed rollback,\nand a real re-simulation.\n- `npeer_no_desync_battery_survivor_drop_variants --features hot-join` —\nfail-closed behavior preserved after the final fix.\n- `oldest_retained_input_frame_ignores_empty_queues` —\nempty/dropped/reactivated queues do not collapse the shared floor.\n- `sparse_rollback_without_an_in_window_checkpoint_fails_closed` — no\nsilent skip when sparse has no loadable checkpoint.\n- `incomplete_resimulation_does_not_record_completed_rollback` — forces\nmissing queue state instead of relying on the over-discard.\n- `prop_single_pass_capacity_bounds_output` — one-pass capacity always\ncovers encoded output for arbitrary inputs up to 4 KiB.\n\n**Manual testing performed:**\n\n- Three fresh-seed nightly fleet shards\n(`FORTRESS_SIM_SEED_BASE=20261115`, shards 0/1/4; 375 schedules /\n1,875,000 steps): all green, zero oracle failures.\n- 150-second libFuzzer runs of `fuzz_protocol_input_packet` and\n`fuzz_message_parsing`: exit 0, no crash artifacts.\n- `cargo tfull` — 3203 passed, 75 skipped; full `--features hot-join`\nsuite — 3492 passed, 76 skipped; hot-join survivor-drop battery passes.\n- `cargo nextest run -p fortress-rollback --lib network::protocol` — 258\npassed; `--lib rle` — 88 passed.\n- `cargo nextest run --workspace --features tokio,json -E\n'test(allocation_contract)'` — pass.\n- `python3 scripts/ci/agent-preflight.py --full --auto-fix` — all checks\npassed.\n\n## Related Issues\n\nNone; discovered by the deep-analysis sweep of an otherwise empty queue.\n\n---",
-          "timestamp": "2026-11-15T20:26:47Z",
-          "tree_id": "ded564e095261b75f4afca62165d49529f162a62",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/e4d48fb0224f88d96c98facabb80ed65f67e5f92"
-        },
-        "date": 1794775160855,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Frame/new",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_null",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_valid",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/10",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/100",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1000",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/4",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/8",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/16",
-            "value": 23,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/64",
-            "value": 33,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/256",
-            "value": 85,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/4",
-            "value": 22,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/8",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/16",
-            "value": 26,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/64",
-            "value": 40,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/256",
-            "value": 105,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/4",
-            "value": 21,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/8",
-            "value": 21,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/16",
-            "value": 21,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/64",
-            "value": 34,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/256",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/8",
-            "value": 68,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/8",
-            "value": 74,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/8",
-            "value": 99,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/16",
-            "value": 87,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/16",
-            "value": 132,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/16",
-            "value": 203,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/32",
-            "value": 153,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/32",
-            "value": 235,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/32",
-            "value": 374,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/8",
-            "value": 84,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/8",
-            "value": 113,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/8",
-            "value": 127,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/16",
-            "value": 145,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/16",
-            "value": 184,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/16",
-            "value": 262,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/32",
-            "value": 266,
-            "range": "± 10",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/32",
-            "value": 337,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/32",
-            "value": 518,
-            "range": "± 37",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/idle",
-            "value": 258,
-            "range": "± 13",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/active",
-            "value": 323,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/fighting",
-            "value": 464,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/analog",
-            "value": 584,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/2",
-            "value": 82,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/4",
-            "value": 111,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/2",
-            "value": 345,
-            "range": "± 14",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/4",
-            "value": 568,
-            "range": "± 13",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/7",
-            "value": 771,
-            "range": "± 62",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "P2PSession/metrics",
-            "value": 49,
-            "range": "± 13",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message/encoded_len",
-            "value": 1,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=2",
-            "value": 20,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=4",
-            "value": 70,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=8",
-            "value": 262,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=16",
-            "value": 1031,
-            "range": "± 5",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -18167,6 +17813,372 @@ window.BENCHMARK_DATA = {
             "name": "H-16P advance_frame/warmed_mesh/N=16",
             "value": 206268,
             "range": "± 702",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "b3fcbbb5df36f42a5d1505c871ca5ae163d92d09",
+          "message": "fix: scope terminal epochs by generation and adopt a bounded fallback epoch (#525)\n\n## Description\n\nFollow-up to the #510 consensus study and the #519 terminal-epoch work.\nTwo correctness/liveness defects in the v5 epoch guard were found during\nthe deep analysis:\n\n1. **A one-ahead generation swallowed the current era's epoch.**\n`terminal_epochs` was keyed only by target handles and stored one\n`(coordinator, coordinator_generation, next)`. A participant that\naccepted a one-ahead generation during a rejoin window then admitted a\ncurrent-generation operation; `record_epoch` returned `Ok(())` without\nconsuming the current era's epoch. The current generation's guard was\ntherefore lost while the one-ahead entry remained.\n2. **A fresh acting fallback could not learn a legitimate epoch.** A\nfallback that hot-joined after the coordinator's earlier removals has no\nlocal epoch state for that coordinator generation. It rejected the\nrequester's legitimate epoch with `Superseded(0)`, the requester kept\nthe higher value, and the removal timed out and failed closed.\n\n### Fix\n\n- Key epoch spaces by `(canonical target handles, coordinator,\ncoordinator generation)`. The current era and the one-ahead era coexist;\ninserting a new era prunes dead coordinators/generations, so the map\nremains at most two eras per target set.\n- An acting fallback with **no state** for the exact generation adopts\nthe retained candidate's first epoch up to an inclusive `1,000,000`\nbound. An unbounded future proposal is still a discarded peer artifact,\npreserving the anti-DoS rule; the fallback never mints a certificate\nfrom the epoch alone.\n- The deterministic coordinator still requires exact equality and still\nrejects future peer proposals\n(`authority_rejects_a_future_epoch_without_consuming_it` remains green).\n\nThis is local admission state, not agreed state.\n`AtMostOneCommittedCut`, the strict-majority ready quorum, and the TLA\nmodels are unchanged; the formal spec records the bounded fallback\nadoption.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature\n- [ ] 💥 Breaking change\n- [ ] 📚 Documentation\n- [ ] ♻️ Refactor\n- [x] 🧪 Test\n- [ ] 🔧 CI/Build\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove the fix is effective\n- [x] `cargo fmt --all -- --check && cargo clippy --workspace\n--all-targets --features tokio,json` are clean\n- [x] `cargo nextest run` passes\n\n### If Applicable\n\n- [x] Documentation updated (`CHANGELOG.md`,\n`docs/specs/formal-spec.md`, wiki mirror)\n- [x] `CHANGELOG.md` entry folded into the existing Unreleased\nprotocol-v5 `Added` entry\n- [x] No new compiler warnings\n\n## Testing\n\n**Red evidence (pre-fix code):**\n\n| Test | Result |\n| --- | --- |\n| `current_era_epoch_is_recorded_when_a_one_ahead_era_is_stored` |\n**FAIL** — `epoch_next(0, 0)` returned 0, expected 1 |\n| `fallback_admits_a_bounded_first_epoch_without_local_state` | **FAIL**\n— active attempt was `None`; fallback rejected epoch 3 with\n`Superseded(0)` |\n\n**Tests added:**\n\n- `current_era_epoch_is_recorded_when_a_one_ahead_era_is_stored`\n- `fallback_admits_a_bounded_first_epoch_without_local_state` (drives\n`drive_coordinator_fallback`)\n- `fallback_adopts_the_maximum_bounded_first_epoch` (inclusive-boundary\nguard)\n- `fallback_rejects_an_unbounded_first_epoch_without_local_state`\n(anti-DoS guard)\n\n**Green evidence:**\n\n| Check | Result |\n| --- | --- |\n| `cargo tfull` | **3,740 passed, 77 skipped, 0 failed** |\n| `cargo nextest run -p fortress-rollback --lib --features\ntokio,json,hot-join` | **2,322 passed, 0 failed** |\n| Targeted epoch/abort set | 106 passed |\n| `cargo clippy --workspace --all-targets --features tokio,json` | clean\n|\n| `cargo fmt --all -- --check` | pass |\n| `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix` |\nall checks pass |\n| aarch64 QEMU new tests | 5/5 pass |\n| i686 new tests | 5/5 pass |\n| Targeted `cargo mutants` on the touched epoch helpers | **22 caught, 8\nunviable, 0 missed** |\n| `python3 scripts/docs/check-links.py`, wiki consistency, changelog\nrule | clean |\n\n## Risks and rollback\n\n- The adoption bound is a liveness/anti-DoS trade-off: a peer can force\none bounded epoch advance during a fallback takeover, but cannot exhaust\n`u32` or mint a certificate. A session with more than 1,000,000 removals\nfor one target set would reject a larger first epoch; that is far\noutside the supported envelope and remains fail-closed.\n- No wire format change. Roll back by reverting this PR; the previous\nsingle-entry behavior returns.\n- Epoch state is still local, not imported by hot-join. The fallback\nadoption covers the fresh-joiner case; a participant that missed every\nartifact still times out and fails closed, as documented.\n\n## Related Issues\n\n- Follow-up to #519 / #510\n- The #510 study records why the protocol stays CP.",
+          "timestamp": "2026-11-22T03:58:59Z",
+          "tree_id": "f6c32bdeaf297d5bfb8fbc3e61d0c276623ed2fc",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/b3fcbbb5df36f42a5d1505c871ca5ae163d92d09"
+        },
+        "date": 1795320702022,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Frame/new",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_null",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_valid",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/10",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/100",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1000",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/4",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/8",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/16",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/64",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/256",
+            "value": 119,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/4",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/8",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/16",
+            "value": 32,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/64",
+            "value": 44,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/256",
+            "value": 128,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/4",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/8",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/16",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/64",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/256",
+            "value": 25,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/8",
+            "value": 76,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/8",
+            "value": 98,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/8",
+            "value": 129,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/16",
+            "value": 124,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/16",
+            "value": 176,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/16",
+            "value": 263,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/32",
+            "value": 226,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/32",
+            "value": 330,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/32",
+            "value": 505,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/8",
+            "value": 106,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/8",
+            "value": 128,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/8",
+            "value": 164,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/16",
+            "value": 186,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/16",
+            "value": 260,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/16",
+            "value": 353,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/32",
+            "value": 336,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/32",
+            "value": 428,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/32",
+            "value": 613,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/idle",
+            "value": 288,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/active",
+            "value": 384,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/fighting",
+            "value": 538,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/analog",
+            "value": 681,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/2",
+            "value": 87,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/4",
+            "value": 114,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/2",
+            "value": 589,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/4",
+            "value": 1013,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/7",
+            "value": 1536,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "P2PSession/metrics",
+            "value": 28,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message/encoded_len",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=2",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=4",
+            "value": 72,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=8",
+            "value": 253,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=16",
+            "value": 882,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=8",
+            "value": 44836,
+            "range": "± 205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=16",
+            "value": 209768,
+            "range": "± 4939",
             "unit": "ns/iter"
           }
         ]
