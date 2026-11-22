@@ -522,7 +522,7 @@ MessageBody =
     | InputAck { ack_frame: Frame }
     | QualityReport { frame_advantage: i16, ping: u128 }
     | QualityReply { pong: u128 }
-    | ChecksumReport { checksum: u128, frame: Frame }
+    | ChecksumReport { checksum: u128, frame: Frame, basis_token: u64 }
     | KeepAlive
     | FloorRequest { round_seq: u32 }                    -- floor-round protocol (N>=4 double-failure-relay convergence)
     | FloorReply { round_seq: u32, floors: Vec<Frame> }  -- relay's per-slot pessimistic floors
@@ -728,7 +728,7 @@ coordinator-generation rules would reject, and a commit still requires the
 strict-majority ready quorum. `AtMostOneCommittedCut` is therefore preserved
 without a new model. The guard is pinned by the deterministic eviction/replay
 tests, the reactivation and coordinator-generation freshness tests, and the
-`wire_golden_v5` exact-byte fixtures; the epoch is scoped to the coordinator
+`wire_golden_v6` exact-byte fixtures; the epoch is scoped to the coordinator
 identity, so a new coordinator generation or a hot-join authority change starts
 a fresh space rather than importing agreed state. A fallback that has no local
 state for the coordinator generation (for example after hot-joining) may adopt
@@ -812,7 +812,7 @@ implementation/test obligations.
 | Graceful-drop barrier model | TLA+ | ✅ Implemented (`specs/tla/CoordinatedPeerDrop.tla`) |
 | Coordinated-drop coordinator failover | TLA+ | ✅ Implemented (`specs/tla/CoordinatorFailover.tla` + competing-cut safety companion) |
 | Coordinated-drop split-view participant sets | TLA+ | ✅ Implemented (`specs/tla/CoordinatorSplitView.tla` + manual local-view demo-fail) |
-| Coordinated-drop terminal-epoch replay guard | Rust tests + exact-byte goldens | ✅ Implemented (`src/sessions/p2p_session.rs`, `src/network/wire_golden_v5.rs`) |
+| Coordinated-drop terminal-epoch replay guard | Rust tests + exact-byte goldens | ✅ Implemented (`src/sessions/p2p_session.rs`, `src/network/wire_golden_v6.rs`) |
 
 ---
 
@@ -820,6 +820,7 @@ implementation/test obligations.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.3     | 2026-11-22 | Documented the protocol-v6 checksum basis token, which keeps delayed pre-rewrite reports incomparable with a recomputed basis |
 | 1.2     | 2026-11-21 | Documented the protocol-v5 terminal-attempt epoch admission guard and why it preserves `AtMostOneCommittedCut` |
 | 1.1     | 2026-07-12 | Added the coordinated graceful-drop safety model and D14 mutation gate |
 | 1.0     | 2025-12-06 | Complete specification with invariants, components, protocol |

@@ -51,7 +51,7 @@ pub const EXPECTED_DIGEST: u128 = 0x56cc_01bd_3e28_a54e_0956_a2fc_e302_6d0b;
 /// `wasm32-unknown-unknown` and Godot `wasm32-unknown-emscripten` probes, so a
 /// width, layout, or endianness change in the message codec fails where the
 /// target actually executes it.
-pub const EXPECTED_WIRE_CODEC_DIGEST: u64 = 1_284_801_995_974_345_814;
+pub const EXPECTED_WIRE_CODEC_DIGEST: u64 = 4_708_735_982_393_657_865;
 
 /// Returns whether this target's wire codec matches the pinned digest.
 #[must_use]
@@ -65,7 +65,7 @@ pub fn check_wire_codec_digest() -> bool {
 /// feature do not change the core digest. The browser, Godot/Emscripten, and
 /// wasip1 probes assert this when they exercise hot-join support.
 #[cfg(feature = "hot-join")]
-pub const EXPECTED_WIRE_CODEC_DIGEST_HOT_JOIN: u64 = 0xbed8_c21a_566d_d757;
+pub const EXPECTED_WIRE_CODEC_DIGEST_HOT_JOIN: u64 = 16_224_853_170_472_705_792;
 
 /// Returns whether this target's hot-join wire codec matches the pinned digest.
 #[cfg(feature = "hot-join")]

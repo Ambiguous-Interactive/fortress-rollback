@@ -43,16 +43,16 @@ use std::fmt;
 use std::hash::Hasher as _;
 use std::io::{self, Write};
 
+#[cfg(feature = "hot-join")]
+use crate::network::messages::{
+    ChecksumBasis, JoinAborted, JoinCommitted, JoinRequest, ReactivateSlot, ReactivateSlotAck,
+    StateSnapshot, StateSnapshotAck, MAX_CHECKSUM_REWRITE_EVENTS,
+};
 use crate::network::messages::{
     ChecksumReport, ConnectionStatus, DropAbort, DropAbortReason, DropBackfill, DropCommit,
     DropOperationId, DropPrepare, DropReceipt, DropReport, DropReportStage, DropTarget, FloorReply,
     FloorRequest, Goodbye, Input, InputAck, Message, MessageBody, MessageHeader, QualityReply,
     QualityReport, SessionConfigBlock, SyncReply, SyncRequest,
-};
-#[cfg(feature = "hot-join")]
-use crate::network::messages::{
-    JoinAborted, JoinCommitted, JoinRequest, ReactivateSlot, ReactivateSlotAck, StateSnapshot,
-    StateSnapshotAck,
 };
 use crate::Frame;
 
@@ -225,6 +225,7 @@ pub fn wire_codec_digest_hot_join() -> u64 {
         ],
         certified_dropped: vec![1, 4],
         checksum: Some(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10),
+        checksum_basis: crate::network::messages::ChecksumBasis::none(),
     };
     let bodies = [
         MessageBody::JoinRequest(JoinRequest { player_handle: 2 }),
@@ -1143,6 +1144,52 @@ fn decode_state_snapshot(bytes: &[u8], cursor: &mut usize) -> CodecResult<StateS
     }
 
     let checksum = read_option_u128(bytes, cursor, "state_snapshot.checksum")?;
+    let basis_base = read_u64(bytes, cursor, "state_snapshot.checksum_basis.base")?;
+    let basis_floor = read_frame(bytes, cursor, "state_snapshot.checksum_basis.floor", true)?;
+    let events_len = read_usize(bytes, cursor, "state_snapshot.checksum_basis.events.len")?;
+    if events_len > MAX_CHECKSUM_REWRITE_EVENTS {
+        return Err(decode_message_error(format!(
+            "state_snapshot.checksum_basis has {events_len} events, above the {MAX_CHECKSUM_REWRITE_EVENTS} cap"
+        )));
+    }
+    ensure_length_within_remaining(
+        bytes,
+        *cursor,
+        events_len,
+        8,
+        "state_snapshot.checksum_basis.events",
+    )?;
+    let mut basis_events = Vec::new();
+    basis_events.try_reserve_exact(events_len).map_err(|_err| {
+        decode_message_error(format!(
+            "failed to reserve {events_len} checksum basis events"
+        ))
+    })?;
+    for _ in 0..events_len {
+        let floor = read_frame(
+            bytes,
+            cursor,
+            "state_snapshot.checksum_basis.event.floor",
+            false,
+        )?;
+        let count = read_u32(bytes, cursor, "state_snapshot.checksum_basis.event.count")?;
+        if count == 0 {
+            return Err(decode_message_error(
+                "state_snapshot.checksum_basis event count must be positive",
+            ));
+        }
+        basis_events.push((floor, count));
+    }
+    let checksum_basis = ChecksumBasis {
+        base: basis_base,
+        floor: basis_floor,
+        events: basis_events,
+    };
+    if !checksum_basis.is_valid() {
+        return Err(decode_message_error(
+            "state_snapshot.checksum_basis is not canonical or bounded",
+        ));
+    }
 
     Ok(StateSnapshot {
         frame,
@@ -1152,6 +1199,7 @@ fn decode_state_snapshot(bytes: &[u8], cursor: &mut usize) -> CodecResult<StateS
         bridge_statuses,
         certified_dropped,
         checksum,
+        checksum_basis,
     })
 }
 
@@ -1689,6 +1737,7 @@ pub fn decode_message(bytes: &[u8]) -> CodecResult<(Message, usize)> {
         6 => MessageBody::ChecksumReport(ChecksumReport {
             checksum: read_u128(bytes, &mut cursor, "checksum_report.checksum")?,
             frame: read_frame(bytes, &mut cursor, "checksum_report.frame", false)?,
+            basis_token: read_u64(bytes, &mut cursor, "checksum_report.basis_token")?,
         }),
         7 => MessageBody::KeepAlive,
         // Floor-round variants (double-failure-relay connected-relay reorder fix,
@@ -2028,8 +2077,12 @@ fn assert_wire_golden_suite(
 }
 
 #[cfg(test)]
+#[path = "wire_golden_v6.rs"]
+mod wire_golden_v6;
+
+#[cfg(test)]
 #[path = "wire_golden_v5.rs"]
-mod wire_golden_v5;
+mod released_wire_golden_v5;
 
 #[cfg(test)]
 #[path = "wire_golden_v4.rs"]
@@ -2085,11 +2138,11 @@ mod tests {
     }
 
     #[test]
-    fn shared_wire_golden_harness_accepts_current_v5_suite() {
+    fn shared_wire_golden_harness_accepts_current_v6_suite() {
         assert_wire_golden_suite(
-            super::wire_golden_v5::WIRE_GOLDEN_VERSION,
-            super::wire_golden_v5::fixtures(),
-            super::wire_golden_v5::expected,
+            super::wire_golden_v6::WIRE_GOLDEN_VERSION,
+            super::wire_golden_v6::fixtures(),
+            super::wire_golden_v6::expected,
         );
     }
 
@@ -2322,7 +2375,7 @@ mod tests {
     fn codec_wire_format_uses_fixed_little_endian_bytes() {
         assert_eq!(
             crate::PROTOCOL_VERSION,
-            5,
+            6,
             "wire bytes changed without a version bump"
         );
         let cases = [
@@ -2345,7 +2398,7 @@ mod tests {
                     }),
                 },
                 vec![
-                    0xF5, 0x52, 0x05, 0x00, // sentinel, version, flags
+                    0xF5, 0x52, 0x06, 0x00, // sentinel, version, flags
                     0xCD, 0xAB, 0x00, 0x00, // conn_id
                     0x00, 0x00, 0x00, 0x00, // MessageBody::SyncRequest tag
                     0xE7, 0x03, 0x00, 0x00, // random_request
@@ -2369,7 +2422,7 @@ mod tests {
                     }),
                 },
                 vec![
-                    0xF5, 0x52, 0x05, 0x00, // sentinel, version, flags
+                    0xF5, 0x52, 0x06, 0x00, // sentinel, version, flags
                     0x34, 0x12, 0x00, 0x00, // MessageHeader::conn_id
                     0x04, 0x00, 0x00, 0x00, // MessageBody::QualityReport tag
                     0xFE, 0xFF, // frame_advantage: i16 -2
@@ -2384,7 +2437,7 @@ mod tests {
                     body: MessageBody::Goodbye(Goodbye { reason: 7 }),
                 },
                 vec![
-                    0xF5, 0x52, 0x05, 0x00, // sentinel, version, flags
+                    0xF5, 0x52, 0x06, 0x00, // sentinel, version, flags
                     0x34, 0x12, 0x00, 0x00, // MessageHeader::conn_id
                     0x11, 0x00, 0x00, 0x00, // MessageBody::Goodbye tag 17
                     0x07, // reason
@@ -2602,6 +2655,7 @@ mod tests {
                 body: MessageBody::ChecksumReport(ChecksumReport {
                     checksum: 0xDEAD_BEEF,
                     frame: Frame::new(88),
+                    basis_token: 0,
                 }),
             },
             Message {
@@ -2732,7 +2786,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinated_drop_v5_goldens_roundtrip_with_manual_generic_parity() {
+    fn coordinated_drop_v6_goldens_roundtrip_with_manual_generic_parity() {
         for (tag, body) in drop_bodies() {
             let original = Message {
                 header: MessageHeader::new(0x1234),
@@ -2741,7 +2795,7 @@ mod tests {
             let bytes = encode(&original).unwrap();
             let expected: &[u8] = match tag {
                 18 => &[
-                    0xF5, 0x52, 0x05, 0x00, 0x34, 0x12, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00, 0x02,
+                    0xF5, 0x52, 0x06, 0x00, 0x34, 0x12, 0x00, 0x00, 0x12, 0x00, 0x00, 0x00, 0x02,
                     0x00, 0x07, 0x00, 0x40, 0x30, 0x20, 0x10, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03,
                     0x02, 0x01, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x00, 0x00, 0x00,
                     0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x09, 0x00,
@@ -2749,7 +2803,7 @@ mod tests {
                     0x00, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00,
                 ],
                 19 => &[
-                    0xF5, 0x52, 0x05, 0x00, 0x34, 0x12, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x02,
+                    0xF5, 0x52, 0x06, 0x00, 0x34, 0x12, 0x00, 0x00, 0x13, 0x00, 0x00, 0x00, 0x02,
                     0x00, 0x07, 0x00, 0x40, 0x30, 0x20, 0x10, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03,
                     0x02, 0x01, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x00, 0x00, 0x00,
                     0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1E, 0x00, 0x00, 0x00, 0xFF, 0xFF,
@@ -2758,7 +2812,7 @@ mod tests {
                     0x00, 0x00, 0x05, 0x00, 0x0B, 0x00, 0x00, 0x00, 0x1F, 0x00, 0x00, 0x00,
                 ],
                 20 => &[
-                    0xF5, 0x52, 0x05, 0x00, 0x34, 0x12, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x02,
+                    0xF5, 0x52, 0x06, 0x00, 0x34, 0x12, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x02,
                     0x00, 0x07, 0x00, 0x40, 0x30, 0x20, 0x10, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03,
                     0x02, 0x01, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x00, 0x00, 0x00,
                     0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x00, 0x03, 0x00, 0x18, 0x00,
@@ -2766,13 +2820,13 @@ mod tests {
                     0xBB, 0xCC, 0xDD,
                 ],
                 21 => &[
-                    0xF5, 0x52, 0x05, 0x00, 0x34, 0x12, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00, 0x02,
+                    0xF5, 0x52, 0x06, 0x00, 0x34, 0x12, 0x00, 0x00, 0x15, 0x00, 0x00, 0x00, 0x02,
                     0x00, 0x07, 0x00, 0x40, 0x30, 0x20, 0x10, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03,
                     0x02, 0x01, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x00, 0x00, 0x00,
                     0x00, 0x1F, 0x00, 0x00, 0x00, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11,
                 ],
                 22 => &[
-                    0xF5, 0x52, 0x05, 0x00, 0x34, 0x12, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x02,
+                    0xF5, 0x52, 0x06, 0x00, 0x34, 0x12, 0x00, 0x00, 0x16, 0x00, 0x00, 0x00, 0x02,
                     0x00, 0x07, 0x00, 0x40, 0x30, 0x20, 0x10, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03,
                     0x02, 0x01, 0x18, 0x17, 0x16, 0x15, 0x14, 0x13, 0x12, 0x11, 0x00, 0x00, 0x00,
                     0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00,
@@ -2782,7 +2836,7 @@ mod tests {
             };
             assert_eq!(
                 bytes, expected,
-                "immutable protocol-v5 golden for tag {tag}"
+                "immutable protocol-v6 golden for tag {tag}"
             );
             assert_eq!(bytes.get(8..12), Some(tag.to_le_bytes().as_slice()));
             assert_eq!(original.encoded_len(), bytes.len());
@@ -2797,13 +2851,13 @@ mod tests {
 
     #[test]
     fn wire_codec_digest_is_pinned() {
-        assert_eq!(wire_codec_digest(), 1_284_801_995_974_345_814);
+        assert_eq!(wire_codec_digest(), 4_708_735_982_393_657_865);
     }
 
     #[cfg(feature = "hot-join")]
     #[test]
     fn wire_codec_hot_join_digest_is_pinned() {
-        assert_eq!(wire_codec_digest_hot_join(), 0xbed8_c21a_566d_d757);
+        assert_eq!(wire_codec_digest_hot_join(), 16_224_853_170_472_705_792);
     }
 
     #[test]
@@ -3082,11 +3136,12 @@ mod tests {
             any::<u128>()
                 .prop_map(|pong| MessageBody::QualityReply(QualityReply { pong }))
                 .boxed(),
-            (any::<u128>(), any::<i32>())
-                .prop_map(|(checksum, f)| {
+            (any::<u128>(), any::<i32>(), any::<u64>())
+                .prop_map(|(checksum, f, basis_token)| {
                     MessageBody::ChecksumReport(ChecksumReport {
                         checksum,
                         frame: Frame::new(f),
+                        basis_token,
                     })
                 })
                 .boxed(),
@@ -3243,6 +3298,7 @@ mod tests {
                                 bridge_statuses,
                                 checksum,
                                 certified_dropped,
+                                checksum_basis: crate::network::messages::ChecksumBasis::none(),
                             })
                         },
                     )
@@ -3558,6 +3614,7 @@ mod tests {
                 body: MessageBody::ChecksumReport(ChecksumReport {
                     checksum: 7,
                     frame: maximum,
+                    basis_token: u64::MAX,
                 }),
             },
         ];
@@ -3591,7 +3648,11 @@ mod tests {
         for frame in [Frame::NULL, Frame::new(-2)] {
             let message = Message {
                 header: MessageHeader::new(0xABCD),
-                body: MessageBody::ChecksumReport(ChecksumReport { checksum: 7, frame }),
+                body: MessageBody::ChecksumReport(ChecksumReport {
+                    checksum: 7,
+                    frame,
+                    basis_token: 0,
+                }),
             };
             let bytes = encode(&message).unwrap();
 
@@ -3821,6 +3882,7 @@ mod hot_join_tests {
                 bridge_statuses: Vec::new(),
                 checksum: Some(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10),
                 certified_dropped: Vec::new(),
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
             }),
         });
     }
@@ -3857,6 +3919,11 @@ mod hot_join_tests {
                 ],
                 checksum: Some(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10),
                 certified_dropped: vec![1, 3],
+                checksum_basis: crate::network::messages::ChecksumBasis {
+                    base: 30,
+                    floor: Frame::NULL,
+                    events: vec![(Frame::new(70), 1)],
+                },
             }),
         });
     }
@@ -3873,6 +3940,7 @@ mod hot_join_tests {
                 bridge_statuses: Vec::new(),
                 checksum: None,
                 certified_dropped: Vec::new(),
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
             }),
         });
     }
@@ -3889,6 +3957,7 @@ mod hot_join_tests {
                 bridge_statuses: Vec::new(),
                 checksum: None,
                 certified_dropped: Vec::new(),
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
             }),
         });
     }
@@ -4087,6 +4156,7 @@ mod hot_join_tests {
                 bridge_statuses: Vec::new(),
                 checksum: Some(123),
                 certified_dropped: Vec::new(),
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
             }),
         };
         let mut bytes = encode(&original).unwrap();

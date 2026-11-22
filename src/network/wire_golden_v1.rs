@@ -183,6 +183,7 @@ pub(super) fn fixtures() -> Vec<(&'static str, Message)> {
         MessageBody::ChecksumReport(ChecksumReport {
             checksum: 0x2122_2324_2526_2728_292A_2B2C_2D2E_2F30,
             frame: Frame::new(88),
+            basis_token: 0,
         }),
         MessageBody::KeepAlive,
         MessageBody::FloorRequest(FloorRequest { round_seq: 42 }),
@@ -203,6 +204,7 @@ pub(super) fn fixtures() -> Vec<(&'static str, Message)> {
             }],
             checksum: Some(0x3132_3334_3536_3738_393A_3B3C_3D3E_3F40),
             certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         }),
         MessageBody::StateSnapshotAck(StateSnapshotAck {
             frame: Frame::new(40),
@@ -372,6 +374,7 @@ fn every_protocol_v1_variant_has_immutable_exact_bytes() {
                 | MessageBody::DropCommit(_)
                 | MessageBody::DropAbort(_)
                 | MessageBody::StateSnapshot(_)
+                | MessageBody::ChecksumReport(_)
         ) {
             assert_eq!(
                 message.encoded_len(),
