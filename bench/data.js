@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795369841196,
+  "lastUpdate": 1795370574353,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "41e7476e3db03f54d89237de00a610fa2a5697a4",
-          "message": "fix: keep confirmation folds fresh across floor-round prunes; finish #435 review follow-up (#436)\n\n## Summary\n\nFollow-up to #435 (merged as `4e6c2e5`) that closes out its last review\nthread and fixes two\ncorrectness/availability edges found by an adversarial read of the new\nhot-path code.\n\n### Confirmation fold freshness (`drive_floor_round`)\n\n`poll_remote_clients` caches its mesh `confirmed_frame` fold for\n`advance_frame` reuse. A prune is\ndetected in `drive_floor_round`, which runs after that fold and resets\nevery relay's floor-round\nfreshness. In the relay topology a connected relay's contribution is\ncapped at the previously\nconfirmed frame while the round is incomplete, so the cached pre-reset\nfold can exceed the\npost-reset fold. Reusing it confirmed past the re-armed hold — the exact\nconnected-relay reorder\nhazard the round exists to prevent.\n\n`drive_floor_round` now drops the cached fold on a prune in the relay\ntopology. Outside that\ntopology the fold never consumes round-floor state, so steady-state\nreuse is unchanged (including\nsteady relay meshes with no prune).\n\nRed/green:\n-\n`advance_frame_recomputes_confirmation_when_the_prune_rearms_the_floor_round`\n(session-level): red prints `before=Frame(50) after=Frame(100)`, green\nholds at 50.\n-\n`drive_floor_round_drops_the_cached_fold_only_in_the_pruned_relay_topology`\npins both arms\nunder every feature set (verified red under `--features hot-join` too).\n\n### Spectator terminal state with catch-up disabled\n\nWith `catchup_speed == 0` and the spectator behind, `advance_frame`\nattempts no advance and the\nall-hosts-drained terminal check was gated on `frames_to_advance > 0`.\nAfter the last host left,\nthat configuration returned `Ok(empty)` forever. Once no host remains,\nthe terminal drain now\nadvances one buffered frame per call regardless of `catchup_speed` (so\nthe documented \"drain the\nbuffered prefix first\" contract holds for every configuration), then\nreports\n`SpectatorStreamEnded`. While a host remains, zero catch-up still\nattempts no advance.\n\nRed/green:\n`spectator_all_hosts_dropped_with_catchup_disabled_drains_then_reports_terminal_truncation`\n(red without the drain override: `SpectatorStreamEnded { frame: 0 }`\nbefore delivering buffered\nframes; green: frames 0-2 drain, then the terminal error at frame 3).\nThe buffered-drain,\nlate-final-input, and stream-delay terminal tests remain green. Rustdoc,\nchangelog, API contract,\nuser guide, and wiki mirrors describe the drain and the remaining\nhost-present zero-speed\nbehavior.\n\n### Status-snapshot reuse test (#435 review thread)\n\n`on_input_reuses_status_snapshot_across_unchanged_packets` exercises the\npacket path: two packets\ncarrying new frames with identical status arrays share one snapshot\n(`Arc::ptr_eq`), and a changed\n`last_frame` allocates a new snapshot without mutating the earlier\nevent's contents. Forcing the\ncache-compare branch off makes it fail.\n\n### Mutation survivors from main's post-#435 diff run\n\nThe post-merge diff-scope mutation run on `4e6c2e5` reported nine\nsurvivors in that PR's new\ncode. This PR kills them without changing behavior:\n\n- `coordinated_drop_may_change_confirmation` extracts the poll-time\ncache-invalidation predicate\n(one assertion per live drop state) so each `||`/`!` arm is\nindependently pinned.\n-\n`update_player_disconnects_reports_no_change_when_already_at_the_fence_cut`\npins the new\nmutation-return value: a receipt already at the committed fence cut\nreports `false`; a lower\n  receipt adopts the cut and reports `true`.\n- `pending_output_len_for_tests_reports_each_queued_input` gives the\nhot-join accessor a\npositive-count control instead of relying on a `<=` bound that passes\nfor any constant.\n\n## Verification\n\n```text\ncargo fmt --all -- --check                                       clean\ncargo clippy --workspace --all-targets --features tokio,json -- -D warnings        clean\ncargo clippy --workspace --all-targets --features tokio,json,hot-join -- -D warnings  clean\ncargo tfull                                                      3223 passed, 75 skipped\ncargo nextest run --workspace --features tokio,json,hot-join     3513 passed, 76 skipped\npython3 scripts/ci/agent-preflight.py --full --auto-fix          all checks passed\npython3 scripts/hooks/check-changelog-unreleased.py              pass\npython3 scripts/hooks/check-plan-hygiene.py                      pass\n```\n\nNo public API change; no wire-format change. `PLAN.md` remains empty.",
-          "timestamp": "2026-11-16T04:14:49Z",
-          "tree_id": "60193421d9c9961aee3e9caeadd512473432405c",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/41e7476e3db03f54d89237de00a610fa2a5697a4"
-        },
-        "date": 1794803188911,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 34375,
-            "range": "± 981",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 21955,
-            "range": "± 496",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 638,
-            "range": "± 80",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 843,
-            "range": "± 17",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 6645,
-            "range": "± 136",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 7708,
             "range": "± 100",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "02019c2d6efe96366741dd7ee76f08318b9fd64a",
+          "message": "ci: run the wire codec and replay fixture on big-endian s390x (#534)\n\n## Description\n\nCloses #523. Every existing runtime lane was little-endian, so wire byte\norder and machine-width hashing were only source-guarded. This adds a\nnarrow `s390x` QEMU lane outside Miri and outside the 35-minute\ncross-arch matrix.\n\n- Adds `big-endian-runtime` to `ci-rust.yml` with a 20-minute budget. It\ninstalls the s390x cross toolchain/QEMU and runs exactly two\npackage-scoped commands:\n  - the pinned `wire_codec_digest_is_pinned` codec digest;\n- the `fortress-replay-fixture` lib tests (replay, compression, and\nportable machine-width checks).\n- Makes the fixture's primitive `u32`-slice hash expectation\ntarget-endian. Std hashes primitive slice *elements* as native memory\nbytes; scalar, length-prefix, and serialized-state checks remain fixed\nlittle-endian. The little-endian constants are unchanged.\n- Adds a workflow-shape test that pins the lane to two package-scoped\ncommands, the s390x target, QEMU, and the 20-minute budget, and updates\nthe Miri comment to point at the dedicated lane.\n- Updates the determinism model and generated wiki mirror to record that\nbyte order is now runtime-executed rather than only source-guarded.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (no new production\n`unwrap`/`expect`/`panic!`/`todo!`; no production Rust changes)\n- [x] I have added tests that prove the fix is effective (the lane fails\non a byte-swapped codec; workflow-shape test)\n- [x] I have run `cargo fmt --all -- --check && cargo clippy --workspace\n--all-targets --features tokio,json -- -D warnings` with no warnings\n- [x] I have run `cargo nextest run --workspace --features tokio,json\n--no-fail-fast` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (determinism model +\nwiki mirror)\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes\n(CI/test-only; not required)\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Local big-endian QEMU evidence** (same package-scoped commands as the\nlane):\n\n| Command | Result |\n| --- | --- |\n| `cargo test -p fortress-rollback --target s390x-unknown-linux-gnu\n--lib wire_codec_digest_is_pinned` | **1 passed** |\n| `cargo test -p fortress-replay-fixture --target\ns390x-unknown-linux-gnu --lib` | **6 passed** |\n\n**Red evidence for the lane's purpose:** temporarily switching the\nshared codec config from `.with_little_endian()` to `.with_big_endian()`\nmade the s390x `wire_codec_digest_is_pinned` test fail; the codec was\nrestored immediately and the diff contains no production codec change\n(`/tmp/s390x-byte-swap-red.txt`).\n\n**Other checks:**\n\n| Check | Result |\n| --- | --- |\n| Native fixture tests | 6 passed |\n| Full workspace nextest (`--workspace --features tokio,json\n--no-fail-fast`) | **3,744 passed, 77 skipped, 0 failed** |\n| `cargo fmt --all -- --check` | pass |\n| `cargo clippy --workspace --all-targets --features tokio,json -- -D\nwarnings` | clean |\n| `actionlint .github/workflows/ci-rust.yml` | clean |\n| `pytest scripts/tests/test_ci_rust_workflow.py` | **32 passed** |\n| `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix` |\nall checks pass |\n| Wiki sync/consistency, links, changelog rule, typos, markdownlint |\npass |\n\n## Risks and rollback\n\n- The s390x apt install is mirror-speed dependent, exactly why this\nlives outside Miri. The job has a 20-minute cap and package-scoped\ntests; a slow mirror fails the job rather than consuming a Miri budget.\n- The fixture change only affects the big-endian expected `u32`-slice\nhash; little-endian constants and checksum behavior are unchanged.\n- Roll back by reverting this PR. No wire format or production behavior\nchange.\n\n## Related Issues\n\n- Closes #523\n- Follow-up to the cross-arch evidence in #521.",
+          "timestamp": "2026-11-22T17:50:11Z",
+          "tree_id": "97f8ae02ae8fbd9e8a708842121f3a2b0207fc6e",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/02019c2d6efe96366741dd7ee76f08318b9fd64a"
+        },
+        "date": 1795370573017,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 40796,
+            "range": "± 790",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 25355,
+            "range": "± 111",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 648,
+            "range": "± 73",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 844,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 6651,
+            "range": "± 97",
             "unit": "ns/iter"
           }
         ]
