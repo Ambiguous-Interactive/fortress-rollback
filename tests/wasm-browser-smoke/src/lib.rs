@@ -612,6 +612,7 @@ mod tests {
         );
         let _ = joiner.events().count();
         let epoch_before = host.diagnostic_coordinated_drop_membership_epoch();
+        let active_before = host.diagnostic_coordinated_drop_active_sequence();
         let confirmed_before = host.confirmed_frame();
         let prepare = host
             .diagnostic_terminal_replay_prepare_bytes(PlayerHandle::new(1), 0)
@@ -645,6 +646,11 @@ mod tests {
             host.diagnostic_coordinated_drop_membership_epoch(),
             epoch_before,
             "the stale terminal Prepare must not change membership"
+        );
+        assert_eq!(
+            host.diagnostic_coordinated_drop_active_sequence(),
+            active_before,
+            "the stale terminal Prepare must not reopen an attempt"
         );
         assert!(
             host.confirmed_frame() >= confirmed_before,

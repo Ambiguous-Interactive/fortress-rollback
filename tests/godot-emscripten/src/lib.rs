@@ -576,6 +576,7 @@ fn run_removal_probe() -> Result<(), String> {
     // encoded datagram runs through the real codec and endpoint path; it must
     // not reopen an attempt, halt the survivor, or retract the confirmed prefix.
     let epoch_before = pair.first.diagnostic_coordinated_drop_membership_epoch();
+    let active_before = pair.first.diagnostic_coordinated_drop_active_sequence();
     let confirmed_before = pair.first.confirmed_frame();
     let prepare = pair
         .first
@@ -610,6 +611,9 @@ fn run_removal_probe() -> Result<(), String> {
     }
     if pair.first.diagnostic_coordinated_drop_membership_epoch() != epoch_before {
         return Err("the stale terminal Prepare changed Emscripten membership".to_owned());
+    }
+    if pair.first.diagnostic_coordinated_drop_active_sequence() != active_before {
+        return Err("the stale terminal Prepare reopened an Emscripten attempt".to_owned());
     }
     if pair.first.confirmed_frame() < confirmed_before {
         return Err("the stale terminal Prepare retracted the confirmed prefix".to_owned());

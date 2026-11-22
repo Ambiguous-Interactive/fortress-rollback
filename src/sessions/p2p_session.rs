@@ -12330,11 +12330,32 @@ impl<T: Config> P2PSession<T> {
             targets,
             participants,
         };
+        // Stamp the datagram with the connection id this endpoint learned for
+        // the target, so a real receive path accepts it instead of filtering it
+        // as a wrong-era packet.
+        let conn_id = self
+            .player_reg
+            .remotes
+            .get(&target_addr)
+            .map_or(0, UdpProtocol::remote_conn_id);
         let message = Message {
-            header: MessageHeader::new(0x1234),
+            header: MessageHeader::new(conn_id),
             body: MessageBody::DropPrepare(prepare),
         };
         crate::network::codec::encode(&message).ok()
+    }
+
+    /// Diagnostics/testing surface (hidden; **not** part of the stable public
+    /// API): sequence of the active coordinated-drop operation, or `None` when
+    /// no attempt is open. Probes use it to prove a stale replay did not reopen
+    /// an attempt.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn diagnostic_coordinated_drop_active_sequence(&self) -> Option<u32> {
+        self.coordinated_drop
+            .active
+            .as_ref()
+            .map(|attempt| attempt.operation.sequence)
     }
 
     /// Diagnostics/testing surface (hidden; **not** part of the stable public
@@ -20331,6 +20352,23 @@ mod tests {
         assert_eq!(
             retry.terminal_epoch, 1,
             "the retry consumes the epoch the stale replay could not reuse"
+        );
+    }
+
+    #[test]
+    fn diagnostic_active_sequence_tracks_the_open_attempt() {
+        let mut session = five_player_majority_session(PlayerHandle::new(0));
+        assert_eq!(session.diagnostic_coordinated_drop_active_sequence(), None);
+        session
+            .begin_coordinated_drop(PlayerHandle::new(4))
+            .expect("removal intent opens an attempt");
+        if let Some(active) = session.coordinated_drop.active.as_mut() {
+            active.operation.sequence = 7;
+        }
+        assert_eq!(
+            session.diagnostic_coordinated_drop_active_sequence(),
+            Some(7),
+            "the probe must observe the exact active operation sequence"
         );
     }
 
