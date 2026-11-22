@@ -145,7 +145,9 @@ for the normal queue:
 1. Open a pull request with the smallest fix and a regression test that fails on the pre-fix code.
 2. Record in the PR why the emergency path is needed, which checks are deferred, and the rollback.
 3. Run the full local tier before merge: `cargo fmt --all -- --check`, `cargo tfull`,
-   `cargo test --doc`, and `python3 scripts/ci/agent-preflight.py --full --auto-fix`.
+   `cargo test --doc`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features
+   hot-join,tokio,json,sync-send --document-private-items`, and
+   `python3 scripts/ci/agent-preflight.py --full --auto-fix`.
 4. Get one reviewer other than the implementer. A fast-tier self-review is not sufficient.
 5. File a tracked follow-up for every deferred check or follow-up fix, and complete it before the
    next release.
