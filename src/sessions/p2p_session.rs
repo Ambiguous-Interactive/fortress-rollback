@@ -12366,6 +12366,7 @@ impl<T: Config> P2PSession<T> {
     /// transport endpoint has already been disconnected by the committed
     /// removal. Malformed bytes are rejected; a valid but stale artifact follows
     /// the same peer-artifact rules as a socket-delivered message.
+    #[cfg(any(test, feature = "test-probes"))]
     #[doc(hidden)]
     pub fn diagnostic_replay_drop_control_bytes(
         &mut self,
