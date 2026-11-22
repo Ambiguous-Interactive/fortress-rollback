@@ -3131,7 +3131,8 @@ Desync detection is **enabled by default** with `DesyncDetection::On { interval:
 - `sync_health()` will report `SyncHealth::InSync` or `SyncHealth::DesyncDetected`
 - A confirmed mismatch stays latched while its local checksum basis remains in retained history. A
   freeze-convergence or certified-cut rewrite invalidates that basis at and above the rewritten
-  frame, including any still-pending peer report there, so a stale pre-convergence mismatch clears
+  frame, including any still-pending peer report there, and a delayed pre-rewrite report is
+  recognized instead of relatching a false mismatch, so a stale pre-convergence comparison clears
   while a genuine divergence below the floor stays latched
 - Desync bugs are detected early, before they cause visible gameplay issues
 
