@@ -136,6 +136,28 @@ git commit --no-verify -m "emergency fix"
 
 Note: CI will still run these checks on pull requests
 
+### Emergency Fix Path
+
+A production-blocking bug may compress the normal design and review pipeline, but it does not
+permit an unvalidated merge. Use this path only for a regression that blocks users and cannot wait
+for the normal queue:
+
+1. Open a pull request with the smallest fix and a regression test that fails on the pre-fix code.
+2. Record in the PR why the emergency path is needed, which checks are deferred, and the rollback.
+3. Run the full local tier before merge: `cargo fmt --all -- --check`, `cargo tfull`,
+   `cargo test --doc`, `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features
+   hot-join,tokio,json,sync-send --document-private-items`, and
+   `python3 scripts/ci/agent-preflight.py --full --auto-fix`. If the change is
+   portability-sensitive, also run the two `wasm32-unknown-unknown` checks from the
+   review-readiness skill; if it touches proofs or protocol invariants, run the deep lane.
+4. Get one reviewer other than the implementer. A fast-tier self-review is not sufficient.
+5. File a tracked follow-up for every deferred check or follow-up fix, and complete it before the
+   next release.
+
+Do not use `--no-verify`, a discarded exit code, or a skipped required check to make the PR green.
+If the emergency path itself is used, record the exception in the PR and run the full validation
+before merge.
+
 ## Release automation
 
 Releases use two manually dispatched GitHub Actions workflows:

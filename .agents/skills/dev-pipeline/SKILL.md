@@ -260,14 +260,10 @@ If your change affects code covered by a Kani proof:
 
 ## Emergency Fixes
 
-For production-blocking bugs, compress the pipeline:
-
-1. **Scope:** One-line description in the PR title
-2. **Skip design phase** (but still read existing code)
-3. **Implement:** Fix + regression test in one commit
-4. **Self-review:** Run `cargo c && cargo tf` only
-5. **Ship:** Get one reviewer, merge quickly
-6. **Follow up:** Add docs, additional tests, and related fixes as separate PRs
+For production-blocking bugs, use the canonical emergency path in
+`docs/contributing.md`. Record the bypass in the PR, run full validation before
+merge, get one non-implementer reviewer, and file a tracked follow-up. Do not
+merge on a fast-only self-review.
 
 ---
 

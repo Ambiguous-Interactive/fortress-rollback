@@ -5,7 +5,7 @@ description: "Code Review Guide guidance for Fortress Rollback. Use when Reviewi
 
 # Code Review Guide
 
-Structured two-pass review for fortress-rollback. Pass 1 finds correctness issues. Pass 2 finds style and improvement opportunities. Fix mechanical issues directly; flag judgment calls for discussion.
+Structured review for fortress-rollback. Pass 1 finds correctness and verification-integrity issues. Pass 2 finds style and improvement opportunities. Pass 3 blocks structural regressions. Fix mechanical issues directly; flag judgment calls for discussion.
 
 ---
 
@@ -19,7 +19,7 @@ Search the diff for forbidden patterns:
 rg '\.unwrap\(\)|\.expect\(|panic!\(|todo!\(|unimplemented!\(' --type rust -- src/
 ```
 
-Direct indexing (`array[i]` instead of `array.get(i)`) is caught by `clippy::indexing_slicing`, which is denied in CI safety checks. Run the strict clippy pass or review manually.
+Direct indexing (`array[i]` instead of `array.get(i)`) is not caught by `clippy::indexing_slicing` because the manifest allows it. Treat it as a manual review item: verify the bound is proven or prefer `.get()`.
 
 Every hit in production code (`src/`, excluding `#[cfg(test)]` blocks) is a blocking issue. Verify the fix uses structured error handling.
 
@@ -46,6 +46,8 @@ Check for non-deterministic patterns in any code that runs during simulation:
 | Thread-local RNG | `rg 'thread_rng\|random\(\)' --type rust src/` | Seeded RNG (`rand_pcg` or `rand_chacha`) |
 | Pointer-based ordering | `rg 'as \*const\|addr\(\)' --type rust src/` | Stable IDs |
 | Unordered iteration | `rg '\.par_iter\(\)' --type rust src/` | Sequential or collect+sort |
+
+For determinism-sensitive changes, require a repeated seeded run with a state-hash or transcript comparison, not only a static grep.
 
 ### 1C. Error Handling Completeness
 
@@ -81,8 +83,29 @@ Escalate using [adversarial-handoff.md](../adversarial-handoff/SKILL.md) when ch
 - Frame arithmetic/rollback bounds
 - Save/load state integrity
 - Determinism-critical logic
+- Wire-format or protocol compatibility
+- Security-sensitive runtime behavior (auth/identity, secrets, network egress)
+
+For supply-chain, CI, or agent-tooling changes, use
+[dependency-management.md](../dependency-management/SKILL.md),
+[github-actions.md](../github-actions/SKILL.md), and
+[ci-debugging.md](../ci-debugging/SKILL.md) instead. For agent permissions, use
+OWASP Agentic guidance; for the preflight check, run
+`scripts/ci/agent-preflight.py`.
 
 If triggered, complete adversarial handoff before final merge approval.
+
+### 1G. Verification Integrity
+
+Tests are evidence only when they can fail for the right reason. Check the test diff before trusting a green run:
+
+- Did the change delete, skip, weaken, or rewrite a test, fixture, grader, or check to get green? Require a named maintainer or coordinator other than the implementer to approve the exception, with the evidence recorded in the tracked PR or issue; a quarantined flake needs an issue and owner.
+- Does the new test fail on the pre-fix code (revert or targeted mutation), or does it pass before and after?
+- Are expected values derived independently, or copied from the implementation's output?
+- Do user-visible and protocol/session changes have a boundary or end-to-end path, not only unit tests?
+- For refactors and rewrites, is there characterization or differential evidence that behavior did not change?
+
+A test that cannot fail is not evidence. A rerun is not a fix for a flaky test.
 
 ---
 
@@ -128,11 +151,27 @@ When public API changes, verify these are updated:
 rg 'old_function_name|OldTypeName' --type rust --type md
 ```
 
-Check: rustdoc, CHANGELOG.md, docs/user-guide.md, examples/.
+Check: rustdoc, CHANGELOG.md, docs/user-guide.md, examples/. If a public API or behavior is misstated, escalate to Pass 1 (blocking); purely internal staleness is non-blocking.
 
 ### 2E. Design Decision Log Coverage
 
 If the PR introduces a major architectural or behavior choice, verify a corresponding entry exists per [design-decisions.md](../design-decisions/SKILL.md).
+
+---
+
+## Pass 3: Structural Quality (Blocking on Regression)
+
+Review with the ambition of a code-judo move: keep behavior, delete complexity. A working change that leaves the surrounding design messier is not approved.
+
+- Is there a reframing that deletes a whole branch, helper, mode, flag, layer, or special case? If an obvious alternative fits the diff budget, request it; otherwise file an issue with evidence.
+- Did the diff add ad-hoc conditionals or feature checks to unrelated flows? Push the logic into a state machine, policy, dedicated module, or the canonical layer.
+- Is the logic reusing the existing helper, or is it a bespoke near-duplicate? Are boundaries leaking implementation details?
+- Is the abstraction earning its keep, or is it a thin wrapper, identity helper, needless cast, or optionality that hides the invariant?
+- Are related state updates atomic? If partial progress is intentional, is the intermediate state explicit and tested?
+- Did a file cross 1,000 lines (excluding `#[cfg(test)]`), or did a new responsibility land in an already-large file without a module boundary? Split on API boundaries, not LOC.
+- Does the refactor actually reduce the number of concepts a reader must hold, or does it merely move complexity around?
+
+A structural regression, unjustified file growth, boundary leak, or missed obvious simplification that fits the diff budget is blocking. A merely stylistic preference is non-blocking. If the structural fix is out of scope, require an issue with evidence instead of normalizing the mess.
 
 ---
 
@@ -179,6 +218,9 @@ Structure findings as:
 ## Critical (must fix before merge)
 - [file:line] Description citing specific code
 
+## Structural (must fix before merge)
+- [file:line] Regression or missed simplification, with the concrete alternative
+
 ## Suggestions (non-blocking)
 - [file:line] Description with proposed alternative
 
@@ -186,8 +228,11 @@ Structure findings as:
 - Zero-panic compliance: PASS/FAIL (N hits found)
 - Determinism: PASS/FAIL
 - Error handling: PASS/FAIL
+- Verification integrity: PASS/FAIL (revert/mutation check, oracle diff)
 - Tests included: YES/NO
+- Boundary/e2e path: YES/NO/N/A
 - Design decision log: YES/NO/N/A
+- Structural quality: PASS/FAIL
 - Adversarial escalation required: YES/NO
 ```
 
@@ -203,6 +248,9 @@ Structure findings as:
 - [ ] New public items have rustdoc with examples
 - [ ] Error variants are structured, not string-based
 - [ ] Tests cover both happy path and error cases
+- [ ] Verification integrity: no oracle weakened; new test fails on revert or targeted mutation
+- [ ] User-visible/protocol change has a boundary or end-to-end path
+- [ ] No structural regression or unjustified file growth (1,000-line threshold excludes `#[cfg(test)]`); obvious simplification fits the diff budget or is filed
 - [ ] `cargo doc --no-deps` passes (no broken doc links)
 - [ ] CHANGELOG updated if pub/user-observable change
 - [ ] `cargo c && cargo tf` passes
