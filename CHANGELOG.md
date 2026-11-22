@@ -16,12 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- A doc-hidden `P2PSession::diagnostic_terminal_replay_prepare_bytes` compatibility surface
-  encodes a coordinated-drop `Prepare` from a consumed terminal epoch against the current target
-  generation and membership. The browser and Godot/Emscripten removal probes replay that datagram
-  through the real wire codec and assert that it cannot reopen an attempt, change membership, or
-  retract the confirmed prefix. A separate hot-join wire-codec digest pins the snapshot and
-  lifecycle bodies in the native fixture and the browser, Godot/Emscripten, and wasip1 probes.
+- Doc-hidden `P2PSession::diagnostic_terminal_replay_prepare_bytes` and
+  `diagnostic_replay_drop_control_bytes` compatibility surfaces encode a coordinated-drop
+  `Prepare` from a consumed terminal epoch against the current target generation and membership,
+  then decode and deliver it through the normal drop-control path. The browser and
+  Godot/Emscripten removal probes hot-join the removed slot back and replay that datagram through
+  the real wire codec, asserting that it cannot reopen an attempt, change membership, or retract
+  the confirmed prefix. A separate hot-join wire-codec digest pins the snapshot and lifecycle
+  bodies in the native fixture and the browser, Godot/Emscripten, and wasip1 probes.
 - The `violation-census` feature records each reported `report_violation!` source location to a
   bounded per-process artifact when `FORTRESS_VIOLATION_CENSUS_DIR` is set, giving the nightly
   exercise census exact test-suite evidence instead of LLVM line-coverage lower bounds. The hook

@@ -472,12 +472,11 @@ mod tests {
         );
     }
 
-    /// Replay a Prepare from a consumed terminal epoch after the removal
-    /// commits. The encoded datagram runs through the real codec and endpoint
-    /// path; it must not reopen an attempt, halt the survivor, or retract the
-    /// confirmed prefix. The dedicated unit test
-    /// `diagnostic_terminal_replay_prepare_is_rejected_by_the_epoch_fence`
-    /// pins the epoch branch itself.
+    /// After a removal commits, hot-join the slot back so the stale Prepare
+    /// targets a live slot and passes membership/generation validation. Replay
+    /// it from the local coordinator through the raw-packet hook; only the
+    /// consumed terminal epoch can reject it. The survivor must stay Running,
+    /// emit no new drop, and retain its membership and confirmed prefix.
     #[cfg(feature = "hot-join")]
     #[wasm_bindgen_test]
     fn stale_terminal_prepare_is_rejected_after_committed_removal_in_browser() {
@@ -577,16 +576,53 @@ mod tests {
             "the stale-replay target must apply its certificate"
         );
         drop(removed);
+        bus.clear(BrowserPeer(1));
+        let joiner_socket = bus.socket(BrowserPeer(1));
+        let mut joiner = SessionBuilder::<BrowserConfig>::new()
+            .with_protocol_config(protocol_config(0xB10A))
+            .with_num_players(2)
+            .expect("stale-replay joiner player count must be accepted")
+            .add_player(PlayerType::Remote(BrowserPeer(0)), PlayerHandle::new(0))
+            .expect("stale-replay joiner host slot must be accepted")
+            .add_player(PlayerType::Local, PlayerHandle::new(1))
+            .expect("stale-replay joiner local slot must be accepted")
+            .start_hot_join_session(joiner_socket, BrowserPeer(0))
+            .expect("stale-replay joiner must build");
+        for _ in 0..HOT_JOIN_POLL_BUDGET {
+            host.poll_remote_clients();
+            joiner.poll_remote_clients();
+            offset_ms.fetch_add(16, Ordering::Relaxed);
+            if host.diagnostic_player_connected(PlayerHandle::new(1)) == Some(true)
+                && joiner.current_state() == SessionState::Running
+            {
+                break;
+            }
+        }
+        assert_eq!(
+            host.diagnostic_player_connected(PlayerHandle::new(1)),
+            Some(true),
+            "the removed slot must hot-join before the stale epoch replay"
+        );
+        let mut joiner_state = BrowserState::default();
+        apply_requests(
+            &mut joiner_state,
+            joiner
+                .advance_frame()
+                .expect("the rejoin probe must apply the served snapshot"),
+        );
+        let _ = joiner.events().count();
         let epoch_before = host.diagnostic_coordinated_drop_membership_epoch();
         let confirmed_before = host.confirmed_frame();
         let prepare = host
             .diagnostic_terminal_replay_prepare_bytes(PlayerHandle::new(1), 0)
             .expect("the probe must build a stale terminal Prepare");
-        bus.inject_raw(BrowserPeer(1), BrowserPeer(0), prepare);
+        host.diagnostic_replay_drop_control_bytes(PlayerHandle::new(0), &prepare)
+            .expect("the stale terminal Prepare must decode as a peer artifact");
 
         let mut replayed_drop = false;
         for _ in 0..64 {
             host.poll_remote_clients();
+            joiner.poll_remote_clients();
             offset_ms.fetch_add(16, Ordering::Relaxed);
             for event in host.events() {
                 if let FortressEvent::PeerDropped { handle, .. } = event {
@@ -594,6 +630,7 @@ mod tests {
                     replayed_drop = true;
                 }
             }
+            let _ = joiner.events().count();
         }
         assert!(
             !replayed_drop,
@@ -1145,6 +1182,19 @@ mod tests {
             let first = sockets.next().expect("first browser test socket");
             let second = sockets.next().expect("second browser test socket");
             (first, second, bus)
+        }
+
+        fn socket(&self, local: BrowserPeer) -> RawChannelSocket {
+            RawChannelSocket {
+                local,
+                bus: self.clone(),
+            }
+        }
+
+        fn clear(&self, peer: BrowserPeer) {
+            if let Some(queue) = self.state.borrow_mut().queues.get_mut(usize::from(peer.0)) {
+                queue.clear();
+            }
         }
 
         fn inject_raw(&self, source: BrowserPeer, destination: BrowserPeer, bytes: Vec<u8>) {

@@ -12337,6 +12337,44 @@ impl<T: Config> P2PSession<T> {
         crate::network::codec::encode(&message).ok()
     }
 
+    /// Diagnostics/testing surface (hidden; **not** part of the stable public
+    /// API): decodes one encoded coordinated-drop control datagram and delivers
+    /// it through the normal drop-control path as if it arrived from `source`.
+    ///
+    /// Runtime probes use this narrow raw-packet replay hook when the original
+    /// transport endpoint has already been disconnected by the committed
+    /// removal. Malformed bytes are rejected; a valid but stale artifact follows
+    /// the same peer-artifact rules as a socket-delivered message.
+    #[doc(hidden)]
+    pub fn diagnostic_replay_drop_control_bytes(
+        &mut self,
+        source: PlayerHandle,
+        bytes: &[u8],
+    ) -> Result<(), FortressError> {
+        let source = u16::try_from(source.as_usize()).map_err(|_error| {
+            InvalidRequestKind::Custom("diagnostic drop replay source exceeds protocol width")
+        })?;
+        let (message, consumed) =
+            crate::network::codec::decode_message(bytes).map_err(|_error| {
+                InvalidRequestKind::Custom("diagnostic drop replay bytes are malformed")
+            })?;
+        if consumed != bytes.len() {
+            return Err(InvalidRequestKind::Custom(
+                "diagnostic drop replay bytes contain trailing data",
+            )
+            .into());
+        }
+        let MessageBody::DropPrepare(prepare) = message.body else {
+            return Err(InvalidRequestKind::Custom(
+                "diagnostic drop replay only accepts a Prepare body",
+            )
+            .into());
+        };
+        self.coordinated_drop_accept_prepare(prepare, Some(source))
+            .map_err(|_reason| InvalidRequestKind::Custom("diagnostic drop replay was rejected"))?;
+        Ok(())
+    }
+
     /// Returns the maximum prediction window of a session.
     #[must_use]
     pub fn max_prediction(&self) -> usize {
@@ -20339,7 +20377,7 @@ mod tests {
 
         let aborts_before = drop_abort_sends(&session);
         session
-            .coordinated_drop_accept_prepare(prepare, Some(0))
+            .diagnostic_replay_drop_control_bytes(PlayerHandle::new(0), &bytes)
             .expect("a stale terminal prepare is a peer artifact");
         assert!(
             session.coordinated_drop.active.is_none(),

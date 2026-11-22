@@ -122,6 +122,7 @@ struct SessionPair {
     second: P2PSession<ProbeConfig>,
     health: Rc<SocketHealth>,
     first_inbox: Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
+    second_inbox: Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
 }
 
 /// Multi-endpoint wire-encoded mesh used by the certified-snapshot probe.
@@ -214,6 +215,7 @@ fn create_socket_pair() -> (
     MemorySocket,
     Rc<SocketHealth>,
     Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
+    Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
 ) {
     let first_inbox = Rc::new(RefCell::new(VecDeque::new()));
     let second_inbox = Rc::new(RefCell::new(VecDeque::new()));
@@ -233,15 +235,16 @@ fn create_socket_pair() -> (
         peer_inbox: Rc::clone(&first_inbox),
         health: Rc::clone(&health),
     };
-    (first, second, health, first_inbox)
+    (first, second, health, first_inbox, second_inbox)
 }
 
 fn create_sessions(
     clock: Option<ClockFn>,
     quality_interval: Duration,
     behavior: DisconnectBehavior,
+    first_hot_join: bool,
 ) -> Result<SessionPair, String> {
-    let (first_socket, second_socket, health, first_inbox) = create_socket_pair();
+    let (first_socket, second_socket, health, first_inbox, second_inbox) = create_socket_pair();
     let protocol_config = |seed| ProtocolConfig {
         quality_report_interval: quality_interval,
         protocol_rng_seed: Some(seed),
@@ -249,9 +252,15 @@ fn create_sessions(
         ..ProtocolConfig::default()
     };
 
-    let first = SessionBuilder::<ProbeConfig>::new()
+    let first_builder = SessionBuilder::<ProbeConfig>::new()
         .with_protocol_config(protocol_config(101))
-        .with_disconnect_behavior(behavior)
+        .with_disconnect_behavior(behavior);
+    let first_builder = if first_hot_join {
+        first_builder.with_hot_join(true)
+    } else {
+        first_builder
+    };
+    let first = first_builder
         .add_player(PlayerType::Local, PlayerHandle::new(0))
         .map_err(|error| format!("first local player: {error}"))?
         .add_player(PlayerType::Remote(SECOND_ADDRESS), PlayerHandle::new(1))
@@ -274,6 +283,7 @@ fn create_sessions(
         second,
         health,
         first_inbox,
+        second_inbox,
     })
 }
 
@@ -299,7 +309,12 @@ fn synchronize_sessions(
 }
 
 fn run_real_clock_probe() -> Result<u64, String> {
-    let mut pair = create_sessions(None, Duration::from_millis(1), DisconnectBehavior::Halt)?;
+    let mut pair = create_sessions(
+        None,
+        Duration::from_millis(1),
+        DisconnectBehavior::Halt,
+        false,
+    )?;
     synchronize_sessions(&mut pair, || {})?;
 
     for _ in 0..4 {
@@ -345,6 +360,7 @@ fn run_virtual_clock_probe() -> Result<(u128, u128), String> {
         Some(clock),
         ProtocolConfig::default().quality_report_interval,
         DisconnectBehavior::Halt,
+        false,
     )?;
     synchronize_sessions(&mut pair, || {
         offset_ms.fetch_add(VIRTUAL_POLL_INTERVAL_MS, Ordering::Relaxed);
@@ -415,10 +431,12 @@ fn run_removal_probe() -> Result<(), String> {
     let clock_offset = Arc::clone(&offset_ms);
     let clock: ClockFn =
         Arc::new(move || base + Duration::from_millis(clock_offset.load(Ordering::Relaxed)));
+    let joiner_clock = Arc::clone(&clock);
     let mut pair = create_sessions(
         Some(clock),
         ProtocolConfig::default().quality_report_interval,
         DisconnectBehavior::ContinueWithout,
+        true,
     )?;
     synchronize_sessions(&mut pair, || {
         offset_ms.fetch_add(VIRTUAL_POLL_INTERVAL_MS, Ordering::Relaxed);
@@ -509,6 +527,51 @@ fn run_removal_probe() -> Result<(), String> {
         return Err("the Emscripten survivor left Running on the frozen-slot advance".to_owned());
     }
 
+    // Rejoin the removed slot so the stale Prepare targets a live slot and
+    // reaches the epoch fence instead of failing target-generation validation.
+    drop(pair.second);
+    pair.second_inbox.borrow_mut().clear();
+    let joiner_socket = MemorySocket {
+        local_address: SECOND_ADDRESS,
+        peer_address: FIRST_ADDRESS,
+        inbox: Rc::clone(&pair.second_inbox),
+        peer_inbox: Rc::clone(&pair.first_inbox),
+        health: Rc::clone(&pair.health),
+    };
+    let mut joiner = SessionBuilder::<ProbeConfig>::new()
+        .with_protocol_config(ProtocolConfig {
+            protocol_rng_seed: Some(303),
+            clock: Some(joiner_clock),
+            ..ProtocolConfig::default()
+        })
+        .with_num_players(2)
+        .map_err(|error| format!("stale-replay joiner player count: {error}"))?
+        .add_player(PlayerType::Remote(FIRST_ADDRESS), PlayerHandle::new(0))
+        .map_err(|error| format!("stale-replay joiner host slot: {error}"))?
+        .add_player(PlayerType::Local, PlayerHandle::new(1))
+        .map_err(|error| format!("stale-replay joiner local slot: {error}"))?
+        .start_hot_join_session(joiner_socket, FIRST_ADDRESS)
+        .map_err(|error| format!("stale-replay joiner: {error}"))?;
+    let mut joined = false;
+    for _ in 0..MAX_HOT_JOIN_POLLS {
+        pair.first.poll_remote_clients();
+        joiner.poll_remote_clients();
+        offset_ms.fetch_add(VIRTUAL_POLL_INTERVAL_MS, Ordering::Relaxed);
+        if pair.first.diagnostic_player_connected(PlayerHandle::new(1)) == Some(true)
+            && joiner.current_state() == SessionState::Running
+        {
+            joined = true;
+            break;
+        }
+        if pair.health.failed.get() {
+            return Err("in-memory socket failed during stale-replay rejoin".to_owned());
+        }
+    }
+    if !joined {
+        return Err("the removed Emscripten slot did not hot-join before the replay".to_owned());
+    }
+    let _ = joiner.events().count();
+
     // Replay a Prepare from the operation's consumed terminal epoch. The
     // encoded datagram runs through the real codec and endpoint path; it must
     // not reopen an attempt, halt the survivor, or retract the confirmed prefix.
@@ -518,17 +581,14 @@ fn run_removal_probe() -> Result<(), String> {
         .first
         .diagnostic_terminal_replay_prepare_bytes(PlayerHandle::new(1), 0)
         .ok_or_else(|| "could not build the stale terminal Prepare".to_owned())?;
-    {
-        let mut inbox = pair.first_inbox.borrow_mut();
-        if inbox.len() >= MAX_QUEUED_MESSAGES {
-            return Err("stale-replay host inbox overflow".to_owned());
-        }
-        inbox.push_back((SECOND_ADDRESS, prepare));
-    }
+    pair.first
+        .diagnostic_replay_drop_control_bytes(PlayerHandle::new(0), &prepare)
+        .map_err(|error| format!("stale terminal Prepare replay: {error}"))?;
 
     let mut replayed_drop = false;
     for _ in 0..MAX_REMOVAL_POLLS {
         pair.first.poll_remote_clients();
+        joiner.poll_remote_clients();
         offset_ms.fetch_add(VIRTUAL_POLL_INTERVAL_MS, Ordering::Relaxed);
         for event in pair.first.events() {
             if let FortressEvent::PeerDropped { handle, .. } = event {
@@ -537,6 +597,7 @@ fn run_removal_probe() -> Result<(), String> {
                 }
             }
         }
+        let _ = joiner.events().count();
         if pair.health.failed.get() {
             return Err("in-memory socket failed during stale terminal replay".to_owned());
         }
@@ -573,7 +634,7 @@ fn run_hot_join_probe() -> Result<(), String> {
         ..ProtocolConfig::default()
     };
 
-    let (host_socket, joiner_socket, health, _host_inbox) = create_socket_pair();
+    let (host_socket, joiner_socket, health, _host_inbox, _joiner_inbox) = create_socket_pair();
     let mut host = SessionBuilder::<ProbeConfig>::new()
         .with_protocol_config(protocol_config(303))
         .with_num_players(2)
