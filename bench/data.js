@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795370574353,
+  "lastUpdate": 1795378305153,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "97e16a73ed70abcb54d0909a8e7eaa68b75e4816",
-          "message": "test(spectator): pin catch-up boundary cases for mutation coverage (#437)\n\n## Summary\n\nTest-only follow-up to #436 (merged as `41e7476e`). Main's post-merge\ndiff-scope mutation run left one\nsurvivor after #436:\n\n```text\nMISSED src/sessions/p2p_spectator_session.rs:803:53: replace > with >= in SpectatorSession::advance_frame\n```\n\nThe catch-up decision is strict (\"more than `max_frames_behind`\"), so a\nlarger `catchup_speed` must\nnot apply when the spectator is exactly at the threshold.\n`spectator_at_the_catchup_threshold_advances_at_normal_speed`\npins exactly that boundary (red under `>=`: advances `Frame(1)` instead\nof `Frame(0)`).\n\nAlso pins the host-present compatibility half of the new terminal-drain\nbehavior, which previously\nonly had host-drained coverage: with a live host and `catchup_speed ==\n0`, `advance_frame` still\nreturns `Ok(empty)` without advancing. This makes the `hosts.is_empty()`\nbranch mutation-visible\n(red under an always-drain variant: `PredictionThreshold`).\n\nNo production code changes.\n\n## Verification\n\n```text\ncargo fmt --all -- --check                                       clean\ncargo nextest run -E 'test(spectator_at_the_catchup_threshold)|test(spectator_zero_catchup_with_a_live_host)|test(spectator_all_hosts_dropped_with_catchup_disabled)'  3 passed\ncargo tfull                                                      3223 passed, 75 skipped\ncargo nextest run --workspace --features tokio,json,hot-join     3513 passed, 76 skipped\npython3 scripts/ci/agent-preflight.py --full --auto-fix          all checks passed\n```",
-          "timestamp": "2026-11-16T04:46:18Z",
-          "tree_id": "40c9357f3b3649f7dee501eaaceddcddc107c3ba",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/97e16a73ed70abcb54d0909a8e7eaa68b75e4816"
-        },
-        "date": 1794805040802,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 62420,
-            "range": "± 1275",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 30623,
-            "range": "± 2265",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1862,
-            "range": "± 111",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1554,
-            "range": "± 62",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3141,
-            "range": "± 182",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 6651,
             "range": "± 97",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "22b88948b1eb26cd5c54c38bf064fcbde8de1040",
+          "message": "test: replay terminal epochs and pin hot-join codecs in wasm probes (#535)\n\n## Description\n\nCloses #522.\n\n### Stale terminal replay in the runtime removal probes\n\n- Adds doc-hidden\n`P2PSession::diagnostic_terminal_replay_prepare_bytes`,\n`diagnostic_replay_drop_control_bytes`, and\n`diagnostic_coordinated_drop_active_sequence` surfaces. The first\nencodes a coordinated-drop `Prepare` from a caller-supplied consumed\nterminal epoch against the current target generation, membership, a\nfresh high sequence, and the target endpoint's learned connection id;\nthe second decodes those bytes and delivers them through the normal\ndrop-control path from an explicit source; the third lets the probes\nassert no attempt reopened. The mutating raw replay hook is gated behind\nthe non-default `test-probes` feature (or `cfg(test)`), so it is absent\nfrom normal downstream library builds; the two read-only accessors\nremain doc-hidden.\n- The browser removal probe and the Godot/Emscripten `run_removal_probe`\nnow hot-join the removed slot back after the commit, then replay the\nencoded Prepare from the local coordinator. With the target live again,\nmembership/generation validation passes and the consumed terminal epoch\nis the guard under test. Both probes assert:\n  - the survivor stays `Running`;\n  - no new `PeerDropped` is emitted;\n  - the active attempt sequence is unchanged, so no attempt reopened;\n  - the membership epoch is unchanged; and\n  - the confirmed prefix does not retract.\n- The unit test\n`diagnostic_terminal_replay_prepare_is_rejected_by_the_epoch_fence`\nvalidates the same encoded Prepare against\n`coordinated_drop_validate_prepare` and proves the consumed epoch\nrejects it.\n\n### Hot-join wire-codec digest\n\n- Adds `codec::wire_codec_digest_hot_join`, covering `JoinRequest`,\n`StateSnapshot`, `StateSnapshotAck`, `ReactivateSlot`,\n`ReactivateSlotAck`, `JoinCommitted`, and `JoinAborted`.\n- Pins a separate constant in `fortress-replay-fixture`; the browser,\nGodot/Emscripten, and wasip1 probes all assert it. The core\ncoordinated-drop digest is unchanged, and builds without the feature do\nnot compile the hot-join digest.\n- The wasip1 CI probe now builds the fixture with `--features hot-join`\nso that lane executes the new digest too.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (hidden diagnostic\nreturns `Option`; no new production panic paths)\n- [x] I have added tests that prove the fix is effective (unit epoch\ntest plus browser/Godot/wasip1 runtime checks)\n- [x] I have run `cargo fmt --all -- --check && cargo clippy --workspace\n--all-targets --features tokio,json -- -D warnings` with no warnings\n- [x] I have run `cargo nextest run --workspace --features tokio,json\n--no-fail-fast` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (CHANGELOG,\ndeterminism model, wiki mirror, public API snapshot)\n- [x] I have added an entry to `CHANGELOG.md` for the new doc-hidden\ndiagnostic/codec surface\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Runtime probes:**\n\n| Check | Result |\n| --- | --- |\n| Browser `wasm32-unknown-unknown` suite with `--features hot-join`\n(headless Chromium) | **12/12 passed**, including the new stale-replay\nprobe and hot-join digest |\n| Browser suite without `hot-join` | **9/9 passed**, no warnings |\n| wasip1 probe (`--features hot-join`, wasmtime-compatible WASI via\nNode) | `frames=4096 requests=8192 digest=0x56cc…6d0b\nrequest_digest=0xb195…cf18` |\n| Godot host `cargo check` | pass |\n| Godot `wasm32-unknown-emscripten` `cargo check` | pass |\n| Godot runtime (threaded + non-threaded) | CI lane; not runnable in\nthis local container without Godot/emsdk |\n\n**Native and guard checks:**\n\n| Check | Result |\n| --- | --- |\n| New epoch-fence unit test | 1/1 pass |\n| Hot-join digest native test | 1/1 pass |\n| Full workspace nextest (`--workspace --features tokio,json\n--no-fail-fast`) | **3,751 passed, 77 skipped, 0 failed** |\n| Full lib nextest with `hot-join` | **2,333 passed, 0 skipped** |\n| `cargo fmt --all -- --check` | pass |\n| `cargo clippy --workspace --all-targets --features tokio,json -- -D\nwarnings` | clean |\n| `python3 scripts/api/public_api_census.py --check` | **2,779 symbols\nmatch** |\n| `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix` |\nall checks pass |\n| `actionlint` / workflow pytest (32 tests) | clean |\n| Targeted mutation (diagnostics + active-sequence accessor +\n`wire_codec_digest_hot_join`) | **15 mutants: 8 caught, 7 unviable, 0\nmissed, 0 timeouts** |\n| Wiki sync/consistency, links, changelog rule, typos, markdownlint |\npass |\n\n## Risks and rollback\n\n- The new Prepare builder and active-sequence accessor are read-only and\ndoc-hidden. The mutating raw replay hook is compiled only under the\nnon-default `test-probes` feature or `cfg(test)`; normal downstream\nbuilds cannot call it.\n- The hot-join digest is a separate function under `#[cfg(feature =\n\"hot-join\")]`; non-feature builds and the existing core digest are\nunchanged.\n- The Godot runtime lane is merge-queue/main-gated. Both host and\nEmscripten compile checks pass locally; the CI Godot lane exercises both\nthreaded modes.\n- Roll back by reverting this PR. No production protocol, wire-version,\nor simulation behavior change.\n\n## Related Issues\n\n- Closes #522\n- Follow-up to #516, #519, and #521.",
+          "timestamp": "2026-11-22T19:59:47Z",
+          "tree_id": "20df8c22eeb237964a138dc04a912a5bbb6c2992",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/22b88948b1eb26cd5c54c38bf064fcbde8de1040"
+        },
+        "date": 1795378304485,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 25891,
+            "range": "± 164",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 15937,
+            "range": "± 1253",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 478,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 595,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 5400,
+            "range": "± 161",
             "unit": "ns/iter"
           }
         ]
