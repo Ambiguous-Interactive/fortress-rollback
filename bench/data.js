@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795326448555,
+  "lastUpdate": 1795367731759,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "1d4376798f7ec24a5a57dce76a87005897b87586",
-          "message": "ci(kani): gate PRs on a cfg(kani) compile check (#431)\n\n## Summary\n\nCloses #429, and folds in the actionable findings from three independent\naudits\n(CAP/partition correctness, hot-path performance, adversarial CI\nreview).\n\nPR #427 merged a by-reference `ProofVec` iteration that clippy, tests,\nand rustdoc all\naccept because `ProofVec<T>` is `Vec<T>` in every normal build. The\nfirst compilation of\nthe `cfg(kani)` tree was the merge-group Kani tier, so `main` went red\nafter merging.\nThe PR gate now runs a compile-only `cargo kani --only-codegen` job that\ncatches that\nclass of break before merge.\n\n## CI gate + toolchain\n\n- `.github/workflows/ci-pr.yml`\n- `changes` job runs `scripts/ci/detect-kani-changes.sh` (the single\npath-filter\n    authority). Detection failures fail closed.\n  - `kani-compile` (`needs: changes`) installs pinned Kani and runs\n    `cargo kani --only-codegen`; it is aggregated by `CI Gate`.\n  - Job timeout (40 min) covers the install retry budget plus codegen.\n- `.kani-version` + `.github/actions/setup-kani/action.yml`\n- Single version authority, exact `--version \"=<pin>\"` install, exact\nreported-version\ncheck, shared install/cache steps for the PR gate and all three deep\ntiers.\n  - Devcontainer installs the same pin.\n- Contract tests\n- Executable classifier tests against a scratch git remote (src, nested\nmember\nmanifests, both actions, `.kani-version` => true; docs => false;\nempty/unfetchable\n    base => true).\n- Compile step cannot be bypassed (`continue-on-error`, `|| true`, `;\ntrue` rejected);\n    proof-execution flags are forbidden across the whole PR workflow.\n- The pin must be absent from the composite and every workflow and must\ndrive both\n    cache keys, the install, and verification.\n\n## Correctness / CAP fixes\n\n- **Coordinated drop certificate**: `DropPrepare.participants` is now\nvalidated against\nthe exact current survivor set for every prepare, not just deferred\nones. A single peer\ncan no longer mint a survivor-quorum certificate for an uninvolved third\nslot, and\n  stale-era prepares are rejected after membership changes.\n- **Bounded peer-driven state**: the supersede/abort arms now use the\nsame\n`num_players`-bounded close history as the other three sites (was an\nunbounded deque\n  plus an O(n) replay scan per message).\n- **Spectator final inputs**: a host is tombstoned only after its\ndrained batch is\nprocessed, so a `Goodbye` decoded before the final reliable `Input` no\nlonger drops\n  that input and wedges playback on `PredictionThreshold`.\n- **Sync handshake**: outstanding `sync_random_requests` are capped at\n64 IDs while\n`Synchronizing` (retries continue; a stalled handshake's memory is\nbounded).\n\n## Performance\n\n- `UdpProtocol::last_recv_frame` now uses `BTreeMap::last_key_value` and\nthe history\nprune pops the stale prefix instead of scanning the map on every\npacket/send/poll.\n- `update_player_disconnects` early-outs when no remotes and no live\ncoordinated-drop\nstate exist. Same-run Criterion A/B (`p2p_all_local`, quick, baseline\n`no-guard`):\n  N=2 −9.1%, N=4 −3.7%, N=16 −8.3%.\n\n## Red/green evidence\n\n```text\n# cfg(kani) gate, with `for queue in &self.input_queues` restored\n$ cargo kani --only-codegen\nerror[E0277]: `&proof_vec::InlineVec<input_queue::InputQueue<T>, 7>` is not an iterator\nexit=1\n\n# spectator (deferral reverted)\nspectator_goodbye_before_final_input_preserves_the_input\n  -> last_recv_frame: left NULL, right Frame(0)\n\n# sync retry bound (cap raised)\noutstanding_sync_requests_stay_bounded -> left 1000, right 64\n\n# drop certificate (membership check removed)\ncoordinated_drop_prepare_requires_the_current_survivor_set\n  -> \"a certificate that omits the running survivor must be rejected\"\n\n# drop close history (trim removed)\ncoordinated_drop_closed_history_stays_bounded -> left 1000, right 2\n```\n\n## Verification\n\n- `cargo fmt --all` — clean.\n- `cargo clippy --workspace --all-targets --features tokio,json -- -D\nwarnings` — clean.\n- `cargo tfull` — **3212 passed, 75 skipped**.\n- `cargo nextest run --workspace --features tokio,json,hot-join` —\n**3501 passed, 76 skipped**.\n- `cargo nextest run --test sessions -E 'test(peer_drop)' --features\ntokio,json` — 36 passed.\n- `cargo nextest run --test sessions -E 'test(hot_join)' --features\ntokio,json,hot-join` — 43 passed.\n- `cargo kani --only-codegen` (local 0.68 bundle, `RUSTFLAGS=--cap-lints\nallow`) — pass.\n- `python3 -m pytest scripts/tests` — 2250+ passed (new classifier\nmatrix included).\n- `actionlint`, skill validator, markdownlint, typos, changelog rule —\nclean.\n- `python3 scripts/ci/agent-preflight.py --full --auto-fix` — all checks\npassed.\n- PR #431: `Kani cfg Compile` green; full check list tracked in the PR.\n\nNo public API or wire-format change. The two `**Pre-existing:**`\nchangelog entries cover\nthe spectator ordering fix and the coordinated-drop certificate\nvalidation.",
-          "timestamp": "2026-11-15T23:47:57Z",
-          "tree_id": "9dbf2c50ef392c1c6c76adf308f87a79e59f8d9c",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/1d4376798f7ec24a5a57dce76a87005897b87586"
-        },
-        "date": 1794787171713,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 62023,
-            "range": "± 870",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 31688,
-            "range": "± 220",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1656,
-            "range": "± 113",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1557,
-            "range": "± 75",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 2894,
-            "range": "± 253",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 2765,
             "range": "± 160",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "fa1a62476b6d77a14639be1cdbfe9c5232c151c2",
+          "message": "fix: reject halted removals and gate provisional Ready digests (#530)\n\n## Description\n\nCloses #528 and #529, the two out-of-diff review follow-ups on the\ncoordinated-removal work.\n\n### #528: terminal sessions reject new local removals\n\nA session with a latched `halt_confirmed_ceiling` is terminal. The\npolling path already refused new work, but `remove_player` could still\nclose a hot-join reactivation and enqueue/broadcast an attempt before\nthe next poll observed the halt.\n\n- `remove_player` now returns `InvalidRequestKind::WrongProtocolState {\ncurrent_state: \"Halted\", expected_state: \"Running\" }` before any\nmembership or attempt mutation.\n- The automatic timeout path returns on an already-halted session\ninstead of logging a synthetic internal failure for the expected\nrejection.\n- Removal during ordinary initial synchronization stays available\nbecause it uses the same entry point with the halt latch unset.\n\n### #529: provisional Ready reports cannot lock the digest\n\nWhen the cut frame was known but its digest was not, a non-authority\nReady could lock `cut_digest` and count toward quorum. A single\nnon-authority peer could therefore lock a divergent digest before the\nauthority's correct Ready, turning a healthy session into\n`ConflictingHistory`.\n\n- Pre-digest participant Ready reports now live in a separate\n`provisional_ready` map and never count toward the strict-majority\nquorum.\n- The expected digest is locked only by the deterministic\ncoordinator/acting fallback or by independently verified local history.\n- Matching provisional transcripts are promoted when the digest is\nlocked; mismatching provisional reports are discarded as peer artifacts.\n- The existing strict-majority certificate, fallback authority,\npartition, replay, and commit paths are unchanged.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (no new production\n`unwrap`/`expect`/`panic!`/`todo!`; errors remain `Result`)\n- [x] I have added tests that prove the fix is effective (red-before\noutput below)\n- [x] I have run `cargo fmt --all -- --check && cargo clippy --workspace\n--all-targets --features tokio,json -- -D warnings` with no warnings\n- [x] I have run `cargo nextest run --workspace --features tokio,json\n--no-fail-fast` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (rustdoc, API\ncontracts, user guide, generated wiki mirrors)\n- [x] I have added an entry to `CHANGELOG.md` for user-facing changes\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Red evidence before the fix (intended failures):**\n\n| Test | Before |\n| --- | --- |\n| `halted_session_rejects_a_new_local_removal_before_mutating_state` |\nFAILED: `left: Ok(())`, expected `WrongProtocolState` |\n| `non_authority_ready_cannot_lock_the_digest_or_count` | FAILED: `left:\nSome(7)`, expected `None` |\n|\n`local_history_locks_the_digest_despite_a_conflicting_provisional_ready`\n| FAILED: `mark_ready` returned `ConflictingHistory` |\n\n**Tests added/modified:**\n\n- `halted_session_rejects_a_new_local_removal_before_mutating_state` —\nchecks the exact error, unchanged membership, empty attempt/queue, and\nno initial prepare.\n- `non_authority_ready_cannot_lock_the_digest_or_count`\n-\n`matching_provisional_ready_is_promoted_when_authority_locks_the_digest`\n-\n`local_history_locks_the_digest_despite_a_conflicting_provisional_ready`\n- `ready_conflicts_are_authority_scoped` retained; `drop_c_cleanly` now\ntolerates `WrongProtocolState` only for the already-pruned terminal\npeer.\n- PCT schedule fingerprint re-pinned after the intended behavior change;\nit still has three survivors within one frame and the removed target\nbelow them.\n\n**Manual testing performed:**\n\n| Check | Result |\n| --- | --- |\n| Targeted new/affected tests | 5/5 pass |\n| Full lib nextest | 2,055 passed |\n| Full workspace nextest (`--workspace --features tokio,json\n--no-fail-fast`) | **3,744 passed, 77 skipped, 0 failed** |\n| `cargo fmt --all -- --check` | pass |\n| `cargo clippy --workspace --all-targets --features tokio,json -- -D\nwarnings` | clean |\n| `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix` |\nall checks pass |\n| Targeted mutation (`-F\n'promote_provisional\\|establish_ready_digest\\|remove_player'`,\n`ready`/`removal` tests) | **9 mutants: 5 caught, 4 unviable, 0 missed**\n|\n| `cargo check --target wasm32-unknown-unknown --no-default-features` |\npass |\n| `cargo check -p wasm-browser-smoke --features hot-join --target\nwasm32-unknown-unknown --lib --tests` | pass |\n| Wiki sync/consistency, links, changelog rule, typos, markdownlint |\npass |\n\n## Risks and rollback\n\n- A provisional Ready whose origin stops retransmitting before the\ndigest is established can wait until the bounded two-second operation\ndeadline; reports retransmit every poll and the outcome stays\nfail-closed.\n- The commit path still accepts a certificate relayed by a non-authority\nsource. That is intentional: the commit is the authority's post-quorum\ncertificate, unlike a pre-digest Ready.\n- The PCT schedule fingerprint moved because a halted peer no longer\nemits a removal prepare and provisional Ready reports no longer count\nearly. The lagging-survivor shape and replay determinism assertions\nstill hold.\n- Roll back by reverting this PR. No wire format or protocol version\nchange.\n\n## Related Issues\n\n- Closes #528\n- Closes #529\n- Follow-up to #486 and #509.",
+          "timestamp": "2026-11-22T17:04:16Z",
+          "tree_id": "a5dd5037ab7d2674833cdd2e76931cbf83acd4a4",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/fa1a62476b6d77a14639be1cdbfe9c5232c151c2"
+        },
+        "date": 1795367730222,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 25300,
+            "range": "± 1022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 15719,
+            "range": "± 319",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 475,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 584,
+            "range": "± 33",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 5328,
+            "range": "± 416",
             "unit": "ns/iter"
           }
         ]
