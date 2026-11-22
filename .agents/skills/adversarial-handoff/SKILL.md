@@ -19,6 +19,13 @@ Trigger when changes touch:
 - Frame arithmetic / rollback bounds
 - Save/load state integrity
 - Determinism-critical logic
+- Wire-format or protocol compatibility
+- Security-sensitive runtime behavior (auth/identity, secrets, network egress)
+
+For supply-chain, CI, or agent-tooling changes, use
+[dependency-management.md](../dependency-management/SKILL.md),
+[github-actions.md](../github-actions/SKILL.md), and
+[ci-debugging.md](../ci-debugging/SKILL.md) instead.
 
 Action:
 
