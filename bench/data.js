@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795367731759,
+  "lastUpdate": 1795369841196,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "4e6c2e534778e53b538c743bf1f812e822f3506c",
-          "message": "fix: bound hot-join pauses, truncate ended spectators, trim receive staging (#435)\n\n## Summary\n\nCloses #433, #434, and #432.\n\n### Spectator terminal truncation (#434)\n\n`FortressError::SpectatorStreamEnded { frame }` is the explicit terminal\nstate for a spectator whose\nlast host disconnected before the next frame's input arrived. The\nspectator still drains every frame\nreceived before the `Goodbye`; a final input arriving in a later poll\nfrom the removed host is\nrejected as an unknown source. Exhaustive error matches need the new arm\n(breaking).\nRed/green: new\n`spectator_late_final_input_after_host_removal_reports_terminal_truncation`;\nthe two\nall-hosts-drained tests now assert `SpectatorStreamEnded` at the exact\ntruncation frame.\n\n### Hot-join pause bound (#433)\n\nEach timed-out serve records a per-handle retry floor. The next serve\nmay open only after the host\nhas advanced `1, 2, 4, ...` frames (cap 256), so a peer that syncs but\nnever acks cannot keep the\nhost paused in a near-continuous duty cycle. The backoff is shared by\nthe 2-peer and N-peer serve\npaths, cleared on successful join or a fresh endpoint era, and only\nduring the backoff window are\nsimulation inputs withheld from the abandoned reserved endpoint\n(preventing its `pending_output`\noverflow from resetting the budget). Normal reserved-slot input traffic\nis unchanged.\nRed/green:\n`hot_join_timed_out_serves_are_bounded_by_exponential_backoff` drives 12\nforced timeout\nwindows and asserts exact `1,2,4,...,256` progress between serves,\nblocked immediate re-requests,\nand a single-window send-queue high-water bound.\n\n### Receive staging (#432)\n\n- Decoded input frames and per-player input vectors use `SmallVec`\ninline storage for the common\n  `<=4` case (fallible heap growth above it).\n- Consecutive packets reuse the connect-status `Arc<[ConnectionStatus]>`\nwhile gossip is unchanged.\n- `P2PSession::poll_remote_clients` retains its event-staging queue\nacross polls.\n- Warmed one-Input receive poll measured: **8 -> 6 allocation ops** and\n**1408 -> 1152 bytes** at\nN=2 (N=4 1424->1168, N=16 1520->1264). `tests/allocation_contract.rs`\nnow enforces 6 ops / 1280\n  bytes and tightens the send byte ceilings to 96/112/500.\n- The suggested `confirmed_frame` gating was implemented and measured,\nthen rejected: it shifted the\n`4p-loss15-rtt200-4b` deterministic sweep baseline from 7119.4 to 7500.7\nbytes/player/sec for a\n  sub-microsecond fold saving. The sweep is green after reverting it.\n\n## Verification\n\n```text\ncargo fmt --all -- --check                         clean\ncargo clippy --workspace --all-targets --features tokio,json,hot-join -- -D warnings  clean\ncargo nextest run --workspace --features tokio,json,hot-join --no-fail-fast            3504 passed, 76 skipped\ncargo tfull                                                                            3214 passed, 75 skipped\ncargo nextest run --test sessions -E 'test(hot_join)' --features tokio,json,hot-join   43 passed\ncargo nextest run --test allocation_contract --features tokio,json                     pass\npython3 scripts/ci/agent-preflight.py --full --auto-fix                                all checks passed\npython3 scripts/hooks/check-changelog-unreleased.py                                    pass\npython3 scripts/hooks/check-plan-hygiene.py                                            pass\n```\n\nChangelog entries cover the breaking error variant, the hot-join\navailability fix, and the receive\nallocation reduction. `PLAN.md` keeps only the measured-rejected\nfold/send-encode follow-up.\n\n\n### Send-side scratch reuse (#432 continuation, `f673d6c`)\n\n`compression::try_delta_encode_into` backs a doc-hidden\n`try_encode_with_scratch`; `UdpProtocol`\nnow owns the XOR-delta scratch used by both pending-input sends and\nconnect-status nudges. Only the\nqueued RLE output allocates per packet. A new test proves the scratch\npath is byte-identical to\n`try_encode` and does not reallocate once warm. Warmed networked send\nallocation contract:\nN=2 **4 ops/66 B -> 3/58**, N=4 **4/90 -> 3/78**, N=16 **5/482 ->\n4/422**; ceilings tightened to\n3/64, 3/84, 4/440. `sweep_pr_gate` remains green, confirming unchanged\nwire traffic. `PLAN.md` now\ntracks only the measured-rejected confirmation-fold sharing follow-up.\n\n\n### Confirmation-fold sharing (#432 completion, `2dfb7fe`)\n\n`poll_remote_clients` already computes the mesh `confirmed_frame` fold\nfor the gossip-liveness\nnudge. `advance_frame` now reuses that exact value when no endpoint\nevent or disconnect propagation\nchanged a folding input; event handling, live coordinated-drop state,\nand hot-join orchestration\ninvalidate the cache, and `update_player_disconnects` reports whether it\nmutated status. A test-only\nfold counter plus\n`advance_frame_reuses_the_poll_confirmation_fold_when_no_state_changed`\nproves an\nidle advance performs **one mesh fold instead of two**. `sweep_pr_gate`\nremains byte-identical.\n`PLAN.md` is now empty.",
-          "timestamp": "2026-11-16T03:24:30Z",
-          "tree_id": "435a67dc69b3154f427229b35cd73b476ace902f",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/4e6c2e534778e53b538c743bf1f812e822f3506c"
-        },
-        "date": 1794800195592,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 37586,
-            "range": "± 466",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 24615,
-            "range": "± 214",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1091,
-            "range": "± 13",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1246,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 2768,
-            "range": "± 165",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 5328,
             "range": "± 416",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "38f52761e31496b55f54b9efe33930938304b74f",
+          "message": "fix: clear latched checksum mismatches on history rewrites (#532)\n\n## Description\n\nCloses #531, the remaining out-of-diff review follow-up from #462.\n\nA confirmed checksum mismatch is latched in\n`remote.checksum_mismatch_frame`, and `sync_health` reports that latch\nbefore every other branch. Freeze convergence, certified-cut\nresimulation, and reserved-slot convergence remove the local checksum\nentries at or above a rewritten frame (the F11 stale-checksum fix), but\nthe latch survived. After both peers converged and exchanged matching\npost-rewrite checksums, `sync_health` still returned `DesyncDetected`\nand `is_synchronized()` could not recover from a basis that no longer\nexisted.\n\n- Added `invalidate_checksum_mismatch_from(frame)`, which clears a\npeer's latch and any still-pending comparison report at or above the\nrewritten floor, while leaving mismatches and pending reports below it\ncomparable.\n- Applied it at every confirmed-history rewrite site: disconnect/freeze\nconvergence, certified-cut resimulation, and reserved-slot freeze\nconvergence.\n- Kept old-checksum **eviction** separate: a real divergence remains\nlatched when its basis is merely aged out, not rewritten.\n- A checksum report carries only `(frame, checksum)`; a delayed\npre-rewrite report can therefore still arrive after the rewrite. A\nvalue-equality heuristic was tried and removed because it could hide a\ngenuine post-rewrite mismatch. The protocol-generation fix is tracked in\n#533.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (no new production\n`unwrap`/`expect`/`panic!`/`todo!`; errors remain `Result`)\n- [x] I have added tests that prove the fix is effective (red-before\noutput below)\n- [x] I have run `cargo fmt --all -- --check && cargo clippy --workspace\n--all-targets --features tokio,json -- -D warnings` with no warnings\n- [x] I have run `cargo nextest run --workspace --features tokio,json\n--no-fail-fast` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (rustdoc/comment\ncontract, user guide, generated wiki mirror)\n- [x] I have added an entry to `CHANGELOG.md` for user-facing changes\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Red evidence before the fix:**\n\n```text\nfreeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated:\nleft: Some((Frame(8), 4104, 8200))\nright: None\n```\n\n**Tests added:**\n\n- `freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated`\n— latches a pre-convergence mismatch, adds pending reports at/above the\nfloor, runs the disconnect/freeze rewrite, asserts both comparison\nstates clear, and then restores `InSync` with the post-rewrite match.\n- `freeze_rewrite_keeps_a_mismatch_below_the_invalidated_floor` — a real\ndivergence and its pending basis below the floor stay comparable.\n- `certified_cut_resimulation_clears_a_latched_mismatch_at_the_cut`\n-\n`reserved_slot_freeze_convergence_clears_a_latched_mismatch_above_floor`\n(`hot-join`)\n\n**Manual testing performed:**\n\n| Check | Result |\n| --- | --- |\n| Targeted tests | 6/6 pass |\n| Full lib nextest with `tokio,json,hot-join` | **2,326 passed, 0\nskipped** |\n| Full workspace nextest (`--workspace --features tokio,json\n--no-fail-fast`) | **3,748 passed, 77 skipped, 0 failed** |\n| `cargo fmt --all -- --check` | pass |\n| `cargo clippy --workspace --all-targets --features tokio,json -- -D\nwarnings` | clean |\n| `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix` |\nall checks pass |\n| Targeted mutation on the new helper\n(`invalidate_checksum_mismatch_from`) | **5 mutants: 4 caught, 1\nunviable, 0 missed** |\n| Wiki sync/consistency, links, changelog rule, typos, markdownlint |\npass |\n\n## Risks and rollback\n\n- Clearing a latch at/above a rewritten floor can discard a real\nmismatch at that frame. The rewrite changed the local basis, so the old\ncomparison is no longer valid; the next post-rewrite comparison\nre-latches a genuine divergence. Mismatches below the floor stay\nlatched.\n- A delayed pre-rewrite checksum report can still relatch after a\nrewrite because checksum reports carry no generation. #533 tracks the\nprotocol metadata; this PR deliberately does not suppress reports by\nvalue, which could hide a genuine mismatch.\n- Eviction is intentionally not treated as a rewrite, so aging out an\nold checksum cannot clear a real divergence.\n- Roll back by reverting this PR. No wire format or protocol version\nchange.\n\n## Related Issues\n\n- Closes #531\n- Follow-up to #462.\n- Tracked protocol-generation follow-up: #533.\n- Independent of #530 / #528 / #529.",
+          "timestamp": "2026-11-22T17:36:58Z",
+          "tree_id": "b4e8555b2c741135b4418c6f298ff26cdf14e1b3",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/38f52761e31496b55f54b9efe33930938304b74f"
+        },
+        "date": 1795369840024,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 47423,
+            "range": "± 1326",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 29529,
+            "range": "± 475",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 748,
+            "range": "± 107",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 982,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 7708,
+            "range": "± 100",
             "unit": "ns/iter"
           }
         ]
