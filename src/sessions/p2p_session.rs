@@ -356,6 +356,19 @@ const COORDINATED_DROP_COMMIT_RETRY_WINDOW: web_time::Duration = web_time::Durat
 /// conflicting cut.
 const COORDINATED_DROP_FALLBACK_GRACE: web_time::Duration = web_time::Duration::from_secs(1);
 
+/// Largest first epoch a fresh acting fallback may adopt from a retained
+/// candidate.
+///
+/// A fallback that hot-joined after the coordinator's previous operations has
+/// no local epoch state for that coordinator generation. Requiring equality
+/// with its empty map (zero) would reject the requester's legitimate epoch and
+/// the removal would time out. Adopting the candidate's epoch is safe for this
+/// local admission fence, but an unbounded value from one peer could fence the
+/// target set for the session. A million membership operations is far beyond
+/// any session's realistic lifetime, so a value above this bound is treated as
+/// a hostile future proposal and rejected.
+const COORDINATED_DROP_MAX_ADOPTED_EPOCH: u32 = 1_000_000;
+
 /// One participant's announcement that it can currently serve a drop backfill.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 struct DonorAnnouncement {
@@ -427,13 +440,14 @@ struct TerminalTargetWatermark {
     terminal_epoch: u32,
 }
 
-/// One authority-scoped, monotone terminal-attempt epoch for a canonical target
-/// handle set.
+/// One authority-generation-scoped, monotone terminal-attempt epoch for a
+/// canonical target handle set.
 ///
 /// The epoch is an unbounded-safe replay guard: `next` is the only epoch the
-/// authority will accept for this handle set. Admission consumes it and
-/// advances it, so an operation from an older epoch can never reopen an attempt
-/// even after the bounded exact-identity window has evicted it (issue #516).
+/// authority will accept for this handle set and generation. Admission
+/// consumes it and advances it, so an operation from an older epoch can never
+/// reopen an attempt even after the bounded exact-identity window has evicted
+/// it (issue #516).
 ///
 /// Epochs are scoped to the operation's named coordinator identity. A new
 /// coordinator generation, or a coordinator change after a removal, starts a
@@ -443,14 +457,23 @@ struct TerminalTargetWatermark {
 /// an old epoch.
 #[derive(Clone, Debug)]
 struct TerminalEpochEntry {
-    /// Operation coordinator this epoch space belongs to.
-    coordinator: u16,
-    /// Connected-era generation of that coordinator.
-    coordinator_generation: u16,
     /// Canonical target handles and the generations `next` applies to.
     targets: Vec<DropTarget>,
     /// The next acceptable terminal epoch. Never decreases for one authority.
     next: u32,
+}
+
+/// Identity of one authority-scoped terminal-epoch space.
+///
+/// The canonical target handle set is shared, but the coordinator generation
+/// is part of the space: a participant may legitimately hold both its current
+/// era and the next one during a rejoin window, and one entry must not swallow
+/// the other. Pruning keeps at most two generations per target set.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct TerminalEpochKey {
+    handles: Vec<u16>,
+    coordinator: u16,
+    coordinator_generation: u16,
 }
 
 #[derive(Debug)]
@@ -489,10 +512,11 @@ struct CoordinatedDropState<A> {
     /// the authority-scoped terminal-epoch map below is the unbounded-safe
     /// replay boundary (issue #516).
     terminal_targets: BTreeMap<u16, VecDeque<TerminalTargetWatermark>>,
-    /// Authority-scoped monotone terminal-attempt epochs, keyed by the canonical
-    /// target handle set. At most one entry per remote endpoint, so the map is
-    /// bounded by the roster (`alloc-bound` at insertion).
-    terminal_epochs: BTreeMap<Vec<u16>, TerminalEpochEntry>,
+    /// Authority-scoped monotone terminal-attempt epochs, keyed by the
+    /// canonical target handle set plus the coordinator generation. At most two
+    /// acceptable generations per remote endpoint, so the map is bounded by
+    /// twice the roster (`alloc-bound` at insertion).
+    terminal_epochs: BTreeMap<TerminalEpochKey, TerminalEpochEntry>,
     /// Recently rejected superseded prepares, bounded to one per player.
     rejected: VecDeque<RejectedDropOperation>,
     /// Targets of an uncertified attempt that a failed-closed session abandoned.
@@ -2053,85 +2077,113 @@ impl<T: Config> P2PSession<T> {
         stored.next().is_none()
     }
 
-    /// The next acceptable terminal epoch for one authority and target set.
+    /// Canonical key for one authority generation's epoch space.
+    fn coordinated_drop_epoch_key(
+        coordinator: u16,
+        coordinator_generation: u16,
+        targets: &[DropTarget],
+    ) -> TerminalEpochKey {
+        TerminalEpochKey {
+            handles: Self::coordinated_drop_target_handles(targets),
+            coordinator,
+            coordinator_generation,
+        }
+    }
+
+    /// The next acceptable terminal epoch for one authority generation and
+    /// target set.
     ///
-    /// Returns zero when this endpoint has no epoch state for the authority:
-    /// a fresh coordinator generation, a new coordinator after a removal, or a
-    /// first operation in the era.
+    /// Returns zero when this endpoint has no epoch state for the exact
+    /// authority generation: a fresh coordinator generation, a new coordinator
+    /// after a removal, or a first operation in the era. A different
+    /// generation is a different epoch space, not a lower value for this one.
     fn coordinated_drop_epoch_next(
         &self,
         coordinator: u16,
         coordinator_generation: u16,
         targets: &[DropTarget],
     ) -> u32 {
-        let key = Self::coordinated_drop_target_handles(targets);
+        let key = Self::coordinated_drop_epoch_key(coordinator, coordinator_generation, targets);
         self.coordinated_drop
             .terminal_epochs
             .get(&key)
-            .filter(|entry| {
-                entry.coordinator == coordinator
-                    && entry.coordinator_generation == coordinator_generation
-            })
             .map_or(0, |entry| entry.next)
+    }
+
+    /// Whether this endpoint has ever recorded an epoch in the exact authority
+    /// generation's space.
+    fn coordinated_drop_epoch_has_state(
+        &self,
+        coordinator: u16,
+        coordinator_generation: u16,
+        targets: &[DropTarget],
+    ) -> bool {
+        let key = Self::coordinated_drop_epoch_key(coordinator, coordinator_generation, targets);
+        self.coordinated_drop.terminal_epochs.contains_key(&key)
     }
 
     /// Records that an authority epoch was consumed by an admitted operation.
     ///
-    /// New authority identities replace the entry (their epoch space is
-    /// independent); the same authority only advances `next`. The target
-    /// generations are refreshed so a reactivated slot carries the epoch
-    /// forward. Fails with [`DropAbortReason::ResourceLimit`] on epoch
-    /// exhaustion or when the bounded entry set cannot grow: refusing the
-    /// operation is safer than reusing an epoch.
+    /// Epoch spaces are keyed by the exact `(target handles, coordinator,
+    /// coordinator generation)`, so a current-era entry and the next-era entry
+    /// observed during a rejoin window cannot swallow each other. The same
+    /// space only advances `next`, and the target generations are refreshed so
+    /// a reactivated slot carries the epoch forward. Fails with
+    /// [`DropAbortReason::ResourceLimit`] on epoch exhaustion or when the
+    /// bounded entry set cannot grow: refusing the operation is safer than
+    /// reusing an epoch.
     fn coordinated_drop_record_epoch(
         &mut self,
         operation: DropOperationId,
         targets: &[DropTarget],
         next: u32,
     ) -> Result<(), DropAbortReason> {
-        let key = Self::coordinated_drop_target_handles(targets);
+        let key = Self::coordinated_drop_epoch_key(
+            operation.coordinator,
+            operation.coordinator_generation,
+            targets,
+        );
         // alloc-bound: the copied target list is bounded by `num_players`, and
-        // the entry map holds at most one entry per canonical target handle
-        // set, which is itself bounded by the roster.
+        // the entry map holds at most two generations per canonical target
+        // handle set, which is itself bounded by the roster.
         let mut copied = Vec::new();
         copied
             .try_reserve_exact(targets.len())
             .map_err(|_err| DropAbortReason::ResourceLimit)?;
         copied.extend_from_slice(targets);
-        // A same-handle generation change may only move forward. A delayed
-        // abort or prepare from a generation this endpoint has moved past must
-        // not replace a newer era's entry, or the newer generation's epoch
-        // would reset to zero and a delayed prepare could pass the gate.
+        // A delayed artifact from a generation this endpoint has moved past
+        // must not create a new epoch space. The coordinator may be one
+        // generation ahead (it observed its own rejoin first), so both the
+        // local and local+1 generations remain acceptable.
         let coordinator_handle = PlayerHandle::new(usize::from(operation.coordinator));
-        let local_generation = self.local_coordinated_drop_generation(coordinator_handle);
-        let incoming_generation_acceptable = self.coordinated_drop_target_generation_acceptable(
+        let Some(local_generation) = self.local_coordinated_drop_generation(coordinator_handle)
+        else {
+            return Ok(());
+        };
+        if !self.coordinated_drop_target_generation_acceptable(
             coordinator_handle,
             operation.coordinator_generation,
-        );
-        if let Some(entry) = self.coordinated_drop.terminal_epochs.get_mut(&key) {
-            if entry.coordinator == operation.coordinator {
-                if entry.coordinator_generation == operation.coordinator_generation {
-                    entry.next = entry.next.max(next);
-                    entry.targets = copied;
-                    return Ok(());
-                }
-                let Some(local) = local_generation else {
-                    return Ok(());
-                };
-                let stored_is_the_newer_era = entry.coordinator_generation == local.wrapping_add(1)
-                    && operation.coordinator_generation == local;
-                if !incoming_generation_acceptable || stored_is_the_newer_era {
-                    return Ok(());
-                }
-            }
-            *entry = TerminalEpochEntry {
-                coordinator: operation.coordinator,
-                coordinator_generation: operation.coordinator_generation,
-                targets: copied,
-                next,
-            };
+        ) {
             return Ok(());
         }
+        if let Some(entry) = self.coordinated_drop.terminal_epochs.get_mut(&key) {
+            entry.next = entry.next.max(next);
+            entry.targets = copied;
+            return Ok(());
+        }
+        // A target set has one current coordinator and at most two acceptable
+        // generations (local and local+1). Drop older coordinators and
+        // generations so a long-lived session cannot fill the bounded map with
+        // dead spaces. A coordinator change starts a fresh space; the
+        // coordinator-generation fence rejects its predecessor's artifacts.
+        self.coordinated_drop
+            .terminal_epochs
+            .retain(|existing, _entry| {
+                existing.handles != key.handles
+                    || (existing.coordinator == key.coordinator
+                        && (existing.coordinator_generation == local_generation
+                            || existing.coordinator_generation == local_generation.wrapping_add(1)))
+            });
         if self.coordinated_drop.terminal_epochs.len() >= self.num_players.saturating_mul(2).max(1)
         {
             // A canonical target set is the fixed handle set of one remote
@@ -2151,8 +2203,6 @@ impl<T: Config> P2PSession<T> {
         self.coordinated_drop.terminal_epochs.insert(
             key,
             TerminalEpochEntry {
-                coordinator: operation.coordinator,
-                coordinator_generation: operation.coordinator_generation,
                 targets: copied,
                 next,
             },
@@ -2166,6 +2216,13 @@ impl<T: Config> P2PSession<T> {
     /// future proposal with a `Superseded` abort carrying that next epoch. A
     /// participant accepts any authority epoch at or above its next and
     /// silently discards an older one as a terminal replay.
+    ///
+    /// A fresh acting fallback has one exception: it may have hot-joined after
+    /// the coordinator's earlier operations, so it has no local state for that
+    /// generation. The retained candidate is the only epoch evidence it has.
+    /// Adopt a bounded first epoch rather than rejecting a legitimate retry
+    /// forever; a value above [`COORDINATED_DROP_MAX_ADOPTED_EPOCH`] is still a
+    /// hostile future proposal.
     fn coordinated_drop_admit_epoch(
         &mut self,
         prepare: &DropPrepare,
@@ -2182,6 +2239,18 @@ impl<T: Config> P2PSession<T> {
         );
         if local_is_authority {
             if prepare.operation.terminal_epoch == authority_next {
+                return true;
+            }
+            let acting_fallback = acting == Some(local_participant);
+            let no_local_state = !self.coordinated_drop_epoch_has_state(
+                prepare.operation.coordinator,
+                prepare.operation.coordinator_generation,
+                &prepare.targets,
+            );
+            if acting_fallback
+                && no_local_state
+                && prepare.operation.terminal_epoch <= COORDINATED_DROP_MAX_ADOPTED_EPOCH
+            {
                 return true;
             }
             self.coordinated_drop_note_rejected(prepare.operation, &prepare.targets);
@@ -20193,7 +20262,8 @@ mod tests {
             !session
                 .coordinated_drop
                 .terminal_epochs
-                .contains_key(&vec![5]),
+                .keys()
+                .any(|key| key.handles == vec![5]),
             "stale handle sets are reclaimed"
         );
         assert_eq!(
@@ -20734,9 +20804,6 @@ mod tests {
     #[test]
     fn record_epoch_replaces_a_behind_era_when_the_local_view_advanced() {
         let mut session = five_player_majority_session(PlayerHandle::new(1));
-        if let Some(status) = session.local_connect_status.get_mut(0) {
-            status.epoch = 1;
-        }
         let targets = vec![DropTarget {
             handle: 4,
             generation: 0,
@@ -20754,6 +20821,9 @@ mod tests {
         session
             .coordinated_drop_record_epoch(operation(0), &targets, 1)
             .expect("seed the behind era");
+        if let Some(status) = session.local_connect_status.get_mut(0) {
+            status.epoch = 1;
+        }
         session
             .coordinated_drop_record_epoch(operation(1), &targets, 1)
             .expect("admit the current era");
@@ -20761,6 +20831,143 @@ mod tests {
             session.coordinated_drop_epoch_next(0, 1, &targets),
             1,
             "a current-era admission replaces a stored behind era"
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            0,
+            "the behind era is pruned instead of lingering in the bounded map"
+        );
+    }
+
+    #[test]
+    fn current_era_epoch_is_recorded_when_a_one_ahead_era_is_stored() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let operation = |generation| DropOperationId {
+            coordinator: 0,
+            coordinator_generation: generation,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &[0, 1, 2, 3],
+            ),
+            terminal_epoch: 0,
+        };
+        session
+            .coordinated_drop_record_epoch(operation(1), &targets, 1)
+            .expect("seed the one-ahead era");
+        session
+            .coordinated_drop_record_epoch(operation(0), &targets, 1)
+            .expect("consume the current era");
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            1,
+            "a one-ahead era must not swallow the current era's epoch"
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 1, &targets),
+            1,
+            "the one-ahead era keeps its own epoch"
+        );
+    }
+
+    #[test]
+    fn fallback_admits_a_bounded_first_epoch_without_local_state() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let mut candidate = fallback_prepare(4);
+        candidate.operation.terminal_epoch = 3;
+        session.coordinated_drop_note_fallback_prepare(candidate);
+        let aged = session.coordinated_drop_now()
+            - COORDINATED_DROP_FALLBACK_GRACE
+            - web_time::Duration::from_millis(1);
+        if let Some(pending) = session.coordinated_drop.fallback_prepare.as_mut() {
+            pending.first_seen_at = aged;
+            pending.coordinator_heard_at = None;
+        }
+        session.drive_coordinator_fallback();
+        let active = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .expect("a fresh fallback must adopt a bounded first epoch from a quorum peer");
+        assert_eq!(
+            active.operation.terminal_epoch, 3,
+            "the adopted epoch is the retained candidate's epoch"
+        );
+        assert_eq!(
+            active.acting_coordinator,
+            Some(1),
+            "promotion installs the deterministic fallback authority"
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &active.targets),
+            4,
+            "adoption consumes the proposed epoch"
+        );
+    }
+
+    #[test]
+    fn fallback_adopts_the_maximum_bounded_first_epoch() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let mut candidate = fallback_prepare(4);
+        candidate.operation.terminal_epoch = COORDINATED_DROP_MAX_ADOPTED_EPOCH;
+        session.coordinated_drop_note_fallback_prepare(candidate);
+        let aged = session.coordinated_drop_now()
+            - COORDINATED_DROP_FALLBACK_GRACE
+            - web_time::Duration::from_millis(1);
+        if let Some(pending) = session.coordinated_drop.fallback_prepare.as_mut() {
+            pending.first_seen_at = aged;
+            pending.coordinator_heard_at = None;
+        }
+        session.drive_coordinator_fallback();
+        assert!(
+            session.coordinated_drop.active.is_some(),
+            "the adoption bound is inclusive"
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &fallback_targets(4)),
+            COORDINATED_DROP_MAX_ADOPTED_EPOCH.saturating_add(1),
+            "the inclusive bound still consumes the epoch"
+        );
+    }
+
+    #[test]
+    fn fallback_rejects_an_unbounded_first_epoch_without_local_state() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let participants = vec![0, 1, 2, 3];
+        let prepare = DropPrepare {
+            operation: DropOperationId {
+                coordinator: 0,
+                coordinator_generation: 0,
+                sequence: 1,
+                target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(
+                    &targets,
+                ),
+                participant_set_digest:
+                    P2PSession::<TestConfig>::coordinated_drop_participant_digest(&participants),
+                terminal_epoch: COORDINATED_DROP_MAX_ADOPTED_EPOCH.saturating_add(1),
+            },
+            targets: targets.clone(),
+            participants,
+        };
+        session
+            .coordinated_drop_accept_prepare_with_act(prepare, Some(1), Some(1))
+            .expect("an unbounded future proposal is a peer artifact");
+        assert!(
+            session.coordinated_drop.active.is_none(),
+            "a fresh fallback must not adopt an unbounded future epoch"
+        );
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            0,
+            "a rejected proposal does not consume an epoch"
         );
     }
 
