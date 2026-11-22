@@ -4,6 +4,8 @@ use crate::frame_info::PlayerInput;
 use crate::metrics::HotJoinMetrics;
 use crate::metrics::{PeerMetrics, SessionMetrics};
 #[cfg(feature = "hot-join")]
+use crate::network::messages::ChecksumBasis;
+#[cfg(feature = "hot-join")]
 use crate::network::messages::StateSnapshot;
 use crate::network::messages::{
     ConnectionStatus, DropAbort, DropAbortReason, DropBackfill, DropCommit, DropOperationId,
@@ -118,6 +120,24 @@ fn checksum_history_oldest_frame(frame_to_send: Frame, max_history: usize, inter
     // type change cannot turn retention arithmetic into a panic.
     let oldest = i32::try_from(oldest).unwrap_or(i32::MAX);
     Frame::new(oldest)
+}
+
+/// Hard bound on distinct rewrite floors retained in the basis map. Older
+/// terms are folded into the session's cumulative base; the map only grows with
+/// distinct floors, not with repeated rewrites at one floor.
+const MAX_CHECKSUM_REWRITE_EVENT_FLOORS: usize =
+    crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS;
+
+/// Domain-separated additive term for one applied rewrite floor.
+///
+/// The checksum basis token sums these terms (multiplied by the rewrite count
+/// at the floor), so the token is order-independent across reordered
+/// convergence rewrites while still changing for every applied rewrite.
+fn checksum_rewrite_floor_term(floor: Frame) -> u64 {
+    let mut hasher = crate::hash::DeterministicHasher::new();
+    hasher.write(b"fortress.checksum.rewrite_floor.v1");
+    hasher.write(&floor.as_i32().to_le_bytes());
+    hasher.finish()
 }
 
 /// Default for the hot-join serve timeout: the maximum number of
@@ -664,6 +684,23 @@ where
     desync_detection: DesyncDetection,
     /// Desync detection over the network
     local_checksum_history: BTreeMap<Frame, u128>,
+    /// Basis token for each local checksum history entry. Missing entries
+    /// default to `0` for compatibility with direct test fixtures.
+    checksum_history_basis_tokens: BTreeMap<Frame, Option<u64>>,
+    /// Applied confirmed-history rewrite floors and their multiplicities,
+    /// bounded to [`MAX_CHECKSUM_REWRITE_EVENT_FLOORS`] distinct floors. The
+    /// basis token for a frame is an additive multiset summary of the floors at
+    /// or below it, so reordered convergence rewrites share one token while a
+    /// later rewrite at any floor still changes the token for every frame it
+    /// invalidates.
+    checksum_rewrite_events: BTreeMap<Frame, u32>,
+    /// Folded rewrite terms plus any adopted hot-join token. Folding keeps the
+    /// event map bounded without changing tokens for frames at or above the
+    /// highest folded floor.
+    checksum_basis_base: u64,
+    /// Highest rewrite floor folded into [`Self::checksum_basis_base`], or
+    /// [`Frame::NULL`] before any fold.
+    checksum_rewrite_fold_floor: Frame,
     /// The last frame we sent a checksum for
     last_sent_checksum_frame: Frame,
     /// Optional observer for specification violations.
@@ -6463,6 +6500,10 @@ impl<T: Config> P2PSession<T> {
             local_inputs,
             desync_detection,
             local_checksum_history: BTreeMap::new(),
+            checksum_history_basis_tokens: BTreeMap::new(),
+            checksum_rewrite_events: BTreeMap::new(),
+            checksum_basis_base: 0,
+            checksum_rewrite_fold_floor: Frame::NULL,
             last_sent_checksum_frame: Frame::NULL,
             violation_observer,
             telemetry,
@@ -7335,6 +7376,7 @@ impl<T: Config> P2PSession<T> {
                 self.num_players,
                 self.hot_join.max_snapshot_wire_bytes,
                 &self.certified_dropped_wire(),
+                self.checksum_basis_for_snapshot(),
             ) {
                 Ok(Some(snapshot)) => snapshot,
                 Ok(None) => continue, // no valid saved state at F; retry next poll
@@ -7895,6 +7937,7 @@ impl<T: Config> P2PSession<T> {
             // these instead of assuming every slot live).
             self.snapshot_connect_statuses(),
             &self.certified_dropped_wire(),
+            self.checksum_basis_for_snapshot(),
         )
     }
 
@@ -10169,6 +10212,24 @@ impl<T: Config> P2PSession<T> {
             },
         };
 
+        // Adopt the host's full bounded basis so post-join checksum reports
+        // describe the same history basis for every frame, including rewrite
+        // floors above the snapshot frame. Local rewrite events after the
+        // snapshot add to this base.
+        let basis = snapshot.checksum_basis;
+        if !basis.is_valid() {
+            report_violation!(
+                ViolationSeverity::Error,
+                ViolationKind::NetworkProtocol,
+                "Hot-join snapshot at frame {} carries a non-canonical checksum basis; rejecting it fail-closed",
+                snapshot.frame
+            );
+            return;
+        }
+        self.checksum_basis_base = basis.base;
+        self.checksum_rewrite_fold_floor = basis.floor;
+        self.checksum_rewrite_events = basis.events.iter().copied().collect();
+
         // Import the snapshot's certified membership exclusions. The joining
         // slot itself is live and is removed from the exclusion set.
         self.coordinated_drop.certified_dropped = snapshot
@@ -11076,6 +11137,22 @@ impl<T: Config> P2PSession<T> {
             },
         };
 
+        // Adopt the coordinator's full bounded basis (see the 2-peer apply
+        // site) before any post-join checksum is collected.
+        let basis = buffered.snapshot.checksum_basis.clone();
+        if !basis.is_valid() {
+            report_violation!(
+                ViolationSeverity::Error,
+                ViolationKind::NetworkProtocol,
+                "N-peer hot-join snapshot at frame {} carries a non-canonical checksum basis; rejecting it fail-closed",
+                buffered.snapshot.frame
+            );
+            return;
+        }
+        self.checksum_basis_base = basis.base;
+        self.checksum_rewrite_fold_floor = basis.floor;
+        self.checksum_rewrite_events = basis.events.iter().copied().collect();
+
         // Un-defer ALL remote endpoints (see the rustdoc argument above),
         // and record which endpoints are NOT yet Running: the joiner's own
         // inputs from F onward cannot reach them organically (`send_input`
@@ -11807,6 +11884,12 @@ impl<T: Config> P2PSession<T> {
 
         for (&frame, &local_cs) in &self.local_checksum_history {
             if let Some(&remote_cs) = remote.pending_checksums.get(&frame) {
+                let Some(local_token) = self.checksum_history_basis_token_for(frame) else {
+                    continue;
+                };
+                if local_token != remote.pending_checksum_basis_token(frame) {
+                    continue;
+                }
                 if latest_compared_frame.is_none_or(|f| frame > f) {
                     latest_compared_frame = Some(frame);
                     latest_local = Some(local_cs);
@@ -13523,6 +13606,12 @@ impl<T: Config> P2PSession<T> {
                 continue;
             }
             if let Some(&local_checksum) = self.local_checksum_history.get(&remote_frame) {
+                let Some(local_token) = self.checksum_history_basis_token_for(remote_frame) else {
+                    continue;
+                };
+                if local_token != remote.pending_checksum_basis_token(remote_frame) {
+                    continue;
+                }
                 if local_checksum != remote_checksum {
                     return Some(SyncHealth::DesyncDetected {
                         frame: remote_frame,
@@ -16927,6 +17016,30 @@ impl<T: Config> P2PSession<T> {
     /// recomputed local checksum. Eviction of old checksums is not a rewrite and
     /// must not call this helper.
     fn invalidate_checksum_mismatch_from(&mut self, first_invalid: Frame) {
+        // Count each applied floor. The additive token below is order-independent,
+        // so a reordered convergence rewrite set still produces one value, while
+        // a repeated or higher-floor rewrite changes the token for every frame
+        // whose basis it invalidates.
+        if !self.checksum_rewrite_fold_floor.is_null()
+            && first_invalid <= self.checksum_rewrite_fold_floor
+        {
+            // Every floor in the active map is above the fold floor. A later
+            // rewrite at or below it belongs in the folded base; inserting it
+            // as an event would violate the canonical basis invariant and make
+            // every later hot-join snapshot invalid.
+            self.checksum_basis_base = self
+                .checksum_basis_base
+                .wrapping_add(checksum_rewrite_floor_term(first_invalid));
+        } else {
+            let count = self
+                .checksum_rewrite_events
+                .entry(first_invalid)
+                .or_insert(0);
+            *count = count.saturating_add(1);
+            self.compact_checksum_rewrite_events();
+        }
+        self.checksum_history_basis_tokens
+            .retain(|&frame, _token| frame < first_invalid);
         for remote in self.player_reg.remotes.values_mut() {
             if remote
                 .checksum_mismatch_frame
@@ -16937,6 +17050,86 @@ impl<T: Config> P2PSession<T> {
             remote
                 .pending_checksums
                 .retain(|&frame, _checksum| frame < first_invalid);
+            remote
+                .pending_checksum_basis_tokens
+                .retain(|&frame, _token| frame < first_invalid);
+        }
+    }
+
+    /// Basis token stored for a local checksum history entry.
+    ///
+    /// Entries written before any rewrite carry `0`; direct test fixtures that
+    /// insert only a checksum get the same default.
+    fn checksum_history_basis_token_for(&self, frame: Frame) -> Option<u64> {
+        self.checksum_history_basis_tokens
+            .get(&frame)
+            .copied()
+            .unwrap_or(Some(0))
+    }
+
+    /// Additive multiset token of the applied rewrite floors at or below
+    /// `frame`, plus the adopted hot-join base when the frame is in its range.
+    ///
+    /// Addition is commutative, so the same set of rewrite floors produces one
+    /// token regardless of the order in which convergence rewrites arrived. A
+    /// later rewrite at any floor adds a new term and therefore invalidates
+    /// comparisons for frames at or above that floor, while retained entries
+    /// below it keep their previous token. `0` means no rewrite affects the
+    /// basis.
+    fn checksum_basis_token_for(&self, frame: Frame) -> Option<u64> {
+        if !self.checksum_rewrite_fold_floor.is_null() && frame < self.checksum_rewrite_fold_floor {
+            return None;
+        }
+        let mut token = self.checksum_basis_base;
+        for (&floor, &count) in self.checksum_rewrite_events.range(..=frame) {
+            let term = checksum_rewrite_floor_term(floor).wrapping_mul(u64::from(count));
+            token = token.wrapping_add(term);
+        }
+        Some(token)
+    }
+
+    /// Folds the lowest rewrite floors into the cumulative base until the
+    /// distinct-floor map is bounded. Tokens at or above the fold floor are
+    /// unchanged; frames below it have no retained basis and are reported as
+    /// unknown by [`Self::checksum_basis_token_for`].
+    fn compact_checksum_rewrite_events(&mut self) {
+        while self.checksum_rewrite_events.len() > MAX_CHECKSUM_REWRITE_EVENT_FLOORS {
+            let Some((floor, count)) = self.checksum_rewrite_events.pop_first() else {
+                break;
+            };
+            self.checksum_basis_base = self
+                .checksum_basis_base
+                .wrapping_add(checksum_rewrite_floor_term(floor).wrapping_mul(u64::from(count)));
+            self.checksum_rewrite_fold_floor = if self.checksum_rewrite_fold_floor.is_null()
+                || floor > self.checksum_rewrite_fold_floor
+            {
+                floor
+            } else {
+                self.checksum_rewrite_fold_floor
+            };
+        }
+    }
+
+    /// Basis token to attach to a newly collected checksum at `frame`, or
+    /// `None` when the frame predates a folded floor and the basis cannot be
+    /// reconstructed.
+    fn basis_token_for_checksum(&self, frame: Frame) -> Option<u64> {
+        self.checksum_basis_token_for(frame)
+    }
+
+    /// Full bounded basis carried by a hot-join snapshot.
+    #[cfg(feature = "hot-join")]
+    fn checksum_basis_for_snapshot(&self) -> ChecksumBasis {
+        // alloc-bound: the rewrite-event map is capped at
+        // `MAX_CHECKSUM_REWRITE_EVENT_FLOORS`.
+        ChecksumBasis {
+            base: self.checksum_basis_base,
+            floor: self.checksum_rewrite_fold_floor,
+            events: self
+                .checksum_rewrite_events
+                .iter()
+                .map(|(&floor, &count)| (floor, count))
+                .collect(),
         }
     }
 
@@ -16954,6 +17147,23 @@ impl<T: Config> P2PSession<T> {
                         if let Some(&local_checksum) =
                             self.local_checksum_history.get(&remote_frame)
                         {
+                            // A checksum from a different rewrite floor
+                            // describes a different history basis. Ignore it
+                            // rather than latching a false mismatch; the next
+                            // same-floor report is the comparable one.
+                            let local_token = self
+                                .checksum_history_basis_tokens
+                                .get(&remote_frame)
+                                .copied()
+                                .unwrap_or(Some(0));
+                            let Some(local_token) = local_token else {
+                                checked_frames.push(remote_frame);
+                                continue;
+                            };
+                            if local_token != remote.pending_checksum_basis_token(remote_frame) {
+                                checked_frames.push(remote_frame);
+                                continue;
+                            }
                             self.metrics
                                 .record_checksum_comparison(local_checksum == remote_checksum);
                             if local_checksum != remote_checksum {
@@ -17039,6 +17249,7 @@ impl<T: Config> P2PSession<T> {
 
                     for frame in checked_frames {
                         remote.pending_checksums.remove_entry(&frame);
+                        remote.pending_checksum_basis_tokens.remove(&frame);
                     }
                 }
             },
@@ -17113,16 +17324,28 @@ impl<T: Config> P2PSession<T> {
                             checksum_history_oldest_frame(frame_to_send, max_history, interval);
                         self.local_checksum_history
                             .retain(|&frame, _| frame >= oldest_frame_to_keep);
+                        self.checksum_history_basis_tokens
+                            .retain(|&frame, _token| frame >= oldest_frame_to_keep);
                     }
 
                     if let Some(checksum) = cell.checksum() {
+                        let Some(basis_token) = self.basis_token_for_checksum(frame_to_send) else {
+                            // Defensive: live checksum frames are above every
+                            // folded floor, so this is unreachable in a correct
+                            // session. Advance the schedule without storing an
+                            // unverifiable comparison basis.
+                            self.last_sent_checksum_frame = frame_to_send;
+                            return;
+                        };
                         for remote in self.player_reg.remotes.values_mut() {
-                            remote.send_checksum_report(frame_to_send, checksum);
+                            remote.send_checksum_report(frame_to_send, checksum, basis_token);
                         }
                         self.last_sent_checksum_frame = frame_to_send;
                         // Pre-pruning above keeps the configured cap as a hard
                         // allocation bound, including the insertion high-water.
                         self.local_checksum_history.insert(frame_to_send, checksum);
+                        self.checksum_history_basis_tokens
+                            .insert(frame_to_send, Some(basis_token));
                         self.metrics
                             .observe_checksum_history_len(self.local_checksum_history.len());
                     }
@@ -18253,6 +18476,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             checksum: None,
             certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
         session.buffer_npeer_snapshot(snapshot(Frame::new(5), 2, vec![0; 6]));
         session.buffer_npeer_snapshot(snapshot(Frame::new(-1), 3, vec![0; 3]));
@@ -18483,6 +18707,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             checksum: None,
             certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
         let serve = |frame: Frame| JoinServe {
             addr,
@@ -18582,6 +18807,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             checksum: None,
             certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
         let serve = |handle: PlayerHandle, acked: bool| NPeerServe {
             handle,
@@ -19110,6 +19336,7 @@ mod tests {
                 bridge_statuses: Vec::new(),
                 checksum: None,
                 certified_dropped: Vec::new(),
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
             });
 
         joiner.poll_remote_clients();
@@ -19478,6 +19705,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             checksum: None,
             certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
 
         fn assert_detected(label: &str, seed: impl FnOnce(&mut HotJoinState<TestConfig>)) {
@@ -31769,6 +31997,565 @@ mod tests {
         );
     }
 
+    /// The basis token summarizes the multiset of applied rewrite floors:
+    /// frames below a floor keep their previous token, every new (including
+    /// repeated or higher-floor) rewrite changes the token for frames it
+    /// invalidates, and reordered convergence rewrites share one token.
+    #[test]
+    fn checksum_basis_token_tracks_the_rewrite_multiset() {
+        let mut session = create_three_player_desync_session();
+        let mut reordered = create_three_player_desync_session();
+
+        assert_eq!(
+            session.basis_token_for_checksum(Frame::new(0)),
+            Some(0),
+            "no rewrite has been applied yet"
+        );
+
+        session.invalidate_checksum_mismatch_from(Frame::new(6));
+        let after_six = session.basis_token_for_checksum(Frame::new(6));
+        assert_ne!(after_six, Some(0));
+        assert_eq!(
+            session.basis_token_for_checksum(Frame::new(5)),
+            Some(0),
+            "a frame below the rewrite floor keeps the unrewritten token"
+        );
+        assert_eq!(
+            session.basis_token_for_checksum(Frame::new(10)),
+            after_six,
+            "a floor applies to every frame at or above it"
+        );
+
+        session.invalidate_checksum_mismatch_from(Frame::new(10));
+        let after_ten = session.basis_token_for_checksum(Frame::new(12));
+        assert_ne!(
+            after_ten, after_six,
+            "a later higher-floor rewrite must change the token for frames it invalidates"
+        );
+        assert_eq!(
+            session.basis_token_for_checksum(Frame::new(8)),
+            after_six,
+            "a higher-floor rewrite must not change a retained frame below its floor"
+        );
+
+        // Same rewrite set, opposite order: the additive multiset token is
+        // order-independent for frames at or above both floors.
+        reordered.invalidate_checksum_mismatch_from(Frame::new(10));
+        reordered.invalidate_checksum_mismatch_from(Frame::new(6));
+        assert_eq!(
+            reordered.basis_token_for_checksum(Frame::new(12)),
+            after_ten,
+            "reordered convergence rewrites must share one token"
+        );
+        assert_eq!(
+            reordered.basis_token_for_checksum(Frame::new(8)),
+            after_six,
+            "only floors at or below the frame participate in its token"
+        );
+
+        // A repeated rewrite at the same floor is a distinct basis change.
+        session.invalidate_checksum_mismatch_from(Frame::new(6));
+        assert_ne!(
+            session.basis_token_for_checksum(Frame::new(12)),
+            after_ten,
+            "a repeated rewrite at an existing floor must change the token"
+        );
+        assert_eq!(
+            session.basis_token_for_checksum(Frame::new(5)),
+            Some(0),
+            "repeated rewrites above a frame still leave it unrewritten"
+        );
+    }
+
+    /// The rewrite-floor map is hard-bounded: excess distinct floors fold into
+    /// the cumulative base without changing any token at or above the fold.
+    #[test]
+    fn checksum_rewrite_history_is_bounded_without_changing_current_tokens() {
+        let mut session = create_three_player_desync_session();
+        let total = MAX_CHECKSUM_REWRITE_EVENT_FLOORS + 7;
+        let mut expected = 0_u64;
+        for floor in 0..total {
+            let frame = Frame::new(i32::try_from(floor).expect("test floor fits"));
+            expected = expected.wrapping_add(checksum_rewrite_floor_term(frame));
+            session.invalidate_checksum_mismatch_from(frame);
+        }
+
+        assert_eq!(
+            session.checksum_rewrite_events.len(),
+            MAX_CHECKSUM_REWRITE_EVENT_FLOORS,
+            "the distinct-floor map must stay within its hard bound"
+        );
+        let fold_floor = session.checksum_rewrite_fold_floor;
+        assert!(!fold_floor.is_null(), "excess floors must be folded");
+        let at_fold = (0..=fold_floor.as_i32()).fold(0_u64, |token, floor| {
+            token.wrapping_add(checksum_rewrite_floor_term(Frame::new(floor)))
+        });
+        assert_eq!(
+            session.checksum_basis_token_for(fold_floor),
+            Some(at_fold),
+            "folding must preserve the token for the fold floor"
+        );
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(
+                i32::try_from(total - 1).expect("test floor fits"),
+            )),
+            Some(expected),
+            "folding must preserve the token for frames above the fold floor"
+        );
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(fold_floor.as_i32() - 1)),
+            None,
+            "a frame below the folded floor has no reconstructible basis"
+        );
+    }
+
+    /// A snapshot carries the full bounded basis, not a single frame token, so
+    /// a joiner reproduces the host's token for frames at and above rewrite
+    /// floors that are above the snapshot frame.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn adopting_a_snapshot_basis_preserves_tokens_above_the_snapshot_frame() {
+        let mut host = create_three_player_desync_session();
+        host.invalidate_checksum_mismatch_from(Frame::new(5));
+        host.invalidate_checksum_mismatch_from(Frame::new(10));
+        let basis = host.checksum_basis_for_snapshot();
+
+        let mut joiner = create_three_player_desync_session();
+        assert!(basis.is_valid());
+        joiner.checksum_basis_base = basis.base;
+        joiner.checksum_rewrite_fold_floor = basis.floor;
+        joiner.checksum_rewrite_events = basis.events.iter().copied().collect();
+
+        for frame in [4, 5, 8, 10, 12] {
+            let frame = Frame::new(frame);
+            assert_eq!(
+                joiner.checksum_basis_token_for(frame),
+                host.checksum_basis_token_for(frame),
+                "joiner must match the host token at {frame:?}"
+            );
+        }
+        assert!(
+            basis
+                .events
+                .iter()
+                .any(|(floor, _)| *floor == Frame::new(10)),
+            "the basis must carry floors above the snapshot frame"
+        );
+    }
+
+    /// Unknown basis tokens are an incomparability marker, not a shared
+    /// generation: two peers that both lost the exact basis still must not
+    /// compare checksums.
+    #[test]
+    fn unknown_basis_tokens_are_never_compared() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let frame = Frame::new(8);
+
+        for _ in 0..10 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(10), session.save_mode);
+        session.local_checksum_history.insert(frame, 0x1008);
+        session.checksum_history_basis_tokens.insert(frame, None);
+        {
+            let remote = session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote.pending_checksums.insert(frame, 0x2008);
+            remote.pending_checksum_basis_tokens.insert(frame, 0);
+        }
+
+        assert!(
+            !matches!(
+                session.sync_health(handle_b),
+                Some(SyncHealth::DesyncDetected { .. })
+            ),
+            "sync_health must not compare unknown bases"
+        );
+        session.compare_local_checksums_against_peers();
+        assert!(
+            !matches!(
+                session.sync_health(handle_b),
+                Some(SyncHealth::DesyncDetected { .. })
+            ),
+            "unknown bases must not latch a mismatch"
+        );
+        assert!(
+            !session
+                .event_queue
+                .iter()
+                .any(|event| matches!(event, FortressEvent::DesyncDetected { .. })),
+            "unknown bases must not emit DesyncDetected"
+        );
+    }
+
+    /// `u64::MAX` is a legitimate additive token value, not an unknown
+    /// sentinel. A basis whose sum lands there must still be compared.
+    #[test]
+    fn maximum_basis_token_remains_comparable() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let frame = Frame::new(8);
+
+        for _ in 0..10 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(10), session.save_mode);
+        session.checksum_basis_base = u64::MAX;
+        let token = session
+            .basis_token_for_checksum(frame)
+            .expect("a maximum-valued base is still reconstructible");
+        assert_eq!(token, u64::MAX);
+        session.local_checksum_history.insert(frame, 0x1008);
+        session
+            .checksum_history_basis_tokens
+            .insert(frame, Some(token));
+        {
+            let remote = session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote.pending_checksums.insert(frame, 0x2008);
+            remote.pending_checksum_basis_tokens.insert(frame, token);
+        }
+
+        session.compare_local_checksums_against_peers();
+
+        assert!(
+            matches!(
+                session.sync_health(handle_b),
+                Some(SyncHealth::DesyncDetected { frame: detected, .. }) if detected == frame
+            ),
+            "a maximum-valued valid token must not be treated as unknown"
+        );
+    }
+
+    /// Once floors are folded, a later rewrite at or below the fold floor must
+    /// go into the cumulative base. Inserting it as an event would make every
+    /// subsequent snapshot basis non-canonical and reject hot join.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn rewrite_at_or_below_the_fold_floor_keeps_the_snapshot_basis_valid() {
+        let mut session = create_three_player_desync_session();
+        for floor in 0..(MAX_CHECKSUM_REWRITE_EVENT_FLOORS as i32 + 3) {
+            session.invalidate_checksum_mismatch_from(Frame::new(floor));
+        }
+        let fold_floor = session.checksum_rewrite_fold_floor;
+        assert!(!fold_floor.is_null());
+        let token_before = session.checksum_basis_token_for(Frame::new(500));
+        let base_before = session.checksum_basis_base;
+
+        session.invalidate_checksum_mismatch_from(fold_floor);
+
+        let basis = session.checksum_basis_for_snapshot();
+        assert!(
+            basis.is_valid(),
+            "a rewrite at the fold floor must keep the basis canonical"
+        );
+        assert_eq!(
+            session.checksum_basis_base,
+            base_before.wrapping_add(checksum_rewrite_floor_term(fold_floor)),
+            "the term must be folded directly into the base"
+        );
+        assert_ne!(
+            session.checksum_basis_token_for(Frame::new(500)),
+            token_before,
+            "the rewrite must still change current-basis tokens"
+        );
+    }
+
+    /// #533: a pre-rewrite checksum report can still arrive after the local
+    /// basis was recomputed. The report's rewrite floor is older than the
+    /// recomputed entry's, so it is incomparable and must be consumed without
+    /// latching a mismatch or emitting `DesyncDetected`.
+    #[test]
+    fn delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let handle_c = PlayerHandle::new(2);
+        let freeze_frame = Frame::new(5);
+        let rewritten = Frame::new(8);
+        let old_local: u128 = 0x1008;
+        let stale_remote: u128 = 0x2008;
+        let recomputed: u128 = 0x3008;
+
+        for _ in 0..10 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(10), session.save_mode);
+        session.local_checksum_history.insert(rewritten, old_local);
+
+        // The freeze convergence rewrites confirmed history at F+1 = 6.
+        session.disconnect_player_at_frame(handle_c, freeze_frame);
+        assert!(
+            !session.local_checksum_history.contains_key(&rewritten),
+            "precondition: the rewrite invalidated the pre-rewrite checksum"
+        );
+
+        // Recompute the checksum on the new basis and stamp it with the token
+        // the sender path uses.
+        let local_token = session
+            .basis_token_for_checksum(rewritten)
+            .expect("post-rewrite basis is reconstructible");
+        assert_ne!(local_token, 0);
+        session.local_checksum_history.insert(rewritten, recomputed);
+        session
+            .checksum_history_basis_tokens
+            .insert(rewritten, Some(local_token));
+
+        // The delayed report was sent before the rewrite, so it carries the
+        // unrewritten (`0`) token and a checksum that differs from the
+        // recomputed local basis.
+        {
+            let remote = session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote.pending_checksums.insert(rewritten, stale_remote);
+            remote.pending_checksum_basis_tokens.insert(rewritten, 0);
+        }
+        assert!(
+            !matches!(
+                session.sync_health(handle_b),
+                Some(SyncHealth::DesyncDetected { .. })
+            ),
+            "sync_health must not compare a delayed report from an older basis token"
+        );
+
+        session.compare_local_checksums_against_peers();
+
+        assert!(
+            session
+                .player_reg
+                .remotes
+                .get(&addr_b)
+                .expect("B endpoint exists")
+                .pending_checksums
+                .is_empty(),
+            "the incomparable report must be consumed instead of retried forever"
+        );
+        assert!(
+            !matches!(
+                session.sync_health(handle_b),
+                Some(SyncHealth::DesyncDetected { .. })
+            ),
+            "a delayed pre-rewrite report must not relatch the mismatch"
+        );
+        assert!(
+            !session
+                .event_queue
+                .iter()
+                .any(|event| matches!(event, FortressEvent::DesyncDetected { .. })),
+            "a delayed pre-rewrite report must not emit DesyncDetected"
+        );
+
+        // Positive control: a current-generation report on the recomputed basis
+        // still verifies the peer.
+        {
+            let remote = session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote.pending_checksums.insert(rewritten, recomputed);
+            remote
+                .pending_checksum_basis_tokens
+                .insert(rewritten, local_token);
+        }
+        session.compare_local_checksums_against_peers();
+        assert_eq!(
+            session.sync_health(handle_b),
+            Some(SyncHealth::InSync),
+            "the current-generation match must restore InSync"
+        );
+    }
+
+    /// #533: generation filtering must not hide a genuine divergence on the
+    /// recomputed basis. A same-floor report that disagrees still latches and
+    /// emits `DesyncDetected`.
+    #[test]
+    fn current_generation_checksum_mismatch_still_latches() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let handle_c = PlayerHandle::new(2);
+        let freeze_frame = Frame::new(5);
+        let rewritten = Frame::new(8);
+        let recomputed: u128 = 0x3008;
+        let diverging: u128 = 0x4008;
+
+        for _ in 0..10 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(10), session.save_mode);
+        session.disconnect_player_at_frame(handle_c, freeze_frame);
+
+        let local_token = session
+            .basis_token_for_checksum(rewritten)
+            .expect("post-rewrite basis is reconstructible");
+        assert_ne!(local_token, 0);
+        session.local_checksum_history.insert(rewritten, recomputed);
+        session
+            .checksum_history_basis_tokens
+            .insert(rewritten, Some(local_token));
+        {
+            let remote = session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote.pending_checksums.insert(rewritten, diverging);
+            remote
+                .pending_checksum_basis_tokens
+                .insert(rewritten, local_token);
+        }
+
+        session.compare_local_checksums_against_peers();
+
+        assert_eq!(
+            session.sync_health(handle_b),
+            Some(SyncHealth::DesyncDetected {
+                frame: rewritten,
+                local_checksum: recomputed,
+                remote_checksum: diverging,
+            }),
+            "a current-generation mismatch must still latch"
+        );
+        assert!(
+            session
+                .event_queue
+                .iter()
+                .any(|event| matches!(event, FortressEvent::DesyncDetected { .. })),
+            "a current-generation mismatch must emit DesyncDetected"
+        );
+        assert!(!session.is_synchronized());
+    }
+
+    /// A delayed report can cross a second rewrite at a higher floor than the
+    /// first. The lowest-floor token would not change in that sequence, so the
+    /// delayed report would compare against the new basis. The multiset token
+    /// must change and keep the report incomparable.
+    #[test]
+    fn delayed_report_across_a_later_higher_floor_rewrite_does_not_relatch() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let rewritten = Frame::new(12);
+        let first_floor = Frame::new(6);
+        let second_floor = Frame::new(10);
+        let between_local: u128 = 0x100C;
+        let between_remote: u128 = 0x200C;
+        let recomputed: u128 = 0x300C;
+
+        for _ in 0..15 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(15), session.save_mode);
+
+        // First rewrite: the local entry at frame 12 is recomputed on token A.
+        session.invalidate_checksum_mismatch_from(first_floor);
+        let between_token = session
+            .basis_token_for_checksum(rewritten)
+            .expect("post-rewrite basis is reconstructible");
+        assert_ne!(between_token, 0);
+        session
+            .local_checksum_history
+            .insert(rewritten, between_local);
+        session
+            .checksum_history_basis_tokens
+            .insert(rewritten, Some(between_token));
+
+        // Second rewrite at a HIGHER floor: the rewrite sites clear the local
+        // checksum entries at/above the floor before invalidating comparisons.
+        session
+            .local_checksum_history
+            .retain(|&frame, _| frame < second_floor);
+        session.invalidate_checksum_mismatch_from(second_floor);
+        let current_token = session
+            .basis_token_for_checksum(rewritten)
+            .expect("current basis is reconstructible");
+        assert_ne!(
+            current_token, between_token,
+            "a later higher-floor rewrite must change the basis token"
+        );
+        assert!(
+            !session.local_checksum_history.contains_key(&rewritten),
+            "precondition: the second rewrite invalidated the frame-12 entry"
+        );
+        session.local_checksum_history.insert(rewritten, recomputed);
+        session
+            .checksum_history_basis_tokens
+            .insert(rewritten, Some(current_token));
+
+        // A report sent between the two rewrites carries token A and a value
+        // that differs from the current basis. It must be ignored.
+        {
+            let remote = session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote.pending_checksums.insert(rewritten, between_remote);
+            remote
+                .pending_checksum_basis_tokens
+                .insert(rewritten, between_token);
+        }
+        session.compare_local_checksums_against_peers();
+        assert!(
+            !matches!(
+                session.sync_health(handle_b),
+                Some(SyncHealth::DesyncDetected { .. })
+            ),
+            "a report from between the two rewrites must not relatch"
+        );
+        assert!(
+            !session
+                .event_queue
+                .iter()
+                .any(|event| matches!(event, FortressEvent::DesyncDetected { .. })),
+            "a report from between the two rewrites must not emit DesyncDetected"
+        );
+
+        // A same-token mismatch on the final basis still latches.
+        {
+            let remote = session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote.pending_checksums.insert(rewritten, recomputed ^ 1);
+            remote
+                .pending_checksum_basis_tokens
+                .insert(rewritten, current_token);
+        }
+        session.compare_local_checksums_against_peers();
+        assert!(
+            matches!(
+                session.sync_health(handle_b),
+                Some(SyncHealth::DesyncDetected { frame, .. }) if frame == rewritten
+            ),
+            "a current-token mismatch must still latch"
+        );
+    }
+
     #[test]
     fn certified_cut_resimulation_clears_a_latched_mismatch_at_the_cut() {
         let mut session = create_three_player_desync_session();
@@ -42990,6 +43777,7 @@ mod tests {
                 bridge_statuses,
                 certified_dropped: Vec::new(),
                 checksum: None,
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
             }
         }
 
@@ -43406,6 +44194,7 @@ mod tests {
                     bridge_statuses: Vec::new(),
                     checksum: None,
                     certified_dropped: Vec::new(),
+                    checksum_basis: crate::network::messages::ChecksumBasis::none(),
                 });
 
             c2.poll();
@@ -43457,6 +44246,7 @@ mod tests {
                     bridge_statuses: Vec::new(),
                     checksum: None,
                     certified_dropped: Vec::new(),
+                    checksum_basis: crate::network::messages::ChecksumBasis::none(),
                 });
 
             session.poll_remote_clients();
@@ -43517,6 +44307,7 @@ mod tests {
                     bridge_statuses: Vec::new(),
                     checksum: None,
                     certified_dropped: Vec::new(),
+                    checksum_basis: crate::network::messages::ChecksumBasis::none(),
                 });
 
             session.poll_remote_clients();
@@ -45882,6 +46673,7 @@ mod tests {
                     bridge_statuses: vec![ConnectionStatus::default(); 2],
                     checksum: None,
                     certified_dropped: Vec::new(),
+                    checksum_basis: crate::network::messages::ChecksumBasis::none(),
                 });
 
             session.poll_remote_clients();

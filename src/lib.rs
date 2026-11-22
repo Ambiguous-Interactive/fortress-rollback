@@ -513,7 +513,7 @@ pub mod __internal {
 /// Protocol v5 adds the monotone terminal-attempt epoch to every coordinated
 /// drop operation and abort so an evicted terminal operation can never be
 /// replayed (issue #516).
-pub const PROTOCOL_VERSION: u8 = 5;
+pub const PROTOCOL_VERSION: u8 = 6;
 
 /// Internally, -1 represents no frame / invalid frame.
 ///

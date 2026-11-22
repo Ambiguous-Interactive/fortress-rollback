@@ -38,7 +38,9 @@
 //! allocation- and depth-bound analysis.
 
 use crate::network::codec;
-use crate::network::messages::{ConnectionStatus, Message, MessageBody, MessageHeader};
+use crate::network::messages::{
+    ChecksumBasis, ConnectionStatus, Message, MessageBody, MessageHeader,
+};
 use crate::report_violation;
 use crate::sync_layer::SyncLayer;
 use crate::telemetry::{ViolationKind, ViolationSeverity};
@@ -112,6 +114,7 @@ fn serialized_state_len<T: Config>(state: &T::State) -> Result<usize, FortressEr
 }
 
 #[cfg(feature = "hot-join")]
+#[allow(clippy::too_many_arguments)]
 fn snapshot_wire_len(
     frame: Frame,
     num_players: usize,
@@ -120,6 +123,7 @@ fn snapshot_wire_len(
     bridge_inputs_len: usize,
     bridge_statuses: &[ConnectionStatus],
     certified_dropped: &[u16],
+    checksum_basis: &ChecksumBasis,
 ) -> Result<usize, FortressError> {
     // The skeleton carries the (small, num_players-bounded) per-slot statuses
     // verbatim so their exact encoded footprint is measured rather than
@@ -135,6 +139,7 @@ fn snapshot_wire_len(
         checksum,
         // alloc-bound: at most the session's validated num_players handles.
         certified_dropped: certified_dropped.to_vec(),
+        checksum_basis: ChecksumBasis::none(),
     };
     let empty_message = Message {
         header: MessageHeader::new(0),
@@ -152,7 +157,8 @@ fn snapshot_wire_len(
     })?;
 
     overhead
-        .checked_add(state_bytes_len)
+        .checked_add(checksum_basis.events.len().saturating_mul(8))
+        .and_then(|len| len.checked_add(state_bytes_len))
         .and_then(|len| len.checked_add(bridge_inputs_len))
         .ok_or_else(|| {
             report_violation!(
@@ -177,6 +183,7 @@ fn validate_snapshot_wire_size(
     bridge_inputs_len: usize,
     bridge_statuses: &[ConnectionStatus],
     certified_dropped: &[u16],
+    checksum_basis: &ChecksumBasis,
     max_snapshot_wire_bytes: usize,
 ) -> Result<(), FortressError> {
     if max_snapshot_wire_bytes == 0 {
@@ -203,6 +210,7 @@ fn validate_snapshot_wire_size(
         bridge_inputs_len,
         bridge_statuses,
         certified_dropped,
+        checksum_basis,
     )?;
     if wire_len > max_snapshot_wire_bytes {
         report_violation!(
@@ -280,7 +288,7 @@ pub(crate) fn deserialize_state<T: Config>(bytes: &[u8]) -> Result<T::State, For
 ///
 /// Reads the saved state and checksum at `frame` via
 /// `SyncLayer::capture_snapshot_state`, serializes the state, and builds a
-/// `StateSnapshot { frame, num_players, state_bytes, bridge_inputs: [], checksum, certified_dropped: Vec::new() }`
+/// `StateSnapshot { frame, num_players, state_bytes, bridge_inputs: [], checksum, certified_dropped: Vec::new(), checksum_basis }`
 /// (the 2-peer serve shape: empty bridge inputs).
 ///
 /// Returns `Ok(None)` when there is no valid saved state at `frame` (the slot is
@@ -329,7 +337,14 @@ where
     // `capture_snapshot_state` clones the saved state out of its cell.
     T::State: Clone,
 {
-    capture_snapshot_with_exclusions(sync_layer, frame, num_players, max_snapshot_wire_bytes, &[])
+    capture_snapshot_with_exclusions(
+        sync_layer,
+        frame,
+        num_players,
+        max_snapshot_wire_bytes,
+        &[],
+        ChecksumBasis::none(),
+    )
 }
 
 /// Captures a host snapshot with the certified-dropped membership exclusions
@@ -341,6 +356,7 @@ pub(crate) fn capture_snapshot_with_exclusions<T: Config>(
     num_players: usize,
     max_snapshot_wire_bytes: usize,
     certified_dropped: &[u16],
+    checksum_basis: ChecksumBasis,
 ) -> Result<Option<StateSnapshot>, FortressError>
 where
     // `capture_snapshot_state` clones the saved state out of its cell.
@@ -358,6 +374,7 @@ where
         0,
         &[],
         certified_dropped,
+        &checksum_basis,
         max_snapshot_wire_bytes,
     )?;
     let state_bytes = serialize_state::<T>(&state)?;
@@ -373,6 +390,7 @@ where
         // alloc-bound: at most the session's validated num_players handles.
         certified_dropped: certified_dropped.to_vec(),
         checksum,
+        checksum_basis,
     }))
 }
 
@@ -416,6 +434,7 @@ where
         bridge_inputs,
         bridge_statuses,
         &[],
+        ChecksumBasis::none(),
     )
 }
 
@@ -431,6 +450,7 @@ pub(crate) fn capture_npeer_snapshot_with_exclusions<T: Config>(
     bridge_inputs: Vec<u8>,
     bridge_statuses: Vec<ConnectionStatus>,
     certified_dropped: &[u16],
+    checksum_basis: ChecksumBasis,
 ) -> Result<Option<StateSnapshot>, FortressError>
 where
     // `capture_snapshot_state` clones the saved state out of its cell.
@@ -494,6 +514,7 @@ where
         bridge_inputs.len(),
         &bridge_statuses,
         certified_dropped,
+        &checksum_basis,
         max_snapshot_wire_bytes,
     )?;
     let state_bytes = serialize_state::<T>(&state)?;
@@ -506,6 +527,7 @@ where
         // alloc-bound: at most the session's validated num_players handles.
         certified_dropped: certified_dropped.to_vec(),
         checksum,
+        checksum_basis,
     }))
 }
 
@@ -573,6 +595,12 @@ pub(crate) fn apply_snapshot<T: Config>(
             frame: snapshot.frame,
             reason: InvalidFrameReason::MustBeNonNegative,
         });
+    }
+
+    if !snapshot.checksum_basis.is_valid() {
+        return Err(hot_join_serialization_error(
+            "hot-join snapshot carries a non-canonical checksum basis",
+        ));
     }
 
     // Deserialize BEFORE mutating the layer so a corrupt snapshot leaves the
@@ -1033,6 +1061,7 @@ mod tests {
             usize::MAX,
             &statuses,
             &[],
+            &ChecksumBasis::none(),
         );
 
         assert!(matches!(
@@ -1336,6 +1365,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             checksum: None,
             certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
 
         let mut joiner = SyncLayer::<TestConfig>::new(2, 8);
@@ -1368,6 +1398,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             checksum: None,
             certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
 
         let mut joiner = SyncLayer::<TestConfig>::new(2, 8);
@@ -1538,7 +1569,17 @@ mod tests {
         let state_len = serialized_state_len::<TestConfig>(&VecState::sample()).unwrap();
         // The exact complete wire length of the bridge-less, status-less
         // message: the 2-peer capture fits this budget exactly ...
-        let exact_budget = snapshot_wire_len(frame, 2, Some(0x55), state_len, 0, &[], &[]).unwrap();
+        let exact_budget = snapshot_wire_len(
+            frame,
+            2,
+            Some(0x55),
+            state_len,
+            0,
+            &[],
+            &[],
+            &ChecksumBasis::none(),
+        )
+        .unwrap();
         assert!(
             capture_snapshot_with_max_wire_bytes(&layer, frame, 2, exact_budget)
                 .unwrap()

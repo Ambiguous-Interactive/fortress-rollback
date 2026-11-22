@@ -523,6 +523,10 @@ where
     /// [`ProtocolConfig::max_checksum_history`] entries regardless of the order
     /// in which report frames arrive (the report frame is peer-controlled).
     pub(crate) pending_checksums: BTreeMap<Frame, u128>,
+    /// Basis token attached to each pending checksum report. Kept in a
+    /// parallel map so direct test fixtures that insert only a checksum keep
+    /// the unrewritten (`0`) basis.
+    pub(crate) pending_checksum_basis_tokens: BTreeMap<Frame, u64>,
     /// Highest frame at which a checksum this peer sent matched our local
     /// checksum history. Per-peer so that verification against one remote does
     /// not leak into another remote's sync verdict (an N>=3 logical error if it
@@ -1066,6 +1070,7 @@ impl<T: Config> UdpProtocol<T> {
 
             // debug desync
             pending_checksums: BTreeMap::new(),
+            pending_checksum_basis_tokens: BTreeMap::new(),
             last_verified_frame: None,
             checksum_mismatch_frame: None,
             checksum_mismatch_count: 0,
@@ -3438,8 +3443,12 @@ impl<T: Config> UdpProtocol<T> {
             );
             self.pending_checksums
                 .retain(|&frame, _| frame >= oldest_frame_to_keep);
+            self.pending_checksum_basis_tokens
+                .retain(|&frame, _| frame >= oldest_frame_to_keep);
         }
         self.pending_checksums.insert(body.frame, body.checksum);
+        self.pending_checksum_basis_tokens
+            .insert(body.frame, body.basis_token);
 
         // `body.frame` is peer-controlled: a strictly descending report stream
         // makes the frame-relative retain above keep every existing entry, so
@@ -3447,10 +3456,22 @@ impl<T: Config> UdpProtocol<T> {
         // unconditionally, dropping the lowest frames just as an in-order
         // stream's retain would.
         while self.pending_checksums.len() > max_history {
-            if self.pending_checksums.pop_first().is_none() {
+            let Some((frame, _checksum)) = self.pending_checksums.pop_first() else {
                 break;
-            }
+            };
+            self.pending_checksum_basis_tokens.remove(&frame);
         }
+    }
+
+    /// Basis token attached to a pending checksum report.
+    ///
+    /// Direct test fixtures that predate the metadata carry no entry; they
+    /// describe an unrewritten basis and default to `0`.
+    pub(crate) fn pending_checksum_basis_token(&self, frame: Frame) -> u64 {
+        self.pending_checksum_basis_tokens
+            .get(&frame)
+            .copied()
+            .unwrap_or(0)
     }
 
     /// Upon receiving a `JoinRequest`, store the requested slot for the orchestration
@@ -3538,10 +3559,16 @@ impl<T: Config> UdpProtocol<T> {
         }
     }
 
-    pub(crate) fn send_checksum_report(&mut self, frame_to_send: Frame, checksum: u128) {
+    pub(crate) fn send_checksum_report(
+        &mut self,
+        frame_to_send: Frame,
+        checksum: u128,
+        basis_token: u64,
+    ) {
         let body = ChecksumReport {
             frame: frame_to_send,
             checksum,
+            basis_token,
         };
         self.queue_message(MessageBody::ChecksumReport(body));
     }
@@ -5117,6 +5144,7 @@ mod tests {
                 body: MessageBody::ChecksumReport(ChecksumReport {
                     checksum: 0xABCD,
                     frame: Frame::new(1),
+                    basis_token: 0,
                 }),
             },
             Message {
@@ -6810,6 +6838,7 @@ mod tests {
         let report = ChecksumReport {
             frame: Frame::new(100),
             checksum: 0xDEADBEEF,
+            basis_token: 0x1122_3344_5566_7788,
         };
         protocol.on_checksum_report(&report);
 
@@ -6817,6 +6846,11 @@ mod tests {
         assert_eq!(
             protocol.pending_checksums.get(&Frame::new(100)),
             Some(&0xDEADBEEF)
+        );
+        assert_eq!(
+            protocol.pending_checksum_basis_token(Frame::new(100)),
+            0x1122_3344_5566_7788,
+            "the peer's basis token must survive alongside its checksum"
         );
     }
 
@@ -6846,6 +6880,7 @@ mod tests {
             let report = ChecksumReport {
                 frame: Frame::new(frame),
                 checksum: frame as u128,
+                basis_token: 0,
             };
             protocol.on_checksum_report(&report);
         }
@@ -6891,6 +6926,7 @@ mod tests {
                     protocol.on_checksum_report(&ChecksumReport {
                         frame: Frame::new(1_000_000 - offset),
                         checksum: offset as u128,
+                        basis_token: 0,
                     });
                 }
 
@@ -7056,6 +7092,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             certified_dropped: Vec::new(),
             checksum: None,
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
 
         protocol.queue_message(MessageBody::StateSnapshot(snapshot));
@@ -8239,7 +8276,7 @@ mod tests {
             create_protocol(vec![PlayerHandle::new(0)], 2, 1, 8);
         protocol.send_queue.clear();
 
-        protocol.send_checksum_report(Frame::new(100), 0xDEADBEEF);
+        protocol.send_checksum_report(Frame::new(100), 0xDEADBEEF, 0x1122_3344_5566_7788);
 
         assert_eq!(protocol.send_queue.len(), 1);
         let msg = protocol.send_queue.front().unwrap();
@@ -8247,6 +8284,7 @@ mod tests {
             MessageBody::ChecksumReport(report) => {
                 assert_eq!(report.frame, Frame::new(100));
                 assert_eq!(report.checksum, 0xDEADBEEF);
+                assert_eq!(report.basis_token, 0x1122_3344_5566_7788);
             },
             _ => panic!("Expected ChecksumReport message"),
         }
@@ -10518,6 +10556,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             certified_dropped: Vec::new(),
             checksum: Some(0xABCD),
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
 
         deliver(&mut protocol, MessageBody::StateSnapshot(snapshot.clone()));
@@ -10585,6 +10624,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             certified_dropped: Vec::new(),
             checksum: None,
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         };
 
         protocol.send_state_snapshot(snapshot.clone());
@@ -10626,6 +10666,7 @@ mod tests {
             bridge_statuses: Vec::new(),
             certified_dropped: Vec::new(),
             checksum: None,
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         });
         protocol.send_state_snapshot_ack(Frame::new(1));
 
@@ -10663,6 +10704,7 @@ mod tests {
                 bridge_statuses: Vec::new(),
                 certified_dropped: Vec::new(),
                 checksum: Some(0xABCD),
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
             }),
         );
         deliver(
@@ -11540,6 +11582,7 @@ mod property_tests {
                 let report = ChecksumReport {
                     frame: Frame::new(frame),
                     checksum: i as u128,
+                    basis_token: 0,
                 };
                 protocol.on_checksum_report(&report);
                 prop_assert!(
@@ -11583,6 +11626,7 @@ mod property_tests {
                 let report = ChecksumReport {
                     frame: Frame::new(i as i32),
                     checksum: i as u128,
+                    basis_token: 0,
                 };
                 protocol.on_checksum_report(&report);
             }
@@ -11678,6 +11722,7 @@ mod property_tests {
                 body: MessageBody::ChecksumReport(ChecksumReport {
                     frame: Frame::new(frame),
                     checksum,
+                    basis_token: 0,
                 }),
             };
             protocol.handle_message(&msg);

@@ -1,8 +1,7 @@
-//! Exact protocol-v5 wire fixtures.
+//! Immutable protocol-v5 wire fixtures.
 //!
-//! This is the active golden suite. Any wire layout change requires a
-//! `PROTOCOL_VERSION` bump and a new fixture module; released modules are
-//! frozen by `scripts/hooks/check-wire-golden-immutable.py`.
+//! Changing any literal in this released-version file requires a protocol-version
+//! bump. `scripts/hooks/check-wire-golden-immutable.py` enforces that rule.
 
 use crate::network::messages::{
     ChecksumReport, ConnectionStatus, DropAbort, DropAbortReason, DropBackfill, DropCommit,
@@ -190,6 +189,7 @@ pub(super) fn fixtures() -> Vec<(&'static str, Message)> {
         MessageBody::ChecksumReport(ChecksumReport {
             checksum: 0x2122_2324_2526_2728_292A_2B2C_2D2E_2F30,
             frame: Frame::new(88),
+            basis_token: 0,
         }),
         MessageBody::KeepAlive,
         MessageBody::FloorRequest(FloorRequest { round_seq: 42 }),
@@ -210,6 +210,7 @@ pub(super) fn fixtures() -> Vec<(&'static str, Message)> {
             }],
             checksum: Some(0x3132_3334_3536_3738_393A_3B3C_3D3E_3F40),
             certified_dropped: vec![7, 9],
+            checksum_basis: crate::network::messages::ChecksumBasis::none(),
         }),
         MessageBody::StateSnapshotAck(StateSnapshotAck {
             frame: Frame::new(40),
@@ -367,13 +368,42 @@ pub(super) fn expected(body: &MessageBody) -> &'static [u8] {
 }
 
 #[test]
-fn every_protocol_v5_variant_has_immutable_exact_bytes() {
-    super::assert_wire_golden_suite(WIRE_GOLDEN_VERSION, fixtures(), expected);
+fn every_protocol_v5_variant_is_rejected_after_the_v6_bump() {
+    const {
+        assert!(
+            crate::PROTOCOL_VERSION > WIRE_GOLDEN_VERSION,
+            "released v5 fixtures become a rejection suite after a version bump"
+        );
+    }
+    for (variant, message) in fixtures() {
+        let expected_bytes = expected(&message.body);
+        // The v6 checksum report adds a rewrite floor, so the frozen v5 body no
+        // longer decodes into the current struct. The version gate must reject
+        // it before body decoding.
+        if !matches!(
+            &message.body,
+            MessageBody::ChecksumReport(_) | MessageBody::StateSnapshot(_)
+        ) {
+            let generic: Message =
+                super::decode_value(expected_bytes).expect("fixture must generically decode");
+            assert_eq!(
+                generic.body, message.body,
+                "generic body decode for {variant}"
+            );
+            assert_eq!(generic.header.protocol_version, WIRE_GOLDEN_VERSION);
+        }
+        let error =
+            super::decode_message(expected_bytes).expect_err("released v5 packet must reject");
+        assert!(
+            error.to_string().contains("unsupported protocol version 5"),
+            "v5 rejection for {variant}: {error}"
+        );
+    }
 }
 
 #[cfg(not(feature = "hot-join"))]
 #[test]
-fn hot_join_v5_goldens_are_recognized_when_feature_is_disabled() {
+fn hot_join_v5_goldens_reject_at_the_version_before_feature_dispatch() {
     for (_, message) in fixtures().into_iter().filter(|(_, message)| {
         matches!(
             &message.body,
@@ -387,9 +417,7 @@ fn hot_join_v5_goldens_are_recognized_when_feature_is_disabled() {
         )
     }) {
         let error = super::decode_message(expected(&message.body))
-            .expect_err("disabled hot-join fixture must reject");
-        assert!(error
-            .to_string()
-            .contains("requires the disabled hot-join feature"));
+            .expect_err("released v5 hot-join fixture must reject");
+        assert!(error.to_string().contains("unsupported protocol version 5"));
     }
 }

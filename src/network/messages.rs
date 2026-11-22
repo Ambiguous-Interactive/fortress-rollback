@@ -205,6 +205,16 @@ pub(crate) struct ChecksumReport {
     /// The bounded wire decoder accepts every non-negative [`Frame`] through
     /// `i32::MAX`; unlike status and floor fields, the null sentinel is invalid.
     pub frame: Frame,
+    /// Additive multiset token of the applied confirmed-history rewrite floors
+    /// at or below `frame`, or `0` when no rewrite has affected this basis.
+    ///
+    /// A checksum is only comparable with a local history entry carrying the
+    /// same token. A delayed report sent before a rewrite carries the previous
+    /// token and describes a basis the receiver has already replaced, so it must
+    /// not relatch a mismatch. The token is a fixed 64-bit summary; every peer
+    /// derives it locally from its applied rewrite floors, with no authority
+    /// handshake and no per-report floor history.
+    pub basis_token: u64,
 }
 
 /// Observer → relay: a **floor-round request** for the double-failure-relay
@@ -297,6 +307,63 @@ pub(crate) struct JoinRequest {
     /// The player handle (slot index) the joiner wants to occupy.
     pub player_handle: usize,
 }
+/// Bounded confirmed-history basis metadata carried by a hot-join snapshot.
+///
+/// The basis token for a frame is `base` plus the additive terms of every
+/// `(floor, count)` event at or below it. `floor` is the highest edit floor
+/// already folded into `base`; frames below it have no reconstructible basis.
+/// A joiner copies this structure verbatim, so its post-snapshot tokens match
+/// the host's for every frame, including floors above the snapshot frame.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ChecksumBasis {
+    /// Folded/additive base token.
+    pub base: u64,
+    /// Highest rewrite floor folded into `base`, or [`Frame::NULL`].
+    pub floor: Frame,
+    /// Active distinct rewrite floors and multiplicities, sorted ascending.
+    pub events: Vec<(Frame, u32)>,
+}
+
+/// Wire cap on distinct rewrite floors in [`ChecksumBasis::events`].
+pub(crate) const MAX_CHECKSUM_REWRITE_EVENTS: usize = 64;
+
+impl ChecksumBasis {
+    /// Empty basis: no rewrite has affected any frame.
+    #[cfg(any(feature = "hot-join", test))]
+    pub(crate) const fn none() -> Self {
+        Self {
+            base: 0,
+            floor: Frame::NULL,
+            events: Vec::new(),
+        }
+    }
+
+    /// Whether this basis is canonical and bounded enough to adopt.
+    #[cfg(any(feature = "hot-join", test))]
+    pub(crate) fn is_valid(&self) -> bool {
+        if self.events.len() > MAX_CHECKSUM_REWRITE_EVENTS {
+            return false;
+        }
+        if !self.floor.is_null() && self.floor.as_i32() < 0 {
+            return false;
+        }
+        let mut previous: Option<Frame> = None;
+        for &(floor, count) in &self.events {
+            if floor.is_null() || count == 0 {
+                return false;
+            }
+            if previous.is_some_and(|prior| floor <= prior) {
+                return false;
+            }
+            if !self.floor.is_null() && floor <= self.floor {
+                return false;
+            }
+            previous = Some(floor);
+        }
+        true
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StateSnapshot {
     /// The frame the serialized state corresponds to. On the 2-peer host path
@@ -350,6 +417,14 @@ pub(crate) struct StateSnapshot {
     pub certified_dropped: Vec<u16>,
     /// Optional checksum of the saved state at `frame`.
     pub checksum: Option<u128>,
+    /// Sender's bounded confirmed-history basis metadata.
+    ///
+    /// A fresh joiner copies this basis so its post-snapshot checksum reports
+    /// are comparable with the host's recomputed basis for every frame,
+    /// including rewrite floors above the snapshot frame. Without the event
+    /// list, the joiner would compute a token from its own empty rewrite
+    /// history and reports would be suppressed or mismatched.
+    pub checksum_basis: ChecksumBasis,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct StateSnapshotAck {
@@ -675,10 +750,10 @@ impl MessageBody {
                     + LEN_PREFIX
                     + input.bytes.len() // bytes: Vec<u8>
             },
-            Self::InputAck(_) => FRAME,            // ack_frame
-            Self::QualityReport(_) => 2 + 16,      // frame_advantage: i16, ping: u128
-            Self::QualityReply(_) => 16,           // pong: u128
-            Self::ChecksumReport(_) => 16 + FRAME, // checksum: u128, frame
+            Self::InputAck(_) => FRAME,                // ack_frame
+            Self::QualityReport(_) => 2 + 16,          // frame_advantage: i16, ping: u128
+            Self::QualityReply(_) => 16,               // pong: u128
+            Self::ChecksumReport(_) => 16 + FRAME + 8, // checksum: u128, frame, basis_token: u64
             Self::KeepAlive => 0,
             Self::FloorRequest(_) => 4, // round_seq: u32
             Self::FloorReply(reply) => {
@@ -700,6 +775,10 @@ impl MessageBody {
                     + snapshot.certified_dropped.len() * 2 // u16 handles
                     + 1 // Option tag
                     + snapshot.checksum.map_or(0, |_| 16) // Some(u128)
+                    + 8 // checksum_basis.base: u64
+                    + FRAME // checksum_basis.floor
+                    + LEN_PREFIX // checksum_basis.events.len
+                    + snapshot.checksum_basis.events.len() * (FRAME + 4) // (Frame, u32)
             },
             Self::StateSnapshotAck(_) => FRAME,      // frame
             Self::ReactivateSlot(_) => 8 + FRAME,    // handle: usize, frame
@@ -799,6 +878,67 @@ impl Message {
     /// The [`MessageKind`] category of this message's body.
     pub(crate) fn kind(&self) -> MessageKind {
         self.body.kind()
+    }
+}
+
+#[cfg(test)]
+mod checksum_basis_tests {
+    use super::{ChecksumBasis, MAX_CHECKSUM_REWRITE_EVENTS};
+    use crate::Frame;
+
+    #[test]
+    fn checksum_basis_validation_accepts_canonical_and_rejects_noncanonical() {
+        assert!(ChecksumBasis::none().is_valid());
+        assert!(ChecksumBasis {
+            base: 7,
+            floor: Frame::new(2),
+            events: vec![(Frame::new(3), 1), (Frame::new(9), 2)],
+        }
+        .is_valid());
+        assert!(
+            !ChecksumBasis {
+                floor: Frame::new(2),
+                events: vec![(Frame::new(2), 1)],
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "an event at or below the folded floor is not canonical"
+        );
+        assert!(
+            !ChecksumBasis {
+                events: vec![(Frame::new(9), 1), (Frame::new(3), 1)],
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "events must be sorted ascending"
+        );
+        assert!(
+            !ChecksumBasis {
+                events: vec![(Frame::new(3), 0)],
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "zero-count events are not canonical"
+        );
+        assert!(
+            !ChecksumBasis {
+                events: vec![(Frame::NULL, 1)],
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "the null frame is not a rewrite floor"
+        );
+        let oversized = (0..=MAX_CHECKSUM_REWRITE_EVENTS)
+            .map(|floor| (Frame::new(i32::try_from(floor).expect("fits")), 1))
+            .collect();
+        assert!(
+            !ChecksumBasis {
+                events: oversized,
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "the wire event cap is enforced"
+        );
     }
 }
 
@@ -1224,6 +1364,7 @@ mod tests {
                         bridge_statuses: vec![],
                         checksum: None,
                         certified_dropped: Vec::new(),
+                        checksum_basis: ChecksumBasis::none(),
                     }),
                     MessageKind::StateSnapshot,
                 ),

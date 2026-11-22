@@ -156,7 +156,7 @@ and then time out; that residual case is documented and remains fail-closed.
   (`evicted_terminal_prepare_is_rejected_by_the_terminal_epoch`,
   `stale_terminal_epoch_prepare_is_rejected_at_a_participant`,
   `stale_coordinator_generation_abort_cannot_reset_a_newer_epoch`, and the
-  fallback-authority table) plus `wire_golden_v5` and the cross-architecture replay
+  fallback-authority table) plus `wire_golden_v6` and the cross-architecture replay
   digests.
 - Cross-platform coverage is intentionally split: native and QEMU lanes prove the
   arithmetic and trace identity, the browser/Godot probes prove the WASM and Emscripten
