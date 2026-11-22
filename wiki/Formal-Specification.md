@@ -730,7 +730,11 @@ without a new model. The guard is pinned by the deterministic eviction/replay
 tests, the reactivation and coordinator-generation freshness tests, and the
 `wire_golden_v5` exact-byte fixtures; the epoch is scoped to the coordinator
 identity, so a new coordinator generation or a hot-join authority change starts
-a fresh space rather than importing agreed state.
+a fresh space rather than importing agreed state. A fallback that has no local
+state for the coordinator generation (for example after hot-joining) may adopt
+the retained candidate's bounded first epoch; this is a local admission
+decision, cannot mint a certificate, and an unbounded future proposal remains a
+discarded peer artifact.
 
 `specs/tla/CoordinatedPeerDrop.tla` models two serialized operation IDs over two
 membership/target eras with independent per-survivor commit. The runtime defers

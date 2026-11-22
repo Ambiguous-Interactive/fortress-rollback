@@ -80,10 +80,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   protocol-level terminal epoch carried by every operation and abort: the authority admits only
   its next epoch, a stale proposal is answered with that epoch so the requester can advance and
   retry, and a participant discards any prepare below its next epoch even after every bounded
-  exact history has evicted the operation (#516). An abort carries the operation's canonical target
-  set, so a participant that saw the abort but missed the prepare still records the fence and
-  rejects the delayed replay. A participant that missed every prepare and abort copy can still
-  accept a delayed authority prepare when its own next epoch is unchanged; it then times out and
+  exact history has evicted the operation (#516). Epoch state is kept per coordinator generation,
+  so the current era and the one-ahead era observed during a rejoin cannot swallow each other; a
+  fallback that has no local state for the coordinator generation (for example after hot-joining)
+  adopts the retained candidate's bounded first epoch instead of rejecting a legitimate retry
+  forever, while an unbounded future proposal remains a discarded peer artifact. An abort carries
+  the operation's canonical target set, so a participant that saw the abort but missed the prepare
+  still records the fence and rejects the delayed replay. A participant that missed every prepare
+  and abort copy can still accept a delayed authority prepare when its own next epoch is unchanged;
+  it then times out and
   fails closed unless the authority's later abort reaches it, so losing both message families on
   a partition remains fail-closed by design. Only the operation's
   authority (the deterministic coordinator, or the fallback after the failover grace) can abort an
