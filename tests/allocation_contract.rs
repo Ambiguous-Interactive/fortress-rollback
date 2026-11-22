@@ -707,6 +707,10 @@ fn warmed_hot_paths_obey_allocation_contracts() {
     // scale. N=2 and N=4 therefore touch no allocator; N=16 retains one exact
     // 128-byte spill for the returned 16-player InputVec above inline capacity.
     for (players, operation_ceiling, byte_ceiling) in [(2, 0, 0), (4, 0, 0), (16, 1, 128)] {
+        // A first call can initialize lazy process-wide diagnostics that are not
+        // part of the per-frame contract. Charge that one-time work outside the
+        // measured repetitions; the contract is about the warmed steady state.
+        black_box(warmed_synctest_frame_stats(players));
         let repeated = warmed_synctest_frame_stats(players);
         let first = repeated[0];
         for (repetition, stats) in repeated.iter().enumerate().skip(1) {
@@ -724,6 +728,7 @@ fn warmed_hot_paths_obey_allocation_contracts() {
     }
 
     for (players, operation_ceiling, byte_ceiling) in [(2, 0, 0), (4, 0, 0), (16, 1, 128)] {
+        black_box(warmed_all_local_p2p_frame_stats(players));
         let repeated = warmed_all_local_p2p_frame_stats(players);
         let first = repeated[0];
         for (repetition, stats) in repeated.iter().enumerate().skip(1) {
@@ -750,6 +755,7 @@ fn warmed_hot_paths_obey_allocation_contracts() {
     // byte ceilings also prevent the empty graceful-drop poll from restoring its
     // former 28 KiB reservation.
     for (players, operation_ceiling, byte_ceiling) in [(2, 3, 64), (4, 3, 84), (16, 4, 440)] {
+        black_box(warmed_networked_p2p_send_stats(players));
         let first = warmed_networked_p2p_send_stats(players);
         for repetition in 1..3 {
             assert_eq!(
@@ -772,6 +778,7 @@ fn warmed_hot_paths_obey_allocation_contracts() {
     // per-packet connect-status snapshot is reused while gossip is unchanged.
     // Baseline before that change: 8 operations / 1408 bytes at N=2.
     for players in [2, 4, 16] {
+        black_box(warmed_networked_p2p_receive_stats(players));
         let first = warmed_networked_p2p_receive_stats(players);
         for repetition in 1..3 {
             assert_eq!(
@@ -792,6 +799,7 @@ fn warmed_hot_paths_obey_allocation_contracts() {
     // host-indexed scratch space is warmed, that no-message/no-event path must
     // retain and reuse the bounded storage instead of allocating per poll.
     for hosts in [1, 4] {
+        black_box(warmed_spectator_poll_stats(hosts));
         let first = warmed_spectator_poll_stats(hosts);
         for repetition in 1..3 {
             assert_eq!(
@@ -818,6 +826,7 @@ fn warmed_hot_paths_obey_allocation_contracts() {
     // so this path must retain only the send's own encode buffers instead of a
     // per-frame handle map (the byte ceiling is the map-regression guard;
     // operations keep a little headroom for allocator/compression growth).
+    black_box(warmed_spectator_host_frame_stats());
     let spectator_host_frames = warmed_spectator_host_frame_stats();
     for (repetition, stats) in spectator_host_frames.iter().enumerate() {
         assert_allocation_ceiling(
