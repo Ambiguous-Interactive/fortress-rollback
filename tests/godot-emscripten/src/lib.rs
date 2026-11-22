@@ -121,6 +121,7 @@ struct SessionPair {
     first: P2PSession<ProbeConfig>,
     second: P2PSession<ProbeConfig>,
     health: Rc<SocketHealth>,
+    first_inbox: Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
 }
 
 /// Multi-endpoint wire-encoded mesh used by the certified-snapshot probe.
@@ -208,7 +209,12 @@ fn create_socket_mesh(addresses: &[u8]) -> (Vec<MeshSocket>, Rc<SocketHealth>) {
     (sockets, health)
 }
 
-fn create_socket_pair() -> (MemorySocket, MemorySocket, Rc<SocketHealth>) {
+fn create_socket_pair() -> (
+    MemorySocket,
+    MemorySocket,
+    Rc<SocketHealth>,
+    Rc<RefCell<VecDeque<(u8, Vec<u8>)>>>,
+) {
     let first_inbox = Rc::new(RefCell::new(VecDeque::new()));
     let second_inbox = Rc::new(RefCell::new(VecDeque::new()));
     let health = Rc::new(SocketHealth::default());
@@ -223,11 +229,11 @@ fn create_socket_pair() -> (MemorySocket, MemorySocket, Rc<SocketHealth>) {
     let second = MemorySocket {
         local_address: SECOND_ADDRESS,
         peer_address: FIRST_ADDRESS,
-        inbox: second_inbox,
-        peer_inbox: first_inbox,
+        inbox: Rc::clone(&second_inbox),
+        peer_inbox: Rc::clone(&first_inbox),
         health: Rc::clone(&health),
     };
-    (first, second, health)
+    (first, second, health, first_inbox)
 }
 
 fn create_sessions(
@@ -235,7 +241,7 @@ fn create_sessions(
     quality_interval: Duration,
     behavior: DisconnectBehavior,
 ) -> Result<SessionPair, String> {
-    let (first_socket, second_socket, health) = create_socket_pair();
+    let (first_socket, second_socket, health, first_inbox) = create_socket_pair();
     let protocol_config = |seed| ProtocolConfig {
         quality_report_interval: quality_interval,
         protocol_rng_seed: Some(seed),
@@ -267,6 +273,7 @@ fn create_sessions(
         first,
         second,
         health,
+        first_inbox,
     })
 }
 
@@ -501,6 +508,51 @@ fn run_removal_probe() -> Result<(), String> {
     if pair.first.current_state() != SessionState::Running {
         return Err("the Emscripten survivor left Running on the frozen-slot advance".to_owned());
     }
+
+    // Replay a Prepare from the operation's consumed terminal epoch. The
+    // encoded datagram runs through the real codec and endpoint path; it must
+    // not reopen an attempt, halt the survivor, or retract the confirmed prefix.
+    let epoch_before = pair.first.diagnostic_coordinated_drop_membership_epoch();
+    let confirmed_before = pair.first.confirmed_frame();
+    let prepare = pair
+        .first
+        .diagnostic_terminal_replay_prepare_bytes(PlayerHandle::new(1), 0)
+        .ok_or_else(|| "could not build the stale terminal Prepare".to_owned())?;
+    {
+        let mut inbox = pair.first_inbox.borrow_mut();
+        if inbox.len() >= MAX_QUEUED_MESSAGES {
+            return Err("stale-replay host inbox overflow".to_owned());
+        }
+        inbox.push_back((SECOND_ADDRESS, prepare));
+    }
+
+    let mut replayed_drop = false;
+    for _ in 0..MAX_REMOVAL_POLLS {
+        pair.first.poll_remote_clients();
+        offset_ms.fetch_add(VIRTUAL_POLL_INTERVAL_MS, Ordering::Relaxed);
+        for event in pair.first.events() {
+            if let FortressEvent::PeerDropped { handle, .. } = event {
+                if handle == PlayerHandle::new(1) {
+                    replayed_drop = true;
+                }
+            }
+        }
+        if pair.health.failed.get() {
+            return Err("in-memory socket failed during stale terminal replay".to_owned());
+        }
+    }
+    if replayed_drop {
+        return Err("a stale terminal Prepare certified another removal".to_owned());
+    }
+    if pair.first.current_state() != SessionState::Running {
+        return Err("the stale terminal Prepare halted the Emscripten survivor".to_owned());
+    }
+    if pair.first.diagnostic_coordinated_drop_membership_epoch() != epoch_before {
+        return Err("the stale terminal Prepare changed Emscripten membership".to_owned());
+    }
+    if pair.first.confirmed_frame() < confirmed_before {
+        return Err("the stale terminal Prepare retracted the confirmed prefix".to_owned());
+    }
     Ok(())
 }
 
@@ -521,7 +573,7 @@ fn run_hot_join_probe() -> Result<(), String> {
         ..ProtocolConfig::default()
     };
 
-    let (host_socket, joiner_socket, health) = create_socket_pair();
+    let (host_socket, joiner_socket, health, _host_inbox) = create_socket_pair();
     let mut host = SessionBuilder::<ProbeConfig>::new()
         .with_protocol_config(protocol_config(303))
         .with_num_players(2)
@@ -956,6 +1008,9 @@ fn replay_evidence() -> Result<(u32, u64, String, String, u32), String> {
     fortress_replay_fixture::check_compression_parity()?;
     if !fortress_replay_fixture::check_wire_codec_digest() {
         return Err("coordinated-drop wire codec digest differs under Emscripten".to_owned());
+    }
+    if !fortress_replay_fixture::check_wire_codec_digest_hot_join() {
+        return Err("hot-join wire codec digest differs under Emscripten".to_owned());
     }
     let evidence = fortress_replay_fixture::replay_fixture()?;
     if evidence.frames != EXPECTED_FRAMES {

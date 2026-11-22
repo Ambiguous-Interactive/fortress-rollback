@@ -23,7 +23,9 @@ mod tests {
     const SYNC_POLL_BUDGET: usize = 256;
     const INPUT_POLL_BUDGET: usize = 64;
     const REMOVAL_POLL_BUDGET: usize = 512;
+    #[cfg(feature = "hot-join")]
     const HOT_JOIN_POLL_BUDGET: usize = 512;
+    #[cfg(feature = "hot-join")]
     const HOT_JOIN_CONFIRMED_FRAMES: u32 = 2;
     const FRAME_COUNT: u32 = 2;
     const MALFORMED_PACKET_COUNT: usize = MAX_RAW_PACKETS_PER_POLL + 1;
@@ -43,6 +45,11 @@ mod tests {
         assert!(
             fortress_replay_fixture::check_wire_codec_digest(),
             "the coordinated-drop wire codec digest differs in the browser"
+        );
+        #[cfg(feature = "hot-join")]
+        assert!(
+            fortress_replay_fixture::check_wire_codec_digest_hot_join(),
+            "the hot-join wire codec digest differs in the browser"
         );
     }
 
@@ -462,6 +469,149 @@ mod tests {
             survivor.current_state(),
             SessionState::Running,
             "the survivor must stay live after the frozen-slot advance"
+        );
+    }
+
+    /// Replay a Prepare from a consumed terminal epoch after the removal
+    /// commits. The encoded datagram runs through the real codec and endpoint
+    /// path; it must not reopen an attempt, halt the survivor, or retract the
+    /// confirmed prefix. The dedicated unit test
+    /// `diagnostic_terminal_replay_prepare_is_rejected_by_the_epoch_fence`
+    /// pins the epoch branch itself.
+    #[cfg(feature = "hot-join")]
+    #[wasm_bindgen_test]
+    fn stale_terminal_prepare_is_rejected_after_committed_removal_in_browser() {
+        let (clock, offset_ms) = virtual_clock();
+        let (host_socket, removed_socket, bus) = RawBus::pair();
+        let protocol_config = |seed| ProtocolConfig {
+            protocol_rng_seed: Some(seed),
+            clock: Some(clock.clone()),
+            ..ProtocolConfig::default()
+        };
+
+        let mut host = SessionBuilder::<BrowserConfig>::new()
+            .with_protocol_config(protocol_config(0xB108))
+            .with_disconnect_behavior(DisconnectBehavior::ContinueWithout)
+            .with_num_players(2)
+            .expect("stale-replay host player count must be accepted")
+            .with_hot_join(true)
+            .add_player(PlayerType::Local, PlayerHandle::new(0))
+            .expect("stale-replay host local player must be accepted")
+            .add_player(PlayerType::Remote(BrowserPeer(1)), PlayerHandle::new(1))
+            .expect("stale-replay host remote player must be accepted")
+            .start_p2p_session(host_socket)
+            .expect("stale-replay host must build");
+
+        let mut removed = SessionBuilder::<BrowserConfig>::new()
+            .with_protocol_config(protocol_config(0xB109))
+            .with_disconnect_behavior(DisconnectBehavior::ContinueWithout)
+            .with_num_players(2)
+            .expect("stale-replay removed player count must be accepted")
+            .add_player(PlayerType::Remote(BrowserPeer(0)), PlayerHandle::new(0))
+            .expect("stale-replay removed remote player must be accepted")
+            .add_player(PlayerType::Local, PlayerHandle::new(1))
+            .expect("stale-replay removed local player must be accepted")
+            .start_p2p_session(removed_socket)
+            .expect("stale-replay removed session must build");
+
+        for _ in 0..SYNC_POLL_BUDGET {
+            poll_pair_with_clock(&mut host, &mut removed, &offset_ms);
+            if host.current_state() == SessionState::Running
+                && removed.current_state() == SessionState::Running
+            {
+                break;
+            }
+        }
+        assert!(
+            host.current_state() == SessionState::Running
+                && removed.current_state() == SessionState::Running,
+            "stale-replay sessions failed to synchronize"
+        );
+        let _ = host.events().count();
+        let _ = removed.events().count();
+
+        let mut host_state = BrowserState::default();
+        let mut removed_state = BrowserState::default();
+        for frame_index in 0..4u32 {
+            let input = BrowserInput { value: frame_index };
+            host.add_local_input(PlayerHandle::new(0), input)
+                .expect("stale-replay host input must be accepted");
+            removed
+                .add_local_input(PlayerHandle::new(1), input)
+                .expect("stale-replay removed input must be accepted");
+            apply_requests(
+                &mut host_state,
+                host.advance_frame()
+                    .expect("stale-replay host must advance"),
+            );
+            apply_requests(
+                &mut removed_state,
+                removed
+                    .advance_frame()
+                    .expect("stale-replay removed session must advance"),
+            );
+            poll_pair_with_clock(&mut host, &mut removed, &offset_ms);
+        }
+
+        host.remove_player(PlayerHandle::new(1))
+            .expect("stale-replay removal must be accepted");
+        let mut dropped = false;
+        let mut removed_stopped = false;
+        for _ in 0..REMOVAL_POLL_BUDGET {
+            poll_pair_with_clock(&mut host, &mut removed, &offset_ms);
+            for event in host.events() {
+                if let FortressEvent::PeerDropped { handle, .. } = event {
+                    assert_eq!(handle, PlayerHandle::new(1));
+                    dropped = true;
+                }
+            }
+            let _ = removed.events().count();
+            removed_stopped = removed.current_state() == SessionState::Synchronizing;
+            if dropped && removed_stopped {
+                break;
+            }
+        }
+        assert!(dropped, "the stale-replay host must certify the removal");
+        assert!(
+            removed_stopped,
+            "the stale-replay target must apply its certificate"
+        );
+        drop(removed);
+        let epoch_before = host.diagnostic_coordinated_drop_membership_epoch();
+        let confirmed_before = host.confirmed_frame();
+        let prepare = host
+            .diagnostic_terminal_replay_prepare_bytes(PlayerHandle::new(1), 0)
+            .expect("the probe must build a stale terminal Prepare");
+        bus.inject_raw(BrowserPeer(1), BrowserPeer(0), prepare);
+
+        let mut replayed_drop = false;
+        for _ in 0..64 {
+            host.poll_remote_clients();
+            offset_ms.fetch_add(16, Ordering::Relaxed);
+            for event in host.events() {
+                if let FortressEvent::PeerDropped { handle, .. } = event {
+                    assert_eq!(handle, PlayerHandle::new(1));
+                    replayed_drop = true;
+                }
+            }
+        }
+        assert!(
+            !replayed_drop,
+            "a stale terminal Prepare must not certify another removal"
+        );
+        assert_eq!(
+            host.current_state(),
+            SessionState::Running,
+            "the stale terminal Prepare must not halt the survivor"
+        );
+        assert_eq!(
+            host.diagnostic_coordinated_drop_membership_epoch(),
+            epoch_before,
+            "the stale terminal Prepare must not change membership"
+        );
+        assert!(
+            host.confirmed_frame() >= confirmed_before,
+            "the stale terminal Prepare must not retract the confirmed prefix"
         );
     }
 

@@ -14,6 +14,9 @@ doctest = false
 # Platform replay lanes only need the checked-in artifact, so capture stays off
 # there.
 capture = ["dep:web-time"]
+# Enables the hot-join wire-body digest used by the browser, Godot/Emscripten,
+# and wasip1 runtime probes.
+hot-join = ["fortress-rollback/hot-join"]
 
 [dependencies]
 fortress-rollback = { path = "../.." }

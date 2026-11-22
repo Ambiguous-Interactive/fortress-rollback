@@ -669,7 +669,7 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
-          cargo build -p fortress-replay-fixture --target ${{ matrix.target }} --bin wasip1-replay-probe
+          cargo build -p fortress-replay-fixture --features hot-join --target ${{ matrix.target }} --bin wasip1-replay-probe
           wasmtime run target/${{ matrix.target }}/debug/wasip1-replay-probe.wasm
 
   # Real Godot web exports exercise the dynamic-linking boundary that compile

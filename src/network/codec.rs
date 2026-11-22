@@ -165,6 +165,11 @@ pub fn wire_codec_digest() -> u64 {
         }),
     ];
 
+    digest_message_bodies(bodies)
+}
+
+/// Hashes the exact encoded bytes and round-trip outcome of every body.
+fn digest_message_bodies(bodies: impl IntoIterator<Item = MessageBody>) -> u64 {
     let mut hasher = crate::hash::DeterministicHasher::new();
     for body in bodies {
         let message = Message {
@@ -189,6 +194,62 @@ pub fn wire_codec_digest() -> u64 {
         }
     }
     hasher.finish()
+}
+
+/// Encodes and decodes one representative message of every hot-join body
+/// shape, hashing the exact bytes and round-trip outcome.
+///
+/// Kept separate from [`wire_codec_digest`] so builds without the feature do
+/// not change the core digest. The browser, Godot/Emscripten, and wasip1 probes
+/// pin this value when they exercise hot-join support (issue #522).
+#[cfg(feature = "hot-join")]
+#[doc(hidden)]
+#[must_use]
+pub fn wire_codec_digest_hot_join() -> u64 {
+    let snapshot = StateSnapshot {
+        frame: Frame::new(41),
+        num_players: 3,
+        state_bytes: vec![0x10, 0x20, 0x30, 0x40],
+        bridge_inputs: vec![0xAA, 0xBB, 0xCC],
+        bridge_statuses: vec![
+            ConnectionStatus {
+                disconnected: false,
+                last_frame: Frame::new(7),
+                epoch: 2,
+            },
+            ConnectionStatus {
+                disconnected: true,
+                last_frame: Frame::new(9),
+                epoch: 3,
+            },
+        ],
+        certified_dropped: vec![1, 4],
+        checksum: Some(0x0102_0304_0506_0708_090A_0B0C_0D0E_0F10),
+    };
+    let bodies = [
+        MessageBody::JoinRequest(JoinRequest { player_handle: 2 }),
+        MessageBody::StateSnapshot(snapshot),
+        MessageBody::StateSnapshotAck(StateSnapshotAck {
+            frame: Frame::new(41),
+        }),
+        MessageBody::ReactivateSlot(ReactivateSlot {
+            handle: 2,
+            frame: Frame::new(41),
+        }),
+        MessageBody::ReactivateSlotAck(ReactivateSlotAck {
+            handle: 2,
+            frame: Frame::new(41),
+        }),
+        MessageBody::JoinCommitted(JoinCommitted {
+            handle: 2,
+            frame: Frame::new(41),
+        }),
+        MessageBody::JoinAborted(JoinAborted {
+            handle: 2,
+            frame: Frame::new(41),
+        }),
+    ];
+    digest_message_bodies(bodies)
 }
 
 /// Best-effort classification of a rejected protocol datagram.
@@ -2737,6 +2798,12 @@ mod tests {
     #[test]
     fn wire_codec_digest_is_pinned() {
         assert_eq!(wire_codec_digest(), 1_284_801_995_974_345_814);
+    }
+
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn wire_codec_hot_join_digest_is_pinned() {
+        assert_eq!(wire_codec_digest_hot_join(), 0xbed8_c21a_566d_d757);
     }
 
     #[test]

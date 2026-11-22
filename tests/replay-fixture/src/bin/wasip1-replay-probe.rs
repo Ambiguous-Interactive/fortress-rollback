@@ -27,6 +27,10 @@ fn run() -> Result<(), String> {
             "coordinated-drop wire codec digest differs from native {EXPECTED_WIRE_CODEC_DIGEST:#018x}"
         ));
     }
+    #[cfg(feature = "hot-join")]
+    if !fortress_replay_fixture::check_wire_codec_digest_hot_join() {
+        return Err("hot-join wire codec digest differs from native".to_owned());
+    }
     let evidence = fortress_replay_fixture::replay_fixture()?;
     if evidence.frames != EXPECTED_FRAMES {
         return Err(format!(

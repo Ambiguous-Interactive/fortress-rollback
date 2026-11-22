@@ -12266,6 +12266,77 @@ impl<T: Config> P2PSession<T> {
             .collect()
     }
 
+    /// Diagnostics/testing surface (hidden; **not** part of the stable public
+    /// API): encodes a coordinated-drop `Prepare` for `target_handle` using the
+    /// current membership, target generations, and a fresh operation sequence,
+    /// but the caller-supplied `terminal_epoch`.
+    ///
+    /// Runtime probes use this after a hot-join reactivation to replay an
+    /// operation from an evicted terminal epoch. The encoded datagram can be
+    /// injected through the probe's real wire codec; a live epoch fence must
+    /// discard it without reopening an attempt or changing membership.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn diagnostic_terminal_replay_prepare_bytes(
+        &self,
+        target_handle: PlayerHandle,
+        terminal_epoch: u32,
+    ) -> Option<Vec<u8>> {
+        let target_addr = match self.player_reg.handles.get(&target_handle)? {
+            PlayerType::Remote(addr) => addr.clone(),
+            _ => return None,
+        };
+        // alloc-bound: at most one target per roster slot.
+        let mut targets = Vec::new();
+        targets.try_reserve_exact(self.num_players).ok()?;
+        for handle in self.player_reg.handles_by_address_iter(&target_addr) {
+            if !matches!(
+                self.player_reg.handles.get(&handle),
+                Some(PlayerType::Remote(_))
+            ) {
+                continue;
+            }
+            let raw = u16::try_from(handle.as_usize()).ok()?;
+            let generation = self.local_coordinated_drop_generation(handle)?;
+            targets.push(DropTarget {
+                handle: raw,
+                generation,
+            });
+        }
+        targets.sort_unstable_by_key(|target| target.handle);
+        if targets.is_empty() {
+            return None;
+        }
+        let participants = self.coordinated_drop_participants(&targets);
+        let coordinator = *participants.first()?;
+        let coordinator_generation = self
+            .local_coordinated_drop_generation(PlayerHandle::new(usize::from(coordinator)))
+            .unwrap_or(0);
+        let target_set_digest = Self::coordinated_drop_target_digest(&targets);
+        let participant_set_digest = Self::coordinated_drop_participant_digest(&participants);
+        // A fixed high sequence keeps this diagnostic-builder allocation-free
+        // and avoids collision with the bounded closed/terminal journals a real
+        // session can still contain. It is never used to admit real work.
+        let operation = DropOperationId {
+            coordinator,
+            coordinator_generation,
+            sequence: u32::MAX - 1,
+            target_set_digest,
+            participant_set_digest,
+            terminal_epoch,
+        };
+        let prepare = DropPrepare {
+            operation,
+            targets,
+            participants,
+        };
+        let message = Message {
+            header: MessageHeader::new(0x1234),
+            body: MessageBody::DropPrepare(prepare),
+        };
+        crate::network::codec::encode(&message).ok()
+    }
+
     /// Returns the maximum prediction window of a session.
     #[must_use]
     pub fn max_prediction(&self) -> usize {
@@ -20222,6 +20293,62 @@ mod tests {
         assert_eq!(
             retry.terminal_epoch, 1,
             "the retry consumes the epoch the stale replay could not reuse"
+        );
+    }
+
+    #[test]
+    fn diagnostic_terminal_replay_prepare_is_rejected_by_the_epoch_fence() {
+        let mut session = five_player_majority_session(PlayerHandle::new(0));
+        let targets = vec![DropTarget {
+            handle: 4,
+            generation: 0,
+        }];
+        let participants = vec![0, 1, 2, 3];
+        let operation = DropOperationId {
+            coordinator: 0,
+            coordinator_generation: 0,
+            sequence: 1,
+            target_set_digest: P2PSession::<TestConfig>::coordinated_drop_target_digest(&targets),
+            participant_set_digest: P2PSession::<TestConfig>::coordinated_drop_participant_digest(
+                &participants,
+            ),
+            terminal_epoch: 0,
+        };
+        // The old operation consumed epoch 0; the authority now requires 1.
+        session
+            .coordinated_drop_record_epoch(operation, &targets, 1)
+            .expect("epoch is consumable");
+        let bytes = session
+            .diagnostic_terminal_replay_prepare_bytes(PlayerHandle::new(4), 0)
+            .expect("probe must encode a stale terminal prepare");
+        let (message, consumed) = crate::network::codec::decode_message(&bytes)
+            .expect("probe-generated prepare must decode through the wire codec");
+        assert_eq!(consumed, bytes.len());
+        let MessageBody::DropPrepare(prepare) = message.body else {
+            panic!("probe must generate a DropPrepare body");
+        };
+        assert_eq!(prepare.operation.terminal_epoch, 0);
+        assert_eq!(prepare.operation.sequence, u32::MAX - 1);
+        assert_eq!(prepare.operation.coordinator, 0);
+        assert_eq!(prepare.targets, targets);
+        assert_eq!(prepare.participants, participants);
+        assert!(
+            session.coordinated_drop_validate_prepare(&prepare),
+            "fixture must be valid apart from the consumed terminal epoch"
+        );
+
+        let aborts_before = drop_abort_sends(&session);
+        session
+            .coordinated_drop_accept_prepare(prepare, Some(0))
+            .expect("a stale terminal prepare is a peer artifact");
+        assert!(
+            session.coordinated_drop.active.is_none(),
+            "the consumed terminal epoch must reject the replay"
+        );
+        assert_eq!(session.current_state(), SessionState::Running);
+        assert!(
+            drop_abort_sends(&session) > aborts_before,
+            "the authority answers the stale replay with its next epoch"
         );
     }
 
