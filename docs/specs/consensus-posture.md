@@ -85,7 +85,7 @@ covered the first six sources; the remaining sources were checked for a specific
 | Deterministic coordinator and deterministic fallback | **Keep** | Reproducible traces, no election RNG, no reachability-dependent leader. |
 | Monotone terminal epoch (ballot-like fence) | **Keep** | Closes the bounded-history replay hole from #516 after exact history is evicted. It is already modeled as an admission guard. |
 | Sequence + target/participant digests + coordinator generation | **Keep** | Binds an operation to one target set and one agreed era; survives hot-join reactivation. |
-| Serialized membership changes | **Keep** | This is the project's substitute for joint consensus: one change at a time gives overlapping old/new majorities without a second configuration phase. |
+| Serialized membership changes | **Keep** | This is the project's substitute for joint consensus: one change at a time keeps each certificate's survivor quorum (targets excluded) intersecting the next era's quorum without a second configuration phase. |
 | Bounded coordinator-silence grace | **Keep** | A deterministic, replayable CheckQuorum/Pre-Vote analogue. It releases a silent coordinator only after a full window and never bypasses quorum. |
 | Randomized election timeouts | **Reject** | Randomization improves liveness under dueling leaders, but this protocol has no elections and no throughput pressure; it would make seeded traces less reproducible. |
 | Leaderless or pipelined consensus (QuePaxa, EPaxos, Multi-Paxos) | **Reject** | Removals are rare; the extra machinery would enlarge the review and test surface for no measured removal-latency gain. |
@@ -104,9 +104,10 @@ covered the first six sources; the remaining sources were checked for a specific
   coordinator generation is the term-like era. A rejoin starts a fresh era, so a stale
   prepare cannot reopen an old operation.
 - **Raft membership-change safety**: one change at a time and a strict majority of the
-  agreed set. A single-server change's old and new majorities overlap; the project
-  additionally binds the participant-set digest into the operation so a split view
-  cannot derive two different denominators.
+  agreed set. The certificate quorum is a strict majority of the survivors (targets
+  excluded), so the next era's quorum intersects it; the project additionally binds the
+  participant-set digest into the operation so a split view cannot derive two different
+  denominators.
 - **VR view change**: a fallback must collect quorum evidence before it chooses, and a
   conflicting cut cannot be applied. The fallback is a bounded, deterministic view
   change, not an election.
