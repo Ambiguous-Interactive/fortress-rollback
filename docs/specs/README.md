@@ -11,6 +11,7 @@ This directory contains formal specification documents for the Fortress Rollback
 | [formal-spec.md](formal-spec.md)             | Core formal specifications using TLA+ notation         |
 | [api-contracts.md](api-contracts.md)         | API preconditions, postconditions, and invariants      |
 | [determinism-model.md](determinism-model.md) | Determinism requirements and verification              |
+| [consensus-posture.md](consensus-posture.md) | Consensus literature review and CAP posture            |
 | [spec-divergences.md](spec-divergences.md)   | Documented differences between spec and implementation |
 
 ## Related Resources

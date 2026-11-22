@@ -99,6 +99,7 @@ WIKI_STRUCTURE = {
     "specs/formal-spec.md": "Formal-Specification",
     "specs/determinism-model.md": "Determinism-Model",
     "specs/api-contracts.md": "API-Contracts",
+    "specs/consensus-posture.md": "Consensus-Posture",
     "specs/spec-divergences.md": "Spec-Divergences",
     "specs/README.md": "Overview",
 }
@@ -1127,6 +1128,7 @@ def generate_sidebar(wiki_structure: dict[str, str]) -> str:
 - [Formal Specification](Formal-Specification)
 - [Determinism Model](Determinism-Model)
 - [API Contracts](API-Contracts)
+- [Consensus Posture](Consensus-Posture)
 - [Public API Census](Public-API-Census)
 - [Spec Divergences](Spec-Divergences)
 

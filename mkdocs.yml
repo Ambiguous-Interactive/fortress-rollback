@@ -227,6 +227,7 @@ nav:
       - Formal Specification: specs/formal-spec.md
       - API Contracts: specs/api-contracts.md
       - Determinism Model: specs/determinism-model.md
+      - Consensus Posture: specs/consensus-posture.md
       - Spec Divergences: specs/spec-divergences.md
   - Contributing:
       - Guidelines: contributing.md
