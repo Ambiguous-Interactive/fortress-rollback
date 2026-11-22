@@ -13,7 +13,11 @@ default = []
 # Browser runtime probe for the feature-gated hot-join membership path. Kept
 # non-default so workspace-wide builds do not silently unify the library into
 # its hot-join configuration; the browser CI lane opts in explicitly.
-hot-join = ["fortress-rollback/hot-join"]
+hot-join = [
+    "fortress-rollback/hot-join",
+    "fortress-rollback/test-probes",
+    "fortress-replay-fixture/hot-join",
+]
 
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dev-dependencies]

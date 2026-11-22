@@ -1235,6 +1235,12 @@ impl<T: Config> UdpProtocol<T> {
         self.conn_id
     }
 
+    /// The connection id this endpoint learned for its remote peer. `0` means
+    /// the handshake has not locked an id yet.
+    pub(crate) fn remote_conn_id(&self) -> u32 {
+        self.remote_conn_id
+    }
+
     pub(crate) fn is_synchronized(&self) -> bool {
         self.state == ProtocolState::Running
             || self.state == ProtocolState::Disconnected

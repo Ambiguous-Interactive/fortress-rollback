@@ -283,6 +283,10 @@ hot-join = []
 # source location to a bounded per-process artifact. Compiles out of normal
 # builds; used by the nightly exercise census.
 violation-census = []
+# Enable the doc-hidden raw drop-control replay hook used only by the browser
+# and Godot/Emscripten runtime probes. It compiles out of normal builds; unit
+# tests still see it through `cfg(test)`.
+test-probes = []
 # Enable runtime invariant checking in release builds (for debugging production issues)
 paranoid = []
 # No-op compatibility marker. Actual Loom builds use RUSTFLAGS="--cfg loom";

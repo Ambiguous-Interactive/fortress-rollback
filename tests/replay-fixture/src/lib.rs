@@ -59,6 +59,22 @@ pub fn check_wire_codec_digest() -> bool {
     fortress_rollback::network::codec::wire_codec_digest() == EXPECTED_WIRE_CODEC_DIGEST
 }
 
+/// Digest of the hot-join wire bodies, identical on every runtime target.
+///
+/// Kept separate from [`EXPECTED_WIRE_CODEC_DIGEST`] so builds without the
+/// feature do not change the core digest. The browser, Godot/Emscripten, and
+/// wasip1 probes assert this when they exercise hot-join support.
+#[cfg(feature = "hot-join")]
+pub const EXPECTED_WIRE_CODEC_DIGEST_HOT_JOIN: u64 = 0xbed8_c21a_566d_d757;
+
+/// Returns whether this target's hot-join wire codec matches the pinned digest.
+#[cfg(feature = "hot-join")]
+#[must_use]
+pub fn check_wire_codec_digest_hot_join() -> bool {
+    fortress_rollback::network::codec::wire_codec_digest_hot_join()
+        == EXPECTED_WIRE_CODEC_DIGEST_HOT_JOIN
+}
+
 /// Fixed-width input used by the captured schedule.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -761,6 +777,16 @@ mod tests {
         assert_eq!(evidence.desyncs, 0, "checked-in fixture must not desync");
         assert_eq!(evidence.request_digest, EXPECTED_REQUEST_DIGEST);
         assert_eq!(evidence.digest, EXPECTED_DIGEST);
+    }
+
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn wire_codec_hot_join_digest_is_pinned() {
+        let digest = fortress_rollback::network::codec::wire_codec_digest_hot_join();
+        assert_eq!(
+            digest, EXPECTED_WIRE_CODEC_DIGEST_HOT_JOIN,
+            "hot-join wire-codec digest changed"
+        );
     }
 
     #[test]
