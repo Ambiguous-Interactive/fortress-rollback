@@ -340,8 +340,8 @@ def test_miri_job_has_no_cross_target_apt_setup() -> None:
     matrix_entries = miri_job["strategy"]["matrix"]["include"]
     for entry in matrix_entries:
         assert "big_endian" not in entry, (
-            "Big-endian coverage belongs in fast golden byte tests, not as a "
-            f"cross-target Miri matrix flag: {entry!r}"
+            "Big-endian coverage belongs in the dedicated big-endian-runtime "
+            f"lane, not as a cross-target Miri matrix flag: {entry!r}"
         )
         assert "s390x" not in entry["name"].lower()
 
@@ -358,6 +358,37 @@ def test_miri_job_has_no_cross_target_apt_setup() -> None:
                 f"Miri step {step_name!r} contains {fragment!r}; keep Miri "
                 "jobs host-native and cover wire byte order with unit tests."
             )
+
+
+def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
+    """The big-endian lane must run only the pinned codec and fixture probes."""
+    workflow = _load_ci_rust_workflow()
+    job = workflow["jobs"]["big-endian-runtime"]
+
+    assert job["timeout-minutes"] <= 20
+    env = job["env"]
+    assert env["CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER"] == "s390x-linux-gnu-gcc"
+    assert "qemu-s390x" in env["CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER"]
+
+    rust_step = next(
+        step for step in job["steps"] if step.get("name") == "Install Rust toolchain"
+    )
+    assert rust_step["with"]["targets"] == "s390x-unknown-linux-gnu"
+
+    commands = _cargo_commands(job["steps"], "test")
+    assert len(commands) == 2
+    for command in commands:
+        assert _option_values(command, "--target") == ["s390x-unknown-linux-gnu"]
+        assert "--workspace" not in command
+        package_index = command.index("-p")
+        assert command[package_index + 1] in {
+            "fortress-rollback",
+            "fortress-replay-fixture",
+        }
+    assert Counter(
+        command[command.index("-p") + 1] for command in commands
+    ) == Counter(("fortress-rollback", "fortress-replay-fixture"))
+    assert any("wire_codec_digest_is_pinned" in command for command in commands)
 
 
 def test_wasm_job_covers_browser_emscripten_and_wasi_targets() -> None:
