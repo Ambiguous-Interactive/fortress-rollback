@@ -67,6 +67,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pre-existing:** a checksum mismatch latched before a confirmed-history rewrite no longer
+  keeps `sync_health` reporting `DesyncDetected` after the rewrite invalidates its local basis.
+  Freeze convergence, certified-cut resimulation, and reserved-slot convergence clear a latched
+  mismatch and any still-pending peer report at or above the rewritten frame, while a mismatch
+  below that floor stays latched so a genuine divergence is never masked. This restores `InSync`
+  after both peers converge on the same post-rewrite checksum.
 - **Pre-existing:** a peer-controlled coordinated-drop artifact that is malformed, stale, or
   equivocal no longer halts the receiver. Invalid prepares (stale membership, target generation,
   participant digest, a non-canonical target subset, or a coordinator that is not the first

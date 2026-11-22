@@ -5627,6 +5627,7 @@ impl<T: Config> P2PSession<T> {
             std::cmp::min(self.disconnect_frame, cut)
         };
         self.local_checksum_history.retain(|&frame, _| frame < cut);
+        self.invalidate_checksum_mismatch_from(cut);
         true
     }
 
@@ -14177,6 +14178,7 @@ impl<T: Config> P2PSession<T> {
                     // DesyncDetection::Off the map is empty, so this is a no-op.
                     self.local_checksum_history
                         .retain(|&frame, _| frame < disconnect_frame);
+                    self.invalidate_checksum_mismatch_from(disconnect_frame);
 
                     // Round-5 Finding 1 (coordinator sibling) backstop: this
                     // rewrite invalidates an already-captured N-peer snapshot
@@ -15723,6 +15725,7 @@ impl<T: Config> P2PSession<T> {
             // for those frames are stale.
             self.local_checksum_history
                 .retain(|&frame, _| frame < disconnect_frame);
+            self.invalidate_checksum_mismatch_from(disconnect_frame);
             self.abort_npeer_serve_if_snapshot_invalidated(disconnect_frame);
         }
         let refreshed_input = self.sync_layer.player_last_confirmed_input(handle);
@@ -16782,6 +16785,28 @@ impl<T: Config> P2PSession<T> {
             }
         }
         metrics.observe_event_queue_len(event_queue.len());
+    }
+
+    /// Invalidates a peer's checksum comparison state when a confirmed-history
+    /// rewrite changes the local basis at or above `first_invalid`.
+    ///
+    /// A mismatch or pending report below the floor keeps its basis in retained
+    /// history, so a genuine divergence is never masked. Reports at or above the
+    /// floor describe the pre-rewrite trajectory and cannot be compared with the
+    /// recomputed local checksum. Eviction of old checksums is not a rewrite and
+    /// must not call this helper.
+    fn invalidate_checksum_mismatch_from(&mut self, first_invalid: Frame) {
+        for remote in self.player_reg.remotes.values_mut() {
+            if remote
+                .checksum_mismatch_frame
+                .is_some_and(|(frame, _local, _remote)| frame >= first_invalid)
+            {
+                remote.checksum_mismatch_frame = None;
+            }
+            remote
+                .pending_checksums
+                .retain(|&frame, _checksum| frame < first_invalid);
+        }
     }
 
     fn compare_local_checksums_against_peers(&mut self) {
@@ -31442,6 +31467,249 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, FortressEvent::DesyncDetected { .. })),
             "no false-positive DesyncDetected after stale checksum invalidation"
+        );
+    }
+
+    /// A mismatch latched against a pre-convergence checksum must not outlive
+    /// the basis it was computed from. The freeze rewrite removes the local
+    /// checksum at every frame at or above `disconnect_frame`, so a latch at
+    /// such a frame would keep `sync_health` reporting `DesyncDetected` even
+    /// after the survivor's post-convergence checksum matches.
+    #[test]
+    fn freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let handle_c = PlayerHandle::new(2);
+        let freeze_frame = Frame::new(5);
+        let rewritten = Frame::new(8);
+        let stale_local: u128 = 0x1008;
+        let stale_remote: u128 = 0x2008;
+
+        for _ in 0..10 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(10), session.save_mode);
+        session
+            .local_checksum_history
+            .insert(rewritten, stale_local);
+        session
+            .player_reg
+            .remotes
+            .get_mut(&addr_b)
+            .expect("B endpoint exists")
+            .pending_checksums
+            .insert(rewritten, stale_remote);
+        session.compare_local_checksums_against_peers();
+        assert_eq!(
+            session.sync_health(handle_b),
+            Some(SyncHealth::DesyncDetected {
+                frame: rewritten,
+                local_checksum: stale_local,
+                remote_checksum: stale_remote,
+            }),
+            "precondition: the pre-convergence mismatch is latched"
+        );
+        let pending_at_floor = Frame::new(6);
+        let pending_above = Frame::new(9);
+        {
+            let pending = &mut session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists")
+                .pending_checksums;
+            pending.insert(pending_at_floor, 0x2006);
+            pending.insert(pending_above, 0x2009);
+        }
+
+        session.disconnect_player_at_frame(handle_c, freeze_frame);
+
+        assert!(
+            !session.local_checksum_history.contains_key(&rewritten),
+            "precondition: the rewrite invalidated the local checksum basis"
+        );
+        let remote = session
+            .player_reg
+            .remotes
+            .get(&addr_b)
+            .expect("B endpoint exists");
+        assert_eq!(
+            remote.checksum_mismatch_frame, None,
+            "a mismatch whose basis was rewritten must not remain latched"
+        );
+        assert!(
+            !remote.pending_checksums.contains_key(&pending_at_floor)
+                && !remote.pending_checksums.contains_key(&pending_above),
+            "pre-rewrite pending reports at or above the floor must not remain comparable"
+        );
+
+        // The survivor's post-convergence checksum at the same frame matches
+        // the recomputed local basis, so this peer must be in sync again.
+        let converged = 0x3008;
+        session.local_checksum_history.insert(rewritten, converged);
+        session
+            .player_reg
+            .remotes
+            .get_mut(&addr_b)
+            .expect("B endpoint exists")
+            .pending_checksums
+            .insert(rewritten, converged);
+        session.compare_local_checksums_against_peers();
+        assert_eq!(
+            session.sync_health(handle_b),
+            Some(SyncHealth::InSync),
+            "the post-rewrite match must be able to restore InSync"
+        );
+    }
+
+    #[test]
+    fn certified_cut_resimulation_clears_a_latched_mismatch_at_the_cut() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let cut = Frame::new(8);
+
+        for _ in 0..12 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(12), session.save_mode);
+        session.local_checksum_history.insert(cut, 0x0008);
+        session
+            .player_reg
+            .remotes
+            .get_mut(&addr_b)
+            .expect("B endpoint exists")
+            .pending_checksums
+            .insert(cut, 0x1008);
+        session.compare_local_checksums_against_peers();
+        assert!(matches!(
+            session.sync_health(handle_b),
+            Some(SyncHealth::DesyncDetected { frame, .. }) if frame == cut
+        ));
+
+        assert!(session.arm_certified_cut_resimulation(Frame::new(12), cut));
+        assert!(!session.local_checksum_history.contains_key(&cut));
+        assert_eq!(
+            session
+                .player_reg
+                .remotes
+                .get(&addr_b)
+                .expect("B endpoint exists")
+                .checksum_mismatch_frame,
+            None,
+            "a mismatch at the resimulated cut must not remain latched"
+        );
+    }
+
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn reserved_slot_freeze_convergence_clears_a_latched_mismatch_above_floor() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let handle_c = PlayerHandle::new(2);
+        let rewritten = Frame::new(8);
+        let freeze_frame = Frame::new(5);
+
+        for _ in 0..12 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(12), session.save_mode);
+        session.local_checksum_history.insert(rewritten, 0x0008);
+        session
+            .player_reg
+            .remotes
+            .get_mut(&addr_b)
+            .expect("B endpoint exists")
+            .pending_checksums
+            .insert(rewritten, 0x1008);
+        session.compare_local_checksums_against_peers();
+        assert!(matches!(
+            session.sync_health(handle_b),
+            Some(SyncHealth::DesyncDetected { frame, .. }) if frame == rewritten
+        ));
+        session.local_connect_status[handle_c.as_usize()].disconnected = true;
+        session.local_connect_status[handle_c.as_usize()].last_frame = Frame::new(10);
+
+        session.converge_reserved_slot_freeze(handle_c, freeze_frame);
+
+        assert!(
+            !session.local_checksum_history.contains_key(&rewritten),
+            "precondition: convergence invalidated the checksum basis"
+        );
+        assert_eq!(
+            session
+                .player_reg
+                .remotes
+                .get(&addr_b)
+                .expect("B endpoint exists")
+                .checksum_mismatch_frame,
+            None,
+            "a mismatch above the converged freeze floor must not remain latched"
+        );
+    }
+
+    /// A mismatch below the rewrite floor still has its checksum basis in
+    /// retained history and must stay latched: clearing every mismatch on a
+    /// rewrite would mask a real divergence.
+    #[test]
+    fn freeze_rewrite_keeps_a_mismatch_below_the_invalidated_floor() {
+        let mut session = create_three_player_desync_session();
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let handle_c = PlayerHandle::new(2);
+        let below = Frame::new(4);
+
+        for _ in 0..10 {
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(10), session.save_mode);
+        session.local_checksum_history.insert(below, 0x0004);
+        session
+            .player_reg
+            .remotes
+            .get_mut(&addr_b)
+            .expect("B endpoint exists")
+            .pending_checksums
+            .insert(below, 0x1004);
+        session.compare_local_checksums_against_peers();
+        assert!(matches!(
+            session.sync_health(handle_b),
+            Some(SyncHealth::DesyncDetected { frame, .. }) if frame == below
+        ));
+        let retained_pending = Frame::new(3);
+        session
+            .player_reg
+            .remotes
+            .get_mut(&addr_b)
+            .expect("B endpoint exists")
+            .pending_checksums
+            .insert(retained_pending, 0x1003);
+
+        session.disconnect_player_at_frame(handle_c, Frame::new(5));
+
+        let remote = session
+            .player_reg
+            .remotes
+            .get(&addr_b)
+            .expect("B endpoint exists");
+        assert_eq!(
+            remote.checksum_mismatch_frame,
+            Some((below, 0x0004, 0x1004)),
+            "a mismatch whose basis remains retained must stay latched"
+        );
+        assert!(
+            remote.pending_checksums.contains_key(&retained_pending),
+            "a pending report below the floor remains comparable"
         );
     }
 
