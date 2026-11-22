@@ -3193,6 +3193,21 @@ impl<T: Config> P2PSession<T> {
             .as_ref()
             .is_some_and(|active| active.operation == prepare.operation)
         {
+            let retained_targets = self
+                .coordinated_drop
+                .active
+                .as_ref()
+                .map_or_else(Vec::new, |active| active.targets.clone());
+            // The identity match is not a target-set match: a peer can copy the
+            // active operation and name a subset. Reject the mismatch so it
+            // cannot fence a different handle set.
+            if prepare.targets != retained_targets {
+                Self::coordinated_drop_discard_artifact(
+                    "prepare",
+                    DropAbortReason::GenerationChanged,
+                );
+                return Ok(());
+            }
             let now = self.coordinated_drop_now();
             let mut coordinator_heard = false;
             if let Some(active) = self.coordinated_drop.active.as_mut() {
@@ -3219,21 +3234,26 @@ impl<T: Config> P2PSession<T> {
             if coordinator_heard {
                 self.coordinated_drop.fallback_prepare = None;
             }
-            // The authority admitted this identity; a requester that opened a
-            // speculative local attempt consumes the same epoch on the
-            // retransmission. `record` is monotone, so the authority's earlier
-            // record is unchanged.
-            if let Some(next) = prepare.operation.terminal_epoch.checked_add(1) {
-                if let Err(reason) =
-                    self.coordinated_drop_record_epoch(prepare.operation, &prepare.targets, next)
-                {
-                    report_violation!(
-                        ViolationSeverity::Warning,
-                        ViolationKind::InternalError,
-                        "could not retain admitted coordinated-drop epoch for {:?}: {:?}",
+            // Consume the epoch only with authority evidence. A matching echo
+            // from another participant must not advance a speculative
+            // requester's epoch before the authority admits it. The authority's
+            // own attempt already consumed it at admission/promotion, so only a
+            // coordinator-sourced retransmission adds evidence here.
+            if source == Some(prepare.operation.coordinator) {
+                if let Some(next) = prepare.operation.terminal_epoch.checked_add(1) {
+                    if let Err(reason) = self.coordinated_drop_record_epoch(
                         prepare.operation,
-                        reason
-                    );
+                        &retained_targets,
+                        next,
+                    ) {
+                        report_violation!(
+                            ViolationSeverity::Warning,
+                            ViolationKind::InternalError,
+                            "could not retain admitted coordinated-drop epoch for {:?}: {:?}",
+                            prepare.operation,
+                            reason
+                        );
+                    }
                 }
             }
             return Ok(());
@@ -20979,6 +20999,108 @@ mod tests {
                 .map(|active| active.operation),
             Some(active_operation),
             "the comparator keeps the active speculative operation"
+        );
+    }
+
+    #[test]
+    fn matching_retransmission_with_foreign_targets_is_discarded() {
+        let (mut session, operation) = participant_drop_attempt(PlayerHandle::new(1));
+        let foreign_targets = vec![DropTarget {
+            handle: 3,
+            generation: 0,
+        }];
+        let participants = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .expect("the attempt is active")
+            .participants
+            .clone();
+        session
+            .coordinated_drop_accept_prepare(
+                DropPrepare {
+                    operation,
+                    targets: foreign_targets.clone(),
+                    participants,
+                },
+                Some(0),
+            )
+            .expect("the mismatched retransmission is a peer artifact");
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &foreign_targets),
+            0,
+            "a mismatched target set must not fence another handle set"
+        );
+        assert!(session.coordinated_drop.active.is_some());
+    }
+
+    #[test]
+    fn peer_echo_does_not_consume_the_speculative_epoch() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        session
+            .begin_coordinated_drop(PlayerHandle::new(4))
+            .expect("open a speculative removal");
+        let (operation, targets, participants) = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .map(|active| {
+                (
+                    active.operation,
+                    active.targets.clone(),
+                    active.participants.clone(),
+                )
+            })
+            .expect("the attempt is active");
+        session
+            .coordinated_drop_accept_prepare(
+                DropPrepare {
+                    operation,
+                    targets: targets.clone(),
+                    participants,
+                },
+                Some(2),
+            )
+            .expect("a peer echo is accepted as a retransmission");
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            0,
+            "a non-authority echo must not consume the speculative epoch"
+        );
+    }
+
+    #[test]
+    fn coordinator_retransmission_consumes_the_speculative_epoch() {
+        let mut session = five_player_majority_session(PlayerHandle::new(1));
+        session
+            .begin_coordinated_drop(PlayerHandle::new(4))
+            .expect("open a speculative removal");
+        let (operation, targets, participants) = session
+            .coordinated_drop
+            .active
+            .as_ref()
+            .map(|active| {
+                (
+                    active.operation,
+                    active.targets.clone(),
+                    active.participants.clone(),
+                )
+            })
+            .expect("the attempt is active");
+        session
+            .coordinated_drop_accept_prepare(
+                DropPrepare {
+                    operation,
+                    targets: targets.clone(),
+                    participants,
+                },
+                Some(0),
+            )
+            .expect("the coordinator retransmission is accepted");
+        assert_eq!(
+            session.coordinated_drop_epoch_next(0, 0, &targets),
+            1,
+            "a coordinator-sourced retransmission consumes the speculative epoch"
         );
     }
 

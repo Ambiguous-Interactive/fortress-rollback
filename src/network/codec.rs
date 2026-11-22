@@ -2774,8 +2774,8 @@ mod tests {
                 let error = decode_message(truncated).unwrap_err().to_string();
                 let expected = format!("{prefix}.operation.{field}");
                 assert!(
-                    error.contains(&expected),
-                    "tag {tag} must name {expected}: {error}"
+                    error.ends_with(&expected),
+                    "tag {tag} must name exactly {expected}: {error}"
                 );
             }
         }
