@@ -32,8 +32,9 @@ The removal path solves a **single-decree** problem:
 - Removals and reactivations are rare, operator- or timeout-driven, and serialized.
 - The participant set is derived from the agreed membership epoch, never from local
   reachability.
-- A commit requires a strict majority of that participant set, and a target is frozen at
-  the certified cut before the certificate is applied.
+- A commit requires a strict majority of the survivor participant set (the agreed epoch
+  minus the target handles), and a target is frozen at the certified cut before the
+  certificate is applied.
 - The protocol must be deterministic and replayable: the same bytes and schedule must
   produce the same trace on native, ARM, 32-bit, and WASM targets.
 - There is no replicated log, no throughput target, no disk, and no trusted clock.
@@ -69,7 +70,7 @@ covered the first six sources; the remaining sources were checked for a specific
 | Lamport, *Paxos Made Simple* (2001) | Ballots, promises, and quorum intersection for one value | Direct: the terminal epoch is a ballot-like fence; strict-majority quorum is the same safety argument |
 | Ongaro & Ousterhout, *In Search of an Understandable Consensus Algorithm* (USENIX ATC 2014) | Deterministic leader, terms, log matching, joint consensus, one-at-a-time membership change | Direct: deterministic authority, monotone identity, serialized membership change |
 | Ongaro, *Consensus: Bridging Theory and Practice* (Stanford 2014, §4 and §9.6) | Single-server changes need overlapping majorities; Pre-Vote prevents term inflation on rejoin | Direct: the serialization rule and the silence-gated fallback are the analogous choices |
-| Howard, Malkhi, & Spiegelman, *Flexible Paxos* (OPODIS 2016) | Phase-1 and phase-2 quorums need not intersect; only the phases must | Not applicable: this protocol has one decision phase and no leader-election phase to separate |
+| Howard, Malkhi, & Spiegelman, *Flexible Paxos* (OPODIS 2016) | Quorums may be disjoint within one phase; every phase-1 quorum must intersect every phase-2 quorum | Not applicable: this protocol has one decision phase and no leader-election phase to separate |
 | Liskov & Cowling, *Viewstamped Replication Revisited* (MIT-CSAIL-TR-2012-021) | Primary/backup views, view change, reconfiguration, recovery | Direct: fallback takeover is a bounded view change; the new authority must gather quorum evidence before choosing |
 | Chandra, Griesemer, & Redstone, *Paxos Made Live* (PODC 2007) | Practical gaps: durability, membership, snapshots, epochs, operational failure modes | Direct: validates keeping the protocol small, bounded, and backed by models and tests |
 | Tennage et al., *QuePaxa* (SOSP 2023) | Leaderless asynchronous core, randomized hedging, timeout-free liveness | Not applicable: rare one-shot decisions, determinism, and review budget dominate; no measured throughput problem |
@@ -122,12 +123,15 @@ covered the first six sources; the remaining sources were checked for a specific
 
 Membership is **CP** by design:
 
-- **Consistency**: a certificate requires a strict majority of the agreed epoch, so a
-  minority cannot fork the confirmed history. A split-view heal that finds two
-  incompatible cuts fails closed.
-- **Availability**: a reachable strict majority can certify a removal after the bounded
-  coordinator grace. A minority, or a majority that cannot assemble the required
-  reports, does not certify.
+- **Consistency**: a certificate requires a strict majority of the survivor participant
+  set (the agreed epoch minus the target handles), so a minority cannot fork the
+  confirmed history. A split-view heal that finds two incompatible cuts fails closed.
+- **Availability**: a reachable strict majority can certify a removal only when a
+  permitted authority is also reachable: the deterministic coordinator, or the
+  second-lowest fallback after the bounded coordinator grace. A minority, a majority
+  without a reachable authority, or a majority that cannot assemble the required
+  reports and backfill does not certify. The grace never authorizes any other
+  participant.
 - **Partition tolerance**: the network may drop, duplicate, reorder, or delay any
   message. The protocol never assumes a bound to preserve safety; it only uses time to
   decide when to stop waiting.
