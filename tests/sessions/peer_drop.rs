@@ -7815,14 +7815,25 @@ mod npeer_hot_join_joiner_integration {
         d_freeze_upper_bound
     }
 
-    /// Drops slot C cleanly on every live survivor (explicit `remove_player`),
-    /// then frees C's session so its address is vacant for the rejoiner. The
-    /// hot-join coordinator A re-reserves the slot. Asserts A re-armed the slot.
+    /// Drops slot C cleanly on every reachable non-terminal survivor (explicit
+    /// `remove_player`), then frees C's session so its address is vacant for the
+    /// rejoiner. The hot-join coordinator A re-reserves the slot. Asserts A
+    /// re-armed the slot. A survivor that was already pruned by the coordinator
+    /// is terminal and rejects the new local removal by design.
     fn drop_c_cleanly(mesh: &mut Mesh5) {
         mesh.settle(8);
         mesh.a.remove_player(H_C).expect("A removes C");
         mesh.b.remove_player(H_C).expect("B removes C");
-        mesh.e.remove_player(H_C).expect("E removes C");
+        match mesh.e.remove_player(H_C) {
+            Ok(()) => {},
+            Err(FortressError::InvalidRequestStructured {
+                kind: fortress_rollback::InvalidRequestKind::WrongProtocolState { .. },
+            }) => {
+                // E was pruned by A in phase 3 and has already failed closed;
+                // a terminal session rejects new local removals.
+            },
+            Err(other) => panic!("E removes C: {other:?}"),
+        }
         if let Some(d) = mesh.d.as_mut() {
             d.remove_player(H_C).expect("D removes C");
         }
