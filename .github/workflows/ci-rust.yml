@@ -254,7 +254,7 @@ jobs:
   # Performance notes:
   # - Property tests are 50-300x slower under Miri (skipped, use proptest directly)
   # - Concurrent tests are extremely slow under Miri (skipped, use loom instead)
-  # - Total: 8 jobs; normally ~20-25 minutes, with a 30-minute cap for hosted-runner variance
+  # - Total: 9 jobs; normally under the 30-minute cap for hosted-runner variance
   miri:
     name: Miri (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -299,17 +299,25 @@ jobs:
             skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip input_queue:: --skip sync_layer::"
 
           # ============================================================
-          # Windows jobs (1 seed each, 2 jobs total)
+          # Windows jobs (1 seed each, 3 jobs total)
           # ============================================================
 
-          # Windows Job 1: Core modules (~574 tests)
-          - name: Windows - core
+          # Windows Job 1: Sessions (~253 tests). Split from the old combined
+          # core job, which repeatedly hit the 30-minute Windows Miri timeout.
+          - name: Windows - sessions
             os: windows-latest
             seeds: "0..1"
-            test_filter: "sessions:: network:: sync_layer::"
+            test_filter: "sessions::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Windows Job 2: Everything else (~377 tests)
+          # Windows Job 2: Network + sync_layer (~321 tests)
+          - name: Windows - network
+            os: windows-latest
+            seeds: "0..1"
+            test_filter: "network:: sync_layer::"
+            skip_filter: "--skip property_tests --skip concurrent"
+
+          # Windows Job 3: Everything else (~377 tests)
           - name: Windows - misc
             os: windows-latest
             seeds: "0..1"
