@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795379162461,
+  "lastUpdate": 1795391810921,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "40e50dd0d4b9dcee2547b7944cc2031a7de9c815",
-          "message": "test(ci): execute the determinism suite on aarch64 and 32-bit x86 (#440)\n\n## Summary\n\nAdds a `cross-arch-runtime` CI matrix that **executes** the\ndeterministic suite on the two\nnon-x86_64 architectures the determinism contract depends on:\n\n- **aarch64** under `qemu-user` (the existing `arm64-cross` job only\ncompiles).\n- **i686** natively, exercising the same 32-bit `usize` as `wasm32`.\n\nThe new lanes found and this PR fixes real test-suite defects:\n\n1. **The 32-bit suite did not compile.** `src/rng.rs`'s\n`test_gen_range_usize_large` forms\n`(u32::MAX as usize) + 1000`, a compile-time overflow on 32-bit. Gated\nto 64-bit targets;\n   the >`u32::MAX` range it tests cannot exist on 32-bit.\n2. **Four allocation-diagnostic tests asserted 64-bit `usize::MAX`.**\n`input_queue`,\n`input_bytes::zeroed`, `saved_states`, and `time_sync` expected\n`requested_elements:\nu64::MAX`; a 32-bit target widens `u32::MAX` instead. They now compare\nagainst\n   `u64::try_from(usize::MAX)`.\n3. **The replay byte-bound test was width-specific.** `1_000_000_000 *\nMIN_FRAME_ENCODED_LEN`\noverflows `usize` on 32-bit (\"overflows the byte bound\") but only\nexceeds the remaining\nbytes on 64-bit (\"exceeds ...\"). The test accepts either rejection form\nwhile still\n   requiring the `frames` field to be named.\n4. **The F17 reorder determinism guard was not deterministic off\nx86_64.** The 10-run guard\nfailed under aarch64 QEMU because the choreography used the default\nwall-clock protocol\ntimer: retry/pending-output timing changed which packets were sent\nduring the hold/release\nwindow on a slower host. It now injects `TestClock` (advanced 16 ms per\npoll) and fixed\n   protocol seeds, per the repository's protocol-test rule.\n\n`docs/specs/determinism-model.md` (and the wiki mirror) now records\naarch64 Linux and i686\nLinux as ✅ Verified with the exact CI scope. A CI contract test pins\nboth lanes, their\ntargets, runner/linker, and filters.\n\n## Evidence\n\n- **i686 native**, full workspace minus simulation/multi-process:\n  `2812 tests run: 2812 passed, 490 skipped` (exit 0).\n- **aarch64 QEMU**, workspace minus simulation/multi-process/compression\nproperty tests:\n  `2714 tests run: 2714 passed (4 slow), 590 skipped` (exit 0, 236 s).\n- aarch64 QEMU F17 regression + determinism guard: 2 passed (guard = 10\nruns in 7.6 s).\n- x86_64 targeted F17 tests and the five allocation/byte-bound tests:\npass.\n- `cargo tfull`: 3,229 passed / 75 skipped.\n- `cargo fmt`, `cargo clippy --workspace --all-targets --features\ntokio,json`, `actionlint`,\n122 CI contract tests, `agent-preflight --full`, plan/link/doc-claim\nchecks: clean.\n- `cargo mutants` on `hash` + `time_sync`: 52 mutants, 32 caught, 18\nunviable, 2 timeouts,\n  **0 missed**.\n- `fuzz_replay_decode`: 2,155,102 runs / 91 s, no crash.\n\n## Notes\n\n- The QEMU lane excludes proptest-heavy compression property tests (they\nexceed the native\nper-test budget under emulation; they still run on the native matrix)\nand the nightly\nsimulation/multi-process tiers, matching the `cargo tf` scope. The\ndedicated\n`ci-cross-arch` nextest profile keeps zero retries and allows a 240 s\nceiling for genuinely\n  slow QEMU tests.\n- No production behavior changes; this hardens the cross-platform\nverification surface that\n  guards the WASM/ARM pointer-width fixes from #439.\n\n## CI validation\n\nA `ci-rust` workflow dispatch on the PR head (`5a3ca32`, run\n\n[43823381040](https://github.com/Ambiguous-Interactive/fortress-rollback/actions/runs/43823381040))\ncompleted both new jobs successfully (2,812 i686 tests and 2,808\naarch64/QEMU tests, all passed):\n[Cross-Arch Runtime\n(i686-32bit)](https://github.com/Ambiguous-Interactive/fortress-rollback/actions/runs/43823381040/job/133151399692)\nand\n[Cross-Arch Runtime\n(aarch64-qemu)](https://github.com/Ambiguous-Interactive/fortress-rollback/actions/runs/43823381040/job/133151400218).",
-          "timestamp": "2026-11-16T19:16:05Z",
-          "tree_id": "008a40c308ec2e26933803aecbec524921165425",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/40e50dd0d4b9dcee2547b7944cc2031a7de9c815"
-        },
-        "date": 1794857348586,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 62076,
-            "range": "± 720",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 30705,
-            "range": "± 189",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1862,
-            "range": "± 112",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1554,
-            "range": "± 63",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3134,
-            "range": "± 178",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 3123,
             "range": "± 184",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "41ff256cd7ceab2014944a2296b82c77251a7033",
+          "message": "fix: tag checksum reports with rewrite floors (#538)\n\n## Description\n\nCloses #533, the remaining out-of-diff review follow-up from #462.\n\nA confirmed-history rewrite clears local checksum entries, the peer\nlatch, and queued reports at/above the rewritten floor. A checksum\nreport carries only `(frame, checksum)`, though, so a delayed report\nsent **before** the rewrite could still arrive afterwards and relatch a\nfalse `DesyncDetected` against the recomputed basis. The earlier\nvalue-equality heuristic was correctly removed: it could hide a real\nmismatch.\n\nThis adds bounded basis metadata:\n\n- `ChecksumReport` carries a 64-bit additive multiset token of the\nsender's applied rewrite floors (`0` means no rewrite).\n- Each local checksum-history entry stores the same token. A comparison\nruns only when the local entry's token equals the report's token.\n- Pre-rewrite reports are consumed as incomparable (no latch, no event,\nno comparison metric). A same-token mismatch still latches and emits\n`DesyncDetected`.\n- Addition is commutative, so reordered convergence rewrites share one\ntoken. Every applied rewrite, including a later **higher-floor** rewrite\nor a repeated floor, adds a term and changes the token for exactly the\nframes it invalidates. Retained entries below the new floor keep their\nprevious token.\n- The hot-join `StateSnapshot` carries the token for its snapshot frame\nso a fresh joiner adopts the same basis. Without this, a rejoin after a\npre-join rewrite left the joiner's `0` reports permanently incomparable\nwith the host's recomputed entries; the rejoin checksum gates caught\nthat regression.\n- The distinct-floor history is hard-capped at 64. Older terms fold into\nthe cumulative base without changing any token at or above the fold\nfloor, and a frame below the fold is reported as incomparable rather\nthan guessed.\n- Wire protocol bumped to `6`. Protocol-v5 goldens are frozen as a\nrejection suite; the v6 suite pins the new checksum-report and snapshot\nbytes. Codec digests, migration notes, formal spec, design-decision log,\nand CHANGELOG are updated.\n\nMismatches below the rewrite floor remain latched, and the #531\nlatch/pending clearing and F11 stale-checksum coverage are unchanged.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [x] 💥 Breaking change (wire protocol v6; all peers must upgrade\ntogether)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (no new production\n`unwrap`/`expect`/`panic!`/`todo!`)\n- [x] I have added tests that prove the fix is effective (red-before\nevidence below)\n- [x] I have run `cargo fmt --all -- --check` and clippy with no\nwarnings\n- [x] I have run `cargo nextest run --workspace --features tokio,json\n--no-fail-fast` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (migration, formal\nspec, wiki mirror)\n- [x] I have added an entry to `CHANGELOG.md`\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Red evidence before the fix** (basis-token comparison bypassed):\n\n```text\ndelayed_report_across_a_later_higher_floor_rewrite_does_not_relatch:\npanicked at ...: a report from between the two rewrites must not relatch\ntest result: FAILED. 0 passed; 1 failed\n```\n\n**Regressions added:**\n\n- `delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite`\n— a report carrying the pre-rewrite (`0`) token is consumed without\nlatching or emitting `DesyncDetected`; a later same-token match restores\n`InSync`.\n- `delayed_report_across_a_later_higher_floor_rewrite_does_not_relatch`\n— a report sent between two rewrites is ignored after the second,\nhigher-floor rewrite; a current-token mismatch still latches.\n- `current_generation_checksum_mismatch_still_latches` — a same-token\nmismatch still latches and emits `DesyncDetected`.\n- `checksum_basis_token_tracks_the_rewrite_multiset` — frames below a\nfloor keep `0`, every applied rewrite changes the token for frames it\ninvalidates, reordered convergence rewrites share one token, and a\nrepeated floor is a distinct basis change.\n- `checksum_rewrite_history_is_bounded_without_changing_current_tokens`\n— 71 distinct floors stay at the 64-entry cap, folded and post-fold\ntokens are exact, and pre-fold frames are incomparable.\n- Codec tests: arbitrary tokens round-trip on checksum reports and\nsnapshots; v6 goldens pin exact bytes.\n- Existing hot-join rejoin checksum gates\n(`graceful_dropped_slot_is_rejoinable_end_to_end`,\n`dropped_slot_can_be_rejoined_repeatedly`) exercise snapshot-token\nadoption end to end.\n\n| Check | Result |\n| --- | --- |\n| Full workspace nextest (`--workspace --features tokio,json`) | **3,757\npassed, 77 skipped, 0 failed** |\n| `cargo test --lib --features tokio,json,hot-join` | **2,339 passed** |\n| `cargo fmt --all -- --check` | pass |\n| `cargo clippy --workspace --all-targets --features tokio,json,hot-join\n-- -D warnings` | clean |\n| `cargo check --workspace --all-targets --no-default-features` | clean\n|\n| `cargo check --workspace --all-targets --no-default-features\n--features tokio,json` | clean |\n| Browser `wasm32-unknown-unknown` check | clean |\n| Godot `wasm32-unknown-emscripten` check | clean |\n| wasip1 replay-probe build | clean |\n| `fortress-replay-fixture` tests | **7 passed** |\n| `scripts/ci/agent-preflight.py --full --auto-fix` | all checks pass |\n| `scripts/hooks/check-wire-golden-immutable.py --local` | pass |\n\n## Risks and rollback\n\n- Unequal basis tokens suppress comparison instead of risking a false\ndesync. If peers diverge in their rewrite histories, desync detection\nfor those frames pauses until their tokens converge; a genuine\nsame-token mismatch still latches.\n- A delayed report is consumed, not retried. The peer's next same-token\nreport is the comparable one.\n- The 64-bit additive summary can theoretically collide for different\nrewrite multisets. A collision only makes two bases look comparable; it\ndoes not suppress a genuine same-basis mismatch.\n- Wire protocol v6 rejects v5 and older headers at the handshake. All\nparticipants must upgrade together; the migration guide and CHANGELOG\ndocument this.\n- Roll back by reverting this PR. That restores the #531 behavior, where\na delayed pre-rewrite report can relatch.\n\n## Related Issues\n\n- Closes #533\n- Follow-up to #462 and #531.\n- Preserves the #531 / #532 latch-clearing behavior and F11\nstale-checksum coverage.",
+          "timestamp": "2026-11-22T23:44:18Z",
+          "tree_id": "968750622aa2078fe3681c16ea1a8a1f3e6313b3",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/41ff256cd7ceab2014944a2296b82c77251a7033"
+        },
+        "date": 1795391809922,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 41717,
+            "range": "± 590",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 25347,
+            "range": "± 199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 736,
+            "range": "± 95",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 981,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 7703,
+            "range": "± 115",
             "unit": "ns/iter"
           }
         ]
