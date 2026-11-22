@@ -244,11 +244,12 @@ jobs:
   #   (input_queue grouped with misc for fewer total jobs)
   # - macOS: 2 jobs with 1 seed, platform-specific UB detection
   #
-  # Big-endian wire-format coverage is intentionally handled by fast
-  # host-native golden byte tests plus a source guard that rejects native-endian
-  # wire APIs. Do not install cross-compilers inside Miri jobs: the uncached
-  # s390x apt path is mirror-speed dependent and can consume the whole job
-  # timeout before tests start.
+  # Big-endian wire-format coverage runs in the dedicated narrow
+  # `big-endian-runtime` lane below (s390x QEMU), alongside the host-native
+  # golden byte tests and the source guard that rejects native-endian wire APIs.
+  # Do not install cross-compilers inside Miri jobs: the uncached s390x apt path
+  # is mirror-speed dependent and can consume the whole job timeout before tests
+  # start.
   #
   # Performance notes:
   # - Property tests are 50-300x slower under Miri (skipped, use proptest directly)
@@ -1018,3 +1019,50 @@ jobs:
           cargo nextest run --profile ci-cross-arch --target ${{ matrix.target }}
           --test sessions --features tokio,json,hot-join
           -E "test(sessions::hot_join::)"
+
+  # Every other runtime lane is little-endian. This narrow lane executes the
+  # pinned wire-codec digest and the replay/machine-width fixture on a
+  # big-endian CPU under QEMU. It stays outside Miri (apt cost) and outside the
+  # 35-minute cross-arch matrix; the package-scoped tests keep it under budget.
+  big-endian-runtime:
+    name: Big-Endian Runtime (s390x QEMU)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Same GCC-override contract as the cross-arch lane: CI containers only
+      # guarantee GCC while the checked-in cargo config selects clang+lld for
+      # host development.
+      RUSTFLAGS: "-C link-arg=-Wl,--as-needed"
+      CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_LINKER: s390x-linux-gnu-gcc
+      CARGO_TARGET_S390X_UNKNOWN_LINUX_GNU_RUNNER: qemu-s390x -L /usr/s390x-linux-gnu
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # stable snapshot
+        with:
+          toolchain: stable
+          targets: s390x-unknown-linux-gnu
+
+      - name: Setup Rust cache
+        uses: ./.github/actions/setup-rust-cache
+        with:
+          cache-key: big-endian-s390x
+
+      - name: Install big-endian runtime support
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-user gcc-s390x-linux-gnu libc6-dev-s390x-cross
+
+      - name: Run pinned wire-codec digest
+        run: >-
+          cargo test -p fortress-rollback --locked
+          --target s390x-unknown-linux-gnu --lib wire_codec_digest_is_pinned
+
+      - name: Run replay fixture and portable machine-width checks
+        run: >-
+          cargo test -p fortress-replay-fixture --locked
+          --target s390x-unknown-linux-gnu --lib

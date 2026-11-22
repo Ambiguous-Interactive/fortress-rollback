@@ -160,12 +160,20 @@ pub const EXPECTED_USIZE_HASH: u64 = 0x4bd7_a317_074c_5b62;
 /// Captured on a 64-bit little-endian host. The 32-bit fallback is
 /// `0x8ddb761e8e5b67d9`.
 pub const EXPECTED_ISIZE_HASH: u64 = 0x2ee4_949c_2c7d_0345;
-/// Native FNV-1a of the `u32` slice `[1, 0x12345678]`.
+/// Native FNV-1a of the `u32` slice `[1, 0x12345678]` on a little-endian host.
 ///
 /// Fixed-width primitive slice elements are hashed by std as native memory
 /// bytes; this closes the common little-endian case where the four-byte
 /// elements match across 32-bit and 64-bit targets.
 pub const EXPECTED_U32_SLICE_HASH: u64 = 0x6593_21e6_beec_9d26;
+/// Native FNV-1a of the same `u32` slice on a big-endian host.
+///
+/// Std's primitive slice hashing writes element bytes in native order, so the
+/// big-endian runtime lane pins this value instead. Scalars and length prefixes
+/// remain little-endian through [`DeterministicHasher`]'s writer overrides.
+///
+/// [`DeterministicHasher`]: fortress_rollback::hash::DeterministicHasher
+pub const EXPECTED_U32_SLICE_HASH_BE: u64 = 0xf07f_30b4_de3c_4c2c;
 /// Native checksum of [`machine_width_state`].
 ///
 /// The state contains `usize`, `isize`, and `Vec` fields, so this catches both
@@ -235,10 +243,15 @@ pub fn check_machine_width_parity() -> Result<(), String> {
         ));
     }
     let u32_slice_hash = fortress_rollback::hash::fnv1a_hash(&[1u32, 0x1234_5678]);
-    if u32_slice_hash != EXPECTED_U32_SLICE_HASH {
+    let expected_u32_slice_hash = if cfg!(target_endian = "big") {
+        EXPECTED_U32_SLICE_HASH_BE
+    } else {
+        EXPECTED_U32_SLICE_HASH
+    };
+    if u32_slice_hash != expected_u32_slice_hash {
         return Err(format!(
             "u32 slice hash {u32_slice_hash:#018x} differs from native \
-             {EXPECTED_U32_SLICE_HASH:#018x}"
+             {expected_u32_slice_hash:#018x}"
         ));
     }
     let checksum = fortress_rollback::checksum::compute_checksum(&machine_width_state())
