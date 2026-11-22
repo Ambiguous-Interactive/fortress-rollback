@@ -664,11 +664,6 @@ where
     desync_detection: DesyncDetection,
     /// Desync detection over the network
     local_checksum_history: BTreeMap<Frame, u128>,
-    /// Local checksums invalidated by a confirmed-history rewrite, retained so
-    /// a delayed pre-rewrite peer report can be recognized instead of relatching
-    /// a false mismatch against the recomputed history. Bounded by the configured
-    /// checksum-history cap; eviction of old entries is not a rewrite.
-    invalidated_checksums: BTreeMap<Frame, u128>,
     /// The last frame we sent a checksum for
     last_sent_checksum_frame: Frame,
     /// Optional observer for specification violations.
@@ -5631,6 +5626,7 @@ impl<T: Config> P2PSession<T> {
         } else {
             std::cmp::min(self.disconnect_frame, cut)
         };
+        self.local_checksum_history.retain(|&frame, _| frame < cut);
         self.invalidate_checksum_mismatch_from(cut);
         true
     }
@@ -6467,7 +6463,6 @@ impl<T: Config> P2PSession<T> {
             local_inputs,
             desync_detection,
             local_checksum_history: BTreeMap::new(),
-            invalidated_checksums: BTreeMap::new(),
             last_sent_checksum_frame: Frame::NULL,
             violation_observer,
             telemetry,
@@ -13397,9 +13392,7 @@ impl<T: Config> P2PSession<T> {
                 continue;
             }
             if let Some(&local_checksum) = self.local_checksum_history.get(&remote_frame) {
-                if local_checksum != remote_checksum
-                    && self.invalidated_checksums.get(&remote_frame) != Some(&remote_checksum)
-                {
+                if local_checksum != remote_checksum {
                     return Some(SyncHealth::DesyncDetected {
                         frame: remote_frame,
                         local_checksum,
@@ -14183,6 +14176,8 @@ impl<T: Config> P2PSession<T> {
                     // min-across-drops `self.disconnect_frame`, to avoid
                     // over-removing on a later, lower-framed drop. With
                     // DesyncDetection::Off the map is empty, so this is a no-op.
+                    self.local_checksum_history
+                        .retain(|&frame, _| frame < disconnect_frame);
                     self.invalidate_checksum_mismatch_from(disconnect_frame);
 
                     // Round-5 Finding 1 (coordinator sibling) backstop: this
@@ -15728,6 +15723,8 @@ impl<T: Config> P2PSession<T> {
             // re-roll retroactively changed the slot's confirmed input at
             // every frame >= disconnect_frame, so locally stored checksums
             // for those frames are stale.
+            self.local_checksum_history
+                .retain(|&frame, _| frame < disconnect_frame);
             self.invalidate_checksum_mismatch_from(disconnect_frame);
             self.abort_npeer_serve_if_snapshot_invalidated(disconnect_frame);
         }
@@ -16799,18 +16796,6 @@ impl<T: Config> P2PSession<T> {
     /// recomputed local checksum. Eviction of old checksums is not a rewrite and
     /// must not call this helper.
     fn invalidate_checksum_mismatch_from(&mut self, first_invalid: Frame) {
-        // Remember the pre-rewrite local values so a delayed honest peer report
-        // for one of those frames can be recognized instead of relatching a
-        // mismatch against the recomputed history. The map follows the same
-        // configured cap as the live checksum history.
-        let max_history = self.protocol_config.max_checksum_history.max(1);
-        let rewritten = self.local_checksum_history.split_off(&first_invalid);
-        for (frame, checksum) in rewritten {
-            if self.invalidated_checksums.len() >= max_history {
-                self.invalidated_checksums.pop_first();
-            }
-            self.invalidated_checksums.insert(frame, checksum);
-        }
         for remote in self.player_reg.remotes.values_mut() {
             if remote
                 .checksum_mismatch_frame
@@ -16838,18 +16823,6 @@ impl<T: Config> P2PSession<T> {
                         if let Some(&local_checksum) =
                             self.local_checksum_history.get(&remote_frame)
                         {
-                            // A delayed honest report from before a
-                            // confirmed-history rewrite cannot be compared with
-                            // the recomputed value. Recognize the stored
-                            // pre-rewrite value and discard the report instead of
-                            // relatching a false mismatch.
-                            if local_checksum != remote_checksum
-                                && self.invalidated_checksums.get(&remote_frame)
-                                    == Some(&remote_checksum)
-                            {
-                                checked_frames.push(remote_frame);
-                                continue;
-                            }
                             self.metrics
                                 .record_checksum_comparison(local_checksum == remote_checksum);
                             if local_checksum != remote_checksum {
@@ -31539,11 +31512,6 @@ mod tests {
             }),
             "precondition: the pre-convergence mismatch is latched"
         );
-        let also_rewritten = Frame::new(9);
-        let other_stale_local: u128 = 0x1009;
-        session
-            .local_checksum_history
-            .insert(also_rewritten, other_stale_local);
         let pending_at_floor = Frame::new(6);
         let pending_above = Frame::new(9);
         {
@@ -31577,49 +31545,11 @@ mod tests {
                 && !remote.pending_checksums.contains_key(&pending_above),
             "pre-rewrite pending reports at or above the floor must not remain comparable"
         );
-        let _ = session.events().count();
-
-        // Delayed honest reports from before the rewrite carry the old local
-        // values. They arrive after the local history was recomputed and must
-        // be discarded instead of relatching false mismatches. Two frames also
-        // pin the invalidated-set bound: retaining only the newest value would
-        // let the earlier delayed report relatch.
-        let converged = 0x3008;
-        let other_converged = 0x3009;
-        for (frame, stale, current) in [
-            (rewritten, stale_local, converged),
-            (also_rewritten, other_stale_local, other_converged),
-        ] {
-            session.local_checksum_history.insert(frame, current);
-            session
-                .player_reg
-                .remotes
-                .get_mut(&addr_b)
-                .expect("B endpoint exists")
-                .pending_checksums
-                .insert(frame, stale);
-        }
-        session.compare_local_checksums_against_peers();
-        assert_eq!(
-            session
-                .player_reg
-                .remotes
-                .get(&addr_b)
-                .expect("B endpoint exists")
-                .checksum_mismatch_frame,
-            None,
-            "a delayed pre-rewrite report must not relatch a mismatch"
-        );
-        assert!(
-            !session
-                .event_queue
-                .iter()
-                .any(|event| matches!(event, FortressEvent::DesyncDetected { .. })),
-            "a delayed pre-rewrite report must not emit DesyncDetected"
-        );
 
         // The survivor's post-convergence checksum at the same frame matches
         // the recomputed local basis, so this peer must be in sync again.
+        let converged = 0x3008;
+        session.local_checksum_history.insert(rewritten, converged);
         session
             .player_reg
             .remotes
