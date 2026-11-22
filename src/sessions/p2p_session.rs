@@ -31539,6 +31539,11 @@ mod tests {
             }),
             "precondition: the pre-convergence mismatch is latched"
         );
+        let also_rewritten = Frame::new(9);
+        let other_stale_local: u128 = 0x1009;
+        session
+            .local_checksum_history
+            .insert(also_rewritten, other_stale_local);
         let pending_at_floor = Frame::new(6);
         let pending_above = Frame::new(9);
         {
@@ -31574,18 +31579,26 @@ mod tests {
         );
         let _ = session.events().count();
 
-        // A delayed honest report from before the rewrite carries the old
-        // local value. It arrives after the local history was recomputed and
-        // must be discarded instead of relatching a false mismatch.
+        // Delayed honest reports from before the rewrite carry the old local
+        // values. They arrive after the local history was recomputed and must
+        // be discarded instead of relatching false mismatches. Two frames also
+        // pin the invalidated-set bound: retaining only the newest value would
+        // let the earlier delayed report relatch.
         let converged = 0x3008;
-        session.local_checksum_history.insert(rewritten, converged);
-        session
-            .player_reg
-            .remotes
-            .get_mut(&addr_b)
-            .expect("B endpoint exists")
-            .pending_checksums
-            .insert(rewritten, stale_local);
+        let other_converged = 0x3009;
+        for (frame, stale, current) in [
+            (rewritten, stale_local, converged),
+            (also_rewritten, other_stale_local, other_converged),
+        ] {
+            session.local_checksum_history.insert(frame, current);
+            session
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists")
+                .pending_checksums
+                .insert(frame, stale);
+        }
         session.compare_local_checksums_against_peers();
         assert_eq!(
             session
