@@ -926,6 +926,7 @@ jobs:
             filter: >-
               (not test(simulation::) or
               test(smoke_traces_match_checked_in_cross_architecture_digests) or
+              test(lossy_graceful_remove_preserves_confirmed_history_d14) or
               test(simulation::partition_sweep::partition_sweep_pr_gate) or
               (test(simulation::corpus_replay::) and
               not test(checked_in_extended_ring_schedule_recycles_rings_and_replays_identically)))
@@ -937,6 +938,7 @@ jobs:
             filter: >-
               (not test(simulation::) or
               test(smoke_traces_match_checked_in_cross_architecture_digests) or
+              test(lossy_graceful_remove_preserves_confirmed_history_d14) or
               test(simulation::partition_sweep::partition_sweep_pr_gate) or
               (test(simulation::corpus_replay::) and
               not test(checked_in_extended_ring_schedule_recycles_rings_and_replays_identically)))
@@ -987,6 +989,16 @@ jobs:
           cargo nextest run --profile ci-cross-arch --target ${{ matrix.target }}
           -p fortress-rollback --features tokio,json
           -E "${{ matrix.filter }}"
+
+      # The package-scoped suite above compiles the hot-join feature out, so
+      # these feature-gated unit rows never run on the QEMU/i686 lanes. Keep
+      # the filter narrow: the full hot-join lib lane includes the 120k-poll
+      # serve-abort rows that exceed the cross-architecture per-test budget.
+      - name: Run hot-join unit rows cross-architecture
+        run: >-
+          cargo nextest run --profile ci-cross-arch --target ${{ matrix.target }}
+          -p fortress-rollback --lib --features tokio,json,hot-join
+          -E "test(membership_epoch_excludes_never_joined_reserved_slots) or test(reserved_automatic_intent_is_skipped_without_failing_closed)"
 
       # The hot-join membership lane is feature-gated, so the suite above
       # compiles it out. Run its pinned cross-architecture trace separately:
