@@ -317,19 +317,25 @@ jobs:
             test_filter: "network:: sync_layer::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Windows Job 3: Input queue, error, and misc unit tests (~345 tests
-          # in the native list). Split from the old combined misc job, which
-          # repeatedly hit the 30-minute Windows Miri timeout.
+          # Windows Job 3: Input queue (~123 native tests). Isolated because
+          # the Miri input_queue tests dominate the old misc lane runtime.
           - name: Windows - misc A
             os: windows-latest
             seeds: "0..1"
-            test_filter: "input_queue:: error:: tests::"
+            test_filter: "input_queue::"
             skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer::"
 
-          # Windows Job 4: Remaining modules (~345 tests in the native list).
-          # The skips above are repeated here so each remaining test runs in
-          # exactly one misc shard.
+          # Windows Job 4: Error and misc unit tests (~222 native tests).
+          # Keep these together only while a cold-cache run completes.
           - name: Windows - misc B
+            os: windows-latest
+            seeds: "0..1"
+            test_filter: "error:: tests::"
+            skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer:: --skip input_queue::"
+
+          # Windows Job 5: Remaining modules (~345 native tests). The skips
+          # above are repeated so every remaining test runs exactly once.
+          - name: Windows - misc C
             os: windows-latest
             seeds: "0..1"
             test_filter: ""
