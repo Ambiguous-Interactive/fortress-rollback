@@ -459,7 +459,11 @@ jobs:
   feature-checks:
     name: Feature Flag Matrix
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The cold-cache feature powerset has repeatedly reached the old 20-minute
+    # cap on `main` (job 137449676259: cancelled at 20m13s; the warm-cache rerun
+    # finished in 11m). Keep the backstop generous enough for a cold sccache
+    # without weakening the check.
+    timeout-minutes: 35
 
     steps:
       - uses: actions/checkout@v7
