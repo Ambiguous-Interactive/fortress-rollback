@@ -360,6 +360,36 @@ def test_miri_job_has_no_cross_target_apt_setup() -> None:
             )
 
 
+def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
+    """The Windows misc shard must stay within the timeout without overlap."""
+    workflow = _load_ci_rust_workflow()
+    miri_job = workflow["jobs"]["miri"]
+
+    assert miri_job["timeout-minutes"] == 30
+    lanes = {
+        entry["name"]: entry
+        for entry in miri_job["strategy"]["matrix"]["include"]
+        if entry["name"].startswith("Windows - misc")
+    }
+    assert set(lanes) == {"Windows - misc A", "Windows - misc B"}
+
+    lane_a = lanes["Windows - misc A"]
+    lane_b = lanes["Windows - misc B"]
+    for lane in (lane_a, lane_b):
+        assert lane["os"] == "windows-latest"
+        assert lane["seeds"] == "0..1"
+
+    assert "input_queue::" in lane_a["test_filter"]
+    assert "time_sync::" in lane_a["test_filter"]
+    assert lane_b["test_filter"] == ""
+    for module in ("input_queue::", "time_sync::"):
+        assert f"--skip {module}" in lane_b["skip_filter"], (
+            "the second misc shard must skip every module owned by the first"
+        )
+    for skipped in ("property_tests", "concurrent", "sessions::", "network::", "sync_layer::"):
+        assert f"--skip {skipped}" in lane_b["skip_filter"]
+
+
 def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
     """The big-endian lane must run only the pinned codec and fixture probes."""
     workflow = _load_ci_rust_workflow()
