@@ -101,7 +101,18 @@ def _state_lock(path: Path, timeout: float = 1.0) -> Iterator[None]:
     while handle is None:
         try:
             handle = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(handle, f"{os.getpid()} {time.time()}\n".encode())
         except FileExistsError:
+            try:
+                age = time.time() - lock_path.stat().st_mtime
+            except FileNotFoundError:
+                continue
+            if age > 30:
+                try:
+                    lock_path.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
             if time.monotonic() >= deadline:
                 raise BudgetError(f"another session is updating {path}") from None
             time.sleep(0.01)

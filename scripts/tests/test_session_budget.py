@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -146,6 +148,19 @@ def test_concurrent_expired_replacements_leave_one_winner(tmp_path: Path) -> Non
     assert len([result for result, _ in results if result == "error"]) == 1
     stored = session_budget.load(path)
     assert stored["session_id"] in {"session-0", "session-1"}
+
+
+def test_stale_lock_is_recovered(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_path.write_text("stale", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(lock_path, (old, old))
+
+    state = session_budget.start("session-1", 180, now=START, path=path)
+
+    assert state["session_id"] == "session-1"
+    assert not lock_path.exists()
 
 
 def test_check_reports_remaining_minutes(tmp_path: Path) -> None:

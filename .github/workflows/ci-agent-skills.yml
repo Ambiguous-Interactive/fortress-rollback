@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - '.agents/skills/**'
+      - '.github/workflows/ci-agent-skills.yml'
       - '.opencode/plugins/**'
       - 'scripts/ci/session-budget.py'
       - 'scripts/hooks/check-plan-hygiene.py'
@@ -19,6 +20,7 @@ on:
   pull_request:
     paths:
       - '.agents/skills/**'
+      - '.github/workflows/ci-agent-skills.yml'
       - '.opencode/plugins/**'
       - 'scripts/ci/session-budget.py'
       - 'scripts/hooks/check-plan-hygiene.py'
