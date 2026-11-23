@@ -4029,6 +4029,17 @@ mod hot_join_tests {
         let error = decode_message(&bytes)
             .expect_err("an oversized snapshot player count must reject on every target");
         assert!(error.to_string().contains("u16 player domain"));
+
+        // The highest value in the domain remains accepted.
+        let mut boundary = wire_prefix(1, 10);
+        boundary.extend_from_slice(&u64::from(u16::MAX).to_le_bytes());
+        let (message, consumed) = decode_message(&boundary).expect("u16::MAX handle accepts");
+        assert_eq!(consumed, boundary.len());
+        assert!(matches!(
+            message.body,
+            MessageBody::JoinRequest(JoinRequest { player_handle })
+                if player_handle == usize::from(u16::MAX)
+        ));
     }
 
     #[test]

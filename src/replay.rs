@@ -1393,6 +1393,25 @@ mod tests {
             error.to_string().contains("u16 player domain"),
             "oversized replay count rejection: {error}"
         );
+
+        // The highest value in the domain remains a valid empty replay.
+        let replay = Replay::<u32> {
+            num_players: usize::from(u16::MAX),
+            frames: Vec::new(),
+            checksums: Vec::new(),
+            metadata: ReplayMetadata {
+                library_version: "test".to_string(),
+                num_players: usize::from(u16::MAX),
+                total_frames: 0,
+                skipped_frames: 0,
+            },
+        };
+        replay.validate().expect("u16::MAX player count is valid");
+        let encoded = replay.to_bytes().expect("empty replay encodes");
+        assert_eq!(
+            Replay::<u32>::from_bytes(&encoded).expect("boundary replay accepts"),
+            replay
+        );
     }
 
     #[test]
