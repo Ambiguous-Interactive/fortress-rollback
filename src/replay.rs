@@ -310,6 +310,22 @@ fn read_replay_usize(bytes: &[u8], cursor: &mut usize, field: &'static str) -> C
         .map_err(|_err| replay_decode_error(format!("replay {field} length exceeds usize")))
 }
 
+/// Reads a replay player count with a target-independent `u16` bound.
+fn read_replay_player_count(
+    bytes: &[u8],
+    cursor: &mut usize,
+    field: &'static str,
+) -> CodecResult<usize> {
+    let value = u64::from_le_bytes(read_replay_array(bytes, cursor, field)?);
+    if value > u64::from(u16::MAX) {
+        return Err(replay_decode_error(format!(
+            "replay {field} exceeds the u16 player domain"
+        )));
+    }
+    usize::try_from(value)
+        .map_err(|_err| replay_decode_error(format!("replay {field} exceeds usize")))
+}
+
 fn take_replay_bytes<'a>(
     bytes: &'a [u8],
     cursor: &mut usize,
@@ -427,7 +443,7 @@ where
     }
 
     let mut cursor = 0;
-    let num_players = read_replay_usize(bytes, &mut cursor, "num_players")?;
+    let num_players = read_replay_player_count(bytes, &mut cursor, "num_players")?;
     let frame_count = read_replay_usize(bytes, &mut cursor, "frames.len")?;
     let mut zero_sized_input_count = 0_usize;
 
@@ -522,7 +538,8 @@ where
 
     let metadata_library_version =
         read_replay_string(bytes, &mut cursor, "metadata.library_version")?;
-    let metadata_num_players = read_replay_usize(bytes, &mut cursor, "metadata.num_players")?;
+    let metadata_num_players =
+        read_replay_player_count(bytes, &mut cursor, "metadata.num_players")?;
     let metadata_total_frames = read_replay_usize(bytes, &mut cursor, "metadata.total_frames")?;
     let metadata_skipped_frames = if cursor == bytes.len() {
         0
@@ -1046,9 +1063,12 @@ mod tests {
     #[test]
     fn replay_from_bytes_rejects_huge_frame_inputs_len_via_byte_bound() {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&1_000_000_000_u64.to_le_bytes()); // num_players
+        // The player domain caps a frame at u16::MAX inputs; keep the count
+        // valid but far larger than the bytes present so the byte bound, not
+        // the domain check, is what rejects it.
+        bytes.extend_from_slice(&u64::from(u16::MAX).to_le_bytes()); // num_players
         bytes.extend_from_slice(&1_u64.to_le_bytes()); // frames.len
-        bytes.extend_from_slice(&1_000_000_000_u64.to_le_bytes()); // frame0.inputs.len
+        bytes.extend_from_slice(&u64::from(u16::MAX).to_le_bytes()); // frame0.inputs.len
 
         let err = match Replay::<u8>::from_bytes(&bytes) {
             Ok(_) => panic!("huge per-frame input count must be rejected before allocating"),
@@ -1140,12 +1160,17 @@ mod tests {
         #[derive(Copy, Clone, PartialEq, Eq, Default, Debug, Deserialize)]
         struct Zst;
 
-        let hostile_count = MAX_ZERO_SIZED_INPUTS + 1;
-        let hostile_count_u64 = u64::try_from(hostile_count).unwrap();
+        // A single frame is capped at the u16 player domain, so cross the
+        // cumulative zero-sized-input limit with multiple valid-width frames.
+        let players = u64::from(u16::MAX);
+        let frame_count = (MAX_ZERO_SIZED_INPUTS / usize::from(u16::MAX)) + 2;
+        let frame_count_u64 = u64::try_from(frame_count).unwrap();
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(&hostile_count_u64.to_le_bytes()); // num_players
-        bytes.extend_from_slice(&1_u64.to_le_bytes()); // frames.len
-        bytes.extend_from_slice(&hostile_count_u64.to_le_bytes()); // frame0.inputs.len
+        bytes.extend_from_slice(&players.to_le_bytes()); // num_players
+        bytes.extend_from_slice(&frame_count_u64.to_le_bytes()); // frames.len
+        for _ in 0..frame_count {
+            bytes.extend_from_slice(&players.to_le_bytes()); // frame.inputs.len
+        }
 
         let error = Replay::<Zst>::from_bytes(&bytes)
             .expect_err("zero-sized input count bomb must fail before its decode loop");
@@ -1351,6 +1376,23 @@ mod tests {
             },
         };
         assert!(replay.validate().is_err());
+    }
+
+    #[test]
+    fn from_bytes_rejects_player_counts_outside_the_u16_domain() {
+        let mut bytes = u64::MAX.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&0_u64.to_le_bytes()); // frames.len
+        bytes.extend_from_slice(&0_u64.to_le_bytes()); // checksums.len
+        bytes.extend_from_slice(&0_u64.to_le_bytes()); // metadata.library_version.len
+        bytes.extend_from_slice(&0_u64.to_le_bytes()); // metadata.num_players
+        bytes.extend_from_slice(&0_u64.to_le_bytes()); // metadata.total_frames
+
+        let error = Replay::<u32>::from_bytes(&bytes)
+            .expect_err("an oversized replay player count must reject on every target");
+        assert!(
+            error.to_string().contains("u16 player domain"),
+            "oversized replay count rejection: {error}"
+        );
     }
 
     #[test]
