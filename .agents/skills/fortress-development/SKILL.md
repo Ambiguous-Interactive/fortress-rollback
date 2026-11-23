@@ -212,22 +212,11 @@ Before opening PRs, run [review-readiness.md](../review-readiness/SKILL.md). For
 
 ## Plan Hygiene
 
-`PLAN.md` is an execution queue, not a project archive. Keep only approved in-progress work and
-ordered future work. Each item needs an outcome, enough ordering/dependency information to choose
-the next task, and a falsifiable exit criterion. Link to the canonical issue or focused skill for
-scope and technical context.
-
-When work finishes, remove it from `PLAN.md` in the same change and record its result, red/green
-evidence, decisions, and verification in a **local, gitignored** `progress/session-*.md` file. Progress
-logs are machine-local: never stage, commit, or push them. Put reusable engineering rules
-in the relevant Agent Skill, user-facing behavior in `docs/`, architecture decisions in the design
-decision log, and detailed tracked scope in an issue. Do not put completed milestones, session/PR/CI
-narration, research digests, bibliographies, reusable policy, or speculative parking lots in the
-plan. Promote a new idea only when it has maintainer priority and a data-gathering entrance gate.
-
-Run `python3 scripts/hooks/check-plan-hygiene.py`. The check intentionally caps the plan at 120
-lines and 1,000 words, rejects completed checkboxes, and permits only `In progress` and `Future`
-top-level plan sections.
+`PLAN.md` is an execution queue, not an archive. Keep only approved `In progress` and ordered
+`Future` items with a falsifiable exit criterion. Remove completed work in the same change and record
+evidence in a local, gitignored `progress/session-*.md` file. The session contract, claim format, and
+closeout steps live in [`session-loop`](../session-loop/SKILL.md#plan-hygiene). Run
+`python3 scripts/hooks/check-plan-hygiene.py` before handoff.
 
 ## Test Writing
 
@@ -326,43 +315,14 @@ When changing public APIs, update: rustdoc comments (source of truth), README.md
 
 For docs/wiki mirrors, use a first-line `<!-- SYNC: ... -->` header with explicit direction: docs pages point to their wiki mirror (`wiki/...`), wiki pages point to their docs source (`docs/...`). Never self-reference the same file in a SYNC header.
 
-## Quality Checklist
+## Quality and Session Gates
 
-- [ ] `cargo fmt` and `cargo clippy --workspace --all-targets --features tokio,json` pass
-- [ ] Fast tier passes (`cargo tf`), and the full tier passes before handoff (`cargo tfull`)
-- [ ] New functionality has tests and Rustdoc examples
-- [ ] Code is 100% safe Rust and handles every error path
-- [ ] Public APIs have no duplicate methods and document feature dependencies
-- [ ] Changelog reviewed for pub/user-observable changes
+Run the pre-PR checklist in [`review-readiness`](../review-readiness/SKILL.md) and the structural
+checks in [`code-review`](../code-review/SKILL.md). The session clock, coordination topology, PR
+budget, validation tiers, and closeout steps live in [`session-loop`](../session-loop/SKILL.md).
 
-## Agent Coordination and Validation Tiers
-
-Use a coordinator/implementer/verifier topology when a task spans more than one
-module or more than two independent workstreams. For a single-file fix, one
-implementer is faster; do not add coordination overhead without parallelism.
-
-- **Coordinator:** owns `PLAN.md`, issue scope, task cards, integration, and CI
-  triage. It does not edit production code.
-- **Implementer:** one task card, one worktree, non-overlapping file ownership.
-  Runs `cargo c && cargo tf` after edits and `cargo tfull` before handoff.
-- **Verifier:** independent context. Runs the full tier on the exact SHA and
-  performs adversarial review. Only Critical/Major findings block; Minor/Nit
-  findings become follow-up issues unless they affect correctness.
-- **CI triage:** starts only after local full validation is green. Caps at two
-  CI rounds per task; a third needs coordinator sign-off.
-
-Task cards use [`assets/task-card.md`](assets/task-card.md). Record final
-evidence in the local, gitignored `progress/session-*.md` file, not in
-`PLAN.md`.
-
-Validation tiers:
-
-| Tier | When | Command |
-| --- | --- | --- |
-| Fast | every edit | `cargo c && cargo tf` plus changed-file preflight |
-| Full | before handoff | `cargo tfull` plus `agent-preflight.py --full` |
-| PR gate | PR update | `CI Gate` workflow |
-| Deep | merge queue / nightly | merge-group and scheduled workflows |
+Task cards use [`assets/task-card.md`](assets/task-card.md). Record final evidence in the local,
+gitignored `progress/session-*.md` file, not in `PLAN.md`.
 
 ## For Agents
 

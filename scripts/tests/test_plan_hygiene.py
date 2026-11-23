@@ -27,11 +27,144 @@ main = check_plan_hygiene.main
 def test_active_plan_passes(tmp_path: Path) -> None:
     plan = tmp_path / "PLAN.md"
     plan.write_text(
-        "# Project Plan\n\n## In progress\n\n- [ ] Test the active hypothesis.\n",
+        "# Project Plan\n\n"
+        "## In progress\n\n"
+        "- [ ] Fix the active hypothesis. "
+        "Claimed: session-1 2026-11-23T12:00Z. "
+        "Expires: 2026-11-23T15:00Z. "
+        "Exit: the regression passes.\n",
         encoding="utf-8",
     )
 
     assert check_plan(plan) == []
+
+
+def test_no_in_progress_item_passes(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n_None._\n",
+        encoding="utf-8",
+    )
+
+    assert check_plan(plan) == []
+
+
+def test_ordered_in_progress_items_are_checked(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n1. [ ] First.\n2. [ ] Second.\n",
+        encoding="utf-8",
+    )
+
+    issues = check_plan(plan)
+
+    assert any("In progress has 2 items" in issue for issue in issues)
+    assert any("In progress item needs" in issue for issue in issues)
+
+
+def test_nested_child_items_are_ignored(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n"
+        "- [ ] Fix. Claimed: session-1 2026-11-23T12:00Z. "
+        "Expires: 2026-11-23T15:00Z. Exit: x.\n"
+        "  - [ ] Child note without claim fields.\n",
+        encoding="utf-8",
+    )
+
+    assert check_plan(plan) == []
+
+
+def test_indented_top_level_item_is_checked(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n"
+        "  - [ ] Fix. Claimed: session-1 2026-11-23T12:00Z. "
+        "Expires: 2026-11-23T15:00Z. Exit: x.\n",
+        encoding="utf-8",
+    )
+
+    assert check_plan(plan) == []
+
+
+def test_multiple_in_progress_items_fail(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n"
+        "## In progress\n\n"
+        "- [ ] First. Claimed: s 2026-11-23T12:00Z. Expires: 2026-11-23T15:00Z. Exit: x.\n"
+        "- [ ] Second. Claimed: s 2026-11-23T12:00Z. Expires: 2026-11-23T15:00Z. Exit: y.\n",
+        encoding="utf-8",
+    )
+
+    issues = check_plan(plan)
+
+    assert any("In progress has 2 items" in issue for issue in issues)
+
+
+@pytest.mark.parametrize("missing", ["Claimed:", "Expires:", "Exit:"])
+def test_in_progress_item_requires_claim_fields(tmp_path: Path, missing: str) -> None:
+    fields = {
+        "Claimed:": "Claimed: session-1 2026-11-23T12:00Z.",
+        "Expires:": "Expires: 2026-11-23T15:00Z.",
+        "Exit:": "Exit: the regression passes.",
+    }
+    line = "- [ ] Fix the active hypothesis. " + " ".join(
+        value for key, value in fields.items() if key != missing
+    )
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        f"# Project Plan\n\n## In progress\n\n{line}\n",
+        encoding="utf-8",
+    )
+
+    issues = check_plan(plan)
+
+    assert any("In progress item needs" in issue for issue in issues)
+
+
+def test_claim_ttl_over_three_hours_fails(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n"
+        "- [ ] Fix. Claimed: session-1 2026-11-23T12:00Z. "
+        "Expires: 2026-11-23T15:01Z. Exit: x.\n",
+        encoding="utf-8",
+    )
+
+    issues = check_plan(plan)
+
+    assert any("claim TTL is 181 minutes" in issue for issue in issues)
+
+
+def test_claim_expiry_must_follow_claim(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n"
+        "- [ ] Fix. Claimed: session-1 2026-11-23T12:00Z. "
+        "Expires: 2026-11-23T12:00Z. Exit: x.\n",
+        encoding="utf-8",
+    )
+
+    issues = check_plan(plan)
+
+    assert any("Expires must be after Claimed" in issue for issue in issues)
+
+
+def test_claim_timestamp_requires_offset(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n"
+        "- [ ] Fix. Claimed: session-1 2026-11-23T12:00. "
+        "Expires: 2026-11-23T15:00. Exit: x.\n",
+        encoding="utf-8",
+    )
+
+    issues = check_plan(plan)
+
+    assert any(
+        "Claimed timestamp must include a UTC offset" in issue for issue in issues
+    )
 
 
 def test_line_budget_rejects_bloated_plan(tmp_path: Path) -> None:
