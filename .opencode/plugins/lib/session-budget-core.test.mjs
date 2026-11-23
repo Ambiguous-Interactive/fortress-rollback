@@ -5,6 +5,7 @@ import {
   createBudgetTracker,
   isReadOnlyTool,
   normalizeMinutes,
+  removeMutatingTools,
 } from "./session-budget-core.mjs"
 
 function trackerAt(now) {
@@ -96,6 +97,12 @@ test("allows only explicit read-only tools after the budget", () => {
   for (const tool of ["bash", "shell", "edit", "write", "patch", "task", "subagent", "write_file", "custom"]) {
     assert.equal(isReadOnlyTool(tool), false, tool)
   }
+})
+
+test("removes every non-read-only tool from a request", () => {
+  const tools = { read: {}, grep: {}, bash: {}, shell: {}, custom: {}, subagent: {} }
+  removeMutatingTools(tools)
+  assert.deepEqual(Object.keys(tools).sort(), ["grep", "read"])
 })
 
 test("restores a persisted original start without moving the deadline", () => {

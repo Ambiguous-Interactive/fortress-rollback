@@ -9,6 +9,8 @@ import os
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -89,6 +91,30 @@ def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
         raise
 
 
+@contextmanager
+def _state_lock(path: Path, timeout: float = 1.0) -> Iterator[None]:
+    """Serialize budget updates through a short-lived lock file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    deadline = time.monotonic() + timeout
+    handle: int | None = None
+    while handle is None:
+        try:
+            handle = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise BudgetError(f"another session is updating {path}") from None
+            time.sleep(0.01)
+    try:
+        yield
+    finally:
+        os.close(handle)
+        try:
+            lock_path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def start(
     session_id: str,
     minutes: int = DEFAULT_MINUTES,
@@ -105,6 +131,13 @@ def start(
         )
     started = (now or utc_now()).astimezone(timezone.utc)
     session_key = session_id.strip()
+    with _state_lock(path):
+        return _start_locked(session_key, started, minutes, path)
+
+
+def _start_locked(
+    session_key: str, started: datetime, minutes: int, path: Path
+) -> dict[str, Any]:
     if path.exists():
         existing = load(path)
         if existing["session_id"] == session_key:
@@ -196,10 +229,11 @@ def check(
 
 def close(path: Path = DEFAULT_STATE_PATH) -> bool:
     """Remove the stored budget; return whether a file was removed."""
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return False
+    with _state_lock(path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
     return True
 
 

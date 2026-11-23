@@ -112,6 +112,42 @@ def test_concurrent_starts_create_one_budget(tmp_path: Path) -> None:
     assert len([result for result, _ in results if result == "error"]) == 1
 
 
+def test_concurrent_expired_replacements_leave_one_winner(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("old-session", 180, now=START, path=path)
+    replacement_now = START + timedelta(minutes=181)
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, object]] = []
+
+    def worker(session_id: str) -> None:
+        barrier.wait()
+        try:
+            results.append(
+                (
+                    "ok",
+                    session_budget.start(
+                        session_id, 180, now=replacement_now, path=path
+                    ),
+                )
+            )
+        except session_budget.BudgetError as exc:
+            results.append(("error", str(exc)))
+
+    threads = [
+        threading.Thread(target=worker, args=(f"session-{index}",))
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len([result for result, _ in results if result == "ok"]) == 1
+    assert len([result for result, _ in results if result == "error"]) == 1
+    stored = session_budget.load(path)
+    assert stored["session_id"] in {"session-0", "session-1"}
+
+
 def test_check_reports_remaining_minutes(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)

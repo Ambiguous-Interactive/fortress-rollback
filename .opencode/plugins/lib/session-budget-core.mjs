@@ -20,6 +20,13 @@ export function isReadOnlyTool(tool) {
   return typeof tool === "string" && READ_ONLY_TOOLS.has(tool)
 }
 
+export function removeMutatingTools(tools) {
+  if (tools === undefined || tools === null) return
+  for (const name of Object.keys(tools)) {
+    if (!isReadOnlyTool(name)) delete tools[name]
+  }
+}
+
 export function normalizeMinutes(value) {
   const requested = Number(value)
   if (!Number.isFinite(requested)) return DEFAULT_MINUTES

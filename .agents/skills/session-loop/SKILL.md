@@ -41,8 +41,10 @@ Cutoffs:
 
 If the OpenCode session-budget plugin is active, it emits the clock and interrupts at 180 minutes.
 After the limit it allows only an explicit read-only tool allowlist; unknown and custom tools are
-blocked. In other harnesses, run `scripts/ci/session-budget.py start`, `check`, and `close` at the
-same boundaries. Do not rely on writing files after 180 minutes; write the handoff by 165.
+blocked. If the tool guard cannot register, it removes mutating tools from the model request and
+refuses new prompts. In other harnesses, run `scripts/ci/session-budget.py start`, `check`, and
+`close` at the same boundaries. Do not rely on writing files after 180 minutes; write the handoff by
+165.
 
 ## Step 1: Sync and triage
 

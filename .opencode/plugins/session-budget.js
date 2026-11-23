@@ -1,6 +1,10 @@
 import { Plugin } from "@opencode/plugin"
 
-import { createBudgetTracker, isReadOnlyTool } from "./lib/session-budget-core.mjs"
+import {
+  createBudgetTracker,
+  isReadOnlyTool,
+  removeMutatingTools,
+} from "./lib/session-budget-core.mjs"
 
 const STORAGE_PREFIX = "session-budget:start:"
 
@@ -82,14 +86,16 @@ export default Plugin.define({
         await ctx.session.hook("context", async (event) => {
           if (typeof event.sessionID !== "string") return
           if (!toolGuardAvailable) {
+            removeMutatingTools(event.tools)
             event.system.push({
               type: "text",
-              text: "SESSION BUDGET: the tool guard is unavailable; a new session cannot start until it is restored.",
+              text: "SESSION BUDGET: the tool guard is unavailable; mutating tools are removed from this request.",
             })
             return
           }
           const ready = await startSession(event.sessionID)
           if (!ready) {
+            removeMutatingTools(event.tools)
             event.system.push({
               type: "text",
               text: "SESSION BUDGET: the stored clock cannot be read; mutating tools are blocked until it recovers.",
@@ -97,6 +103,7 @@ export default Plugin.define({
             return
           }
           const status = budget.check(event.sessionID)
+          if (status.blocked) removeMutatingTools(event.tools)
           if (status.message === undefined) return
           if (status.level <= (lastLevel.get(event.sessionID) ?? 0)) return
           lastLevel.set(event.sessionID, status.level)
