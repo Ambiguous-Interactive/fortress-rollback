@@ -1562,6 +1562,33 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_wire_len_counts_checksum_basis_events() {
+        let empty = snapshot_wire_len(
+            Frame::new(5),
+            2,
+            None,
+            0,
+            0,
+            &[],
+            &[],
+            &ChecksumBasis::none(),
+        )
+        .unwrap();
+        let basis = ChecksumBasis {
+            base: 7,
+            floor: Frame::NULL,
+            events: vec![(Frame::new(1), 1), (Frame::new(2), 3)],
+        };
+        let with_events =
+            snapshot_wire_len(Frame::new(5), 2, None, 0, 0, &[], &[], &basis).unwrap();
+        assert_eq!(
+            with_events,
+            empty + basis.events.len() * 8,
+            "each basis event adds one Frame and one u32 to the wire budget"
+        );
+    }
+
+    #[test]
     fn capture_npeer_snapshot_includes_bridge_inputs_in_wire_budget() {
         let frame = Frame::new(3);
         let state = VecState::sample();
