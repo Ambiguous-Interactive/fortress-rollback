@@ -4,7 +4,9 @@ import assert from "node:assert/strict"
 import {
   createBudgetTracker,
   isReadOnlyTool,
+  newBudgetState,
   normalizeMinutes,
+  parseBudgetState,
   removeMutatingTools,
 } from "./session-budget-core.mjs"
 
@@ -103,6 +105,62 @@ test("removes every non-read-only tool from a request", () => {
   const tools = { read: {}, grep: {}, bash: {}, shell: {}, custom: {}, subagent: {} }
   removeMutatingTools(tools)
   assert.deepEqual(Object.keys(tools).sort(), ["grep", "read"])
+})
+
+test("creates and parses a worktree budget state", () => {
+  const now = Date.parse("2026-11-23T12:00:00Z")
+  const state = newBudgetState("session-1", now, 180, 2)
+  const parsed = parseBudgetState(JSON.stringify(state), now)
+
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.sessionId, "session-1")
+  assert.equal(parsed.startedAt, now)
+  assert.equal(parsed.expiresAt, now + 180 * 60 * 1000)
+  assert.deepEqual(parsed.prs, [])
+  assert.equal(parsed.prsExhausted, false)
+  assert.equal(parsed.expired, false)
+})
+
+test("parses an expired or PR-exhausted budget", () => {
+  const started = Date.parse("2026-11-23T12:00:00Z")
+  const state = {
+    session_id: "session-1",
+    started_at: new Date(started).toISOString(),
+    expires_at: new Date(started + 60 * 60 * 1000).toISOString(),
+    minutes: 60,
+    max_prs: 2,
+    prs: [101, 102],
+  }
+  const parsed = parseBudgetState(JSON.stringify(state), started + 2 * 60 * 60 * 1000)
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.expired, true)
+  assert.equal(parsed.prsExhausted, true)
+})
+
+test("rejects malformed worktree budgets", () => {
+  for (const raw of [
+    "not json",
+    "[]",
+    JSON.stringify({ session_id: "s" }),
+    JSON.stringify({
+      session_id: "s",
+      started_at: "2026-11-23T12:00:00Z",
+      expires_at: "2026-11-23T11:00:00Z",
+      minutes: 180,
+      max_prs: 2,
+      prs: [],
+    }),
+    JSON.stringify({
+      session_id: "s",
+      started_at: "2026-11-23T12:00:00Z",
+      expires_at: "2026-11-23T15:00:00Z",
+      minutes: 180,
+      max_prs: 2,
+      prs: ["bad"],
+    }),
+  ]) {
+    assert.equal(parseBudgetState(raw).ok, false, raw)
+  }
 })
 
 test("restores a persisted original start without moving the deadline", () => {

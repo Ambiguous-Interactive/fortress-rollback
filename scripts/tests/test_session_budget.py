@@ -164,6 +164,83 @@ def test_lock_file_is_reusable_after_a_crash(tmp_path: Path) -> None:
     assert session_budget.close(path) is True
 
 
+def test_claim_pr_records_one_and_two_prs(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    first = session_budget.claim_pr(101, now=START, path=path)
+    second = session_budget.claim_pr(102, now=START, path=path)
+
+    assert first["prs"] == [101]
+    assert second["prs"] == [101, 102]
+
+
+def test_claim_pr_is_idempotent_for_the_same_number(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+    session_budget.claim_pr(101, now=START, path=path)
+
+    state = session_budget.claim_pr(101, now=START, path=path)
+
+    assert state["prs"] == [101]
+
+
+def test_claim_pr_rejects_a_third_pr(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+    session_budget.claim_pr(101, now=START, path=path)
+    session_budget.claim_pr(102, now=START, path=path)
+
+    with pytest.raises(session_budget.BudgetError, match="exhausted"):
+        session_budget.claim_pr(103, now=START, path=path)
+
+
+def test_claim_pr_rejects_an_expired_budget(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    with pytest.raises(session_budget.BudgetError, match="expired"):
+        session_budget.claim_pr(101, now=START + timedelta(minutes=181), path=path)
+
+
+def test_check_reports_pr_budget_exhaustion(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+    session_budget.claim_pr(101, now=START, path=path)
+    session_budget.claim_pr(102, now=START, path=path)
+
+    exit_code = session_budget.main(["check", "--state", str(path), "--json"])
+
+    assert exit_code == 2
+
+
+def test_load_defaults_pr_fields_for_legacy_state(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-23T15:00:00Z",
+                "minutes": 180,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    state = session_budget.load(path)
+
+    assert state["max_prs"] == 2
+    assert state["prs"] == []
+
+
+def test_start_rejects_invalid_max_prs(tmp_path: Path) -> None:
+    with pytest.raises(session_budget.BudgetError, match="max_prs"):
+        session_budget.start(
+            "session-1", 180, 3, now=START, path=tmp_path / "budget.json"
+        )
+
+
 def test_check_reports_remaining_minutes(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)

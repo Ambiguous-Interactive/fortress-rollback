@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: pr-gate-${{ github.ref }}
@@ -159,9 +160,36 @@ jobs:
       - name: Reject browser-only dependencies on Emscripten
         run: ./scripts/ci/check-emscripten-dependencies.sh
 
+  session-budget:
+    name: Session Budget
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Enforce the rolling three-hour, two-PR window
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -n 's/.*pr-\([0-9][0-9]*\)-.*/\1/p')"
+          fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "cannot resolve the pull request number for the session budget" >&2
+            exit 1
+          fi
+          python3 scripts/ci/check-session-pr-budget.py \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr "$PR_NUMBER"
+
   gate:
     name: CI Gate
-    needs: [changes, fast, api-census, wasm-check, kani-compile]
+    needs: [changes, fast, api-census, wasm-check, kani-compile, session-budget]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

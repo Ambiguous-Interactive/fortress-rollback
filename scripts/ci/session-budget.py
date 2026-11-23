@@ -31,6 +31,9 @@ DEFAULT_STATE_PATH = REPO_ROOT / "progress" / ".session-budget.json"
 DEFAULT_MINUTES = 180
 MAX_MINUTES = 180
 MIN_MINUTES = 1
+DEFAULT_MAX_PRS = 2
+MAX_PRS_LIMIT = 2
+MIN_PR_NUMBER = 1
 
 
 class BudgetError(Exception):
@@ -137,6 +140,7 @@ def _state_lock(path: Path, timeout: float = 1.0) -> Iterator[None]:
 def start(
     session_id: str,
     minutes: int = DEFAULT_MINUTES,
+    max_prs: int = DEFAULT_MAX_PRS,
     *,
     now: datetime | None = None,
     path: Path = DEFAULT_STATE_PATH,
@@ -148,14 +152,16 @@ def start(
         raise BudgetError(
             f"minutes must be between {MIN_MINUTES} and {MAX_MINUTES}: {minutes}"
         )
+    if max_prs < 1 or max_prs > MAX_PRS_LIMIT:
+        raise BudgetError(f"max_prs must be between 1 and {MAX_PRS_LIMIT}: {max_prs}")
     started = (now or utc_now()).astimezone(timezone.utc)
     session_key = session_id.strip()
     with _state_lock(path):
-        return _start_locked(session_key, started, minutes, path)
+        return _start_locked(session_key, started, minutes, max_prs, path)
 
 
 def _start_locked(
-    session_key: str, started: datetime, minutes: int, path: Path
+    session_key: str, started: datetime, minutes: int, max_prs: int, path: Path
 ) -> dict[str, Any]:
     if path.exists():
         existing = load(path)
@@ -167,11 +173,11 @@ def _start_locked(
                 f"session {existing['session_id']} already has an active budget "
                 f"until {existing['expires_at']}"
             )
-        state = _new_state(session_key, started, minutes)
+        state = _new_state(session_key, started, minutes, max_prs)
         _write_state(state, path)
         return state
 
-    state = _new_state(session_key, started, minutes)
+    state = _new_state(session_key, started, minutes, max_prs)
     for _ in range(5):
         try:
             _create_state_exclusive(state, path)
@@ -191,13 +197,17 @@ def _start_locked(
     raise BudgetError(f"could not create a session budget at {path}")
 
 
-def _new_state(session_id: str, started: datetime, minutes: int) -> dict[str, Any]:
+def _new_state(
+    session_id: str, started: datetime, minutes: int, max_prs: int
+) -> dict[str, Any]:
     expires = started + timedelta(minutes=minutes)
     return {
         "session_id": session_id,
         "started_at": _format_time(started),
         "expires_at": _format_time(expires),
         "minutes": minutes,
+        "max_prs": max_prs,
+        "prs": [],
     }
 
 
@@ -230,7 +240,19 @@ def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
         raise BudgetError(
             f"expires_at is more than the configured {minutes} minutes after started_at"
         )
-    return state
+    max_prs = state.get("max_prs", DEFAULT_MAX_PRS)
+    if not isinstance(max_prs, int) or not 1 <= max_prs <= MAX_PRS_LIMIT:
+        raise BudgetError(f"max_prs must be between 1 and {MAX_PRS_LIMIT}")
+    prs = state.get("prs", [])
+    if not isinstance(prs, list) or not all(
+        isinstance(number, int) and number >= MIN_PR_NUMBER for number in prs
+    ):
+        raise BudgetError("prs must be a list of positive pull request numbers")
+    return {
+        **state,
+        "max_prs": max_prs,
+        "prs": sorted(set(prs)),
+    }
 
 
 def check(
@@ -244,6 +266,36 @@ def check(
     expires = _parse_time(state["expires_at"], "expires_at")
     remaining_minutes = (expires - current).total_seconds() / 60.0
     return state, remaining_minutes
+
+
+def claim_pr(
+    number: int,
+    *,
+    now: datetime | None = None,
+    path: Path = DEFAULT_STATE_PATH,
+) -> dict[str, Any]:
+    """Record one opened PR and enforce the session PR limit."""
+    if number < MIN_PR_NUMBER:
+        raise BudgetError(f"pull request number must be positive: {number}")
+    current = (now or utc_now()).astimezone(timezone.utc)
+    with _state_lock(path):
+        state = load(path)
+        expires = _parse_time(state["expires_at"], "expires_at")
+        if expires <= current:
+            raise BudgetError("session budget is expired; start a new session")
+        if number in state["prs"]:
+            return state
+        if len(state["prs"]) >= state["max_prs"]:
+            raise BudgetError(
+                f"session PR budget is exhausted: {len(state['prs'])} of "
+                f"{state['max_prs']} already claimed"
+            )
+        updated = {
+            **state,
+            "prs": sorted([*state["prs"], number]),
+        }
+        _write_state(updated, path)
+        return updated
 
 
 def close(path: Path = DEFAULT_STATE_PATH) -> bool:
@@ -278,11 +330,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MINUTES,
         help=f"Budget in minutes, at most {MAX_MINUTES} (default: {DEFAULT_MINUTES})",
     )
+    start_parser.add_argument(
+        "--max-prs",
+        type=int,
+        default=DEFAULT_MAX_PRS,
+        help=f"Maximum opened PRs, at most {MAX_PRS_LIMIT} (default: {DEFAULT_MAX_PRS})",
+    )
     _add_state_argument(start_parser)
 
     check_parser = commands.add_parser("check", help="Print remaining budget")
     check_parser.add_argument("--json", action="store_true", help="Emit JSON")
     _add_state_argument(check_parser)
+
+    claim_parser = commands.add_parser("claim-pr", help="Record an opened pull request")
+    claim_parser.add_argument("--number", type=int, required=True)
+    _add_state_argument(claim_parser)
 
     close_parser = commands.add_parser("close", help="Remove the stored budget")
     _add_state_argument(close_parser)
@@ -294,19 +356,24 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "start":
-            state = start(args.id, args.minutes, path=args.state)
+            state = start(args.id, args.minutes, args.max_prs, path=args.state)
             print(
                 f"session {state['session_id']}: {state['minutes']} minutes, "
-                f"expires {state['expires_at']}"
+                f"{state['max_prs']} PRs, expires {state['expires_at']}"
             )
             return 0
         if args.command == "check":
             state, remaining = check(path=args.state)
+            prs_remaining = state["max_prs"] - len(state["prs"])
             payload = {
                 "session_id": state["session_id"],
                 "expires_at": state["expires_at"],
                 "remaining_minutes": round(remaining, 1),
                 "expired": remaining <= 0,
+                "prs": state["prs"],
+                "max_prs": state["max_prs"],
+                "prs_remaining": prs_remaining,
+                "pr_budget_exhausted": prs_remaining <= 0,
             }
             if args.json:
                 print(json.dumps(payload, sort_keys=True))
@@ -314,10 +381,18 @@ def main(argv: list[str] | None = None) -> int:
                 state_label = "EXPIRED" if payload["expired"] else "remaining"
                 print(
                     f"session {payload['session_id']}: {state_label} "
-                    f"{abs(payload['remaining_minutes']):.1f} minutes "
+                    f"{abs(payload['remaining_minutes']):.1f} minutes, "
+                    f"PRs {len(payload['prs'])}/{payload['max_prs']} "
                     f"(expires {payload['expires_at']})"
                 )
-            return 2 if payload["expired"] else 0
+            return 2 if payload["expired"] or payload["pr_budget_exhausted"] else 0
+        if args.command == "claim-pr":
+            state = claim_pr(args.number, path=args.state)
+            print(
+                f"session {state['session_id']}: claimed PR "
+                f"#{args.number} ({len(state['prs'])}/{state['max_prs']})"
+            )
+            return 0
         if args.command == "close":
             removed = close(args.state)
             print("budget removed" if removed else "no budget to remove")

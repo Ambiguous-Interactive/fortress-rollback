@@ -1,3 +1,6 @@
+<!-- session: replace-with-session-id started: 2026-01-01T00:00Z -->
+<!-- Replace both marker values before opening. The required Session Budget check rejects a missing or stale marker. -->
+
 ## Description
 
 <!-- Provide a clear and concise description of your changes. -->

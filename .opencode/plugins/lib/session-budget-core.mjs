@@ -27,6 +27,74 @@ export function removeMutatingTools(tools) {
   }
 }
 
+export function newBudgetState(
+  sessionId,
+  now = Date.now(),
+  minutes = DEFAULT_MINUTES,
+  maxPrs = 2,
+) {
+  const safeMinutes = normalizeMinutes(minutes)
+  const safeMaxPrs = Math.min(2, Math.max(1, Number(maxPrs) || 2))
+  const startedAt = new Date(now)
+  const expiresAt = new Date(now + safeMinutes * 60 * 1000)
+  return {
+    session_id: sessionId,
+    started_at: startedAt.toISOString(),
+    expires_at: expiresAt.toISOString(),
+    minutes: safeMinutes,
+    max_prs: safeMaxPrs,
+    prs: [],
+  }
+}
+
+export function parseBudgetState(raw, now = Date.now()) {
+  let state
+  try {
+    state = JSON.parse(raw)
+  } catch {
+    return { ok: false, reason: "session budget is not valid JSON" }
+  }
+  if (state === null || typeof state !== "object" || Array.isArray(state)) {
+    return { ok: false, reason: "session budget must be a JSON object" }
+  }
+  const sessionId = state.session_id
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    return { ok: false, reason: "session budget is missing its session id" }
+  }
+  const startedAt = Date.parse(state.started_at)
+  const expiresAt = Date.parse(state.expires_at)
+  if (!Number.isFinite(startedAt) || !Number.isFinite(expiresAt)) {
+    return { ok: false, reason: "session budget has invalid timestamps" }
+  }
+  if (expiresAt <= startedAt) {
+    return { ok: false, reason: "session budget expiry precedes its start" }
+  }
+  const minutes = Number.isInteger(state.minutes) ? state.minutes : DEFAULT_MINUTES
+  if (minutes < 1 || minutes > MAX_MINUTES) {
+    return { ok: false, reason: "session budget minutes are out of range" }
+  }
+  const maxPrs = Number.isInteger(state.max_prs) ? state.max_prs : 2
+  if (maxPrs < 1 || maxPrs > 2) {
+    return { ok: false, reason: "session budget max_prs is out of range" }
+  }
+  const rawPrs = Array.isArray(state.prs) ? state.prs : []
+  if (!rawPrs.every((number) => Number.isInteger(number) && number > 0)) {
+    return { ok: false, reason: "session budget PR list is malformed" }
+  }
+  const prs = [...new Set(rawPrs)].sort((left, right) => left - right)
+  return {
+    ok: true,
+    sessionId,
+    startedAt,
+    expiresAt,
+    minutes,
+    maxPrs,
+    prs,
+    expired: now >= expiresAt,
+    prsExhausted: prs.length >= maxPrs,
+  }
+}
+
 export function normalizeMinutes(value) {
   const requested = Number(value)
   if (!Number.isFinite(requested)) return DEFAULT_MINUTES

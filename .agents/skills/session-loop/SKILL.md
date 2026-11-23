@@ -46,6 +46,35 @@ refuses new prompts. In other harnesses, run `scripts/ci/session-budget.py start
 `close` at the same boundaries. Do not rely on writing files after 180 minutes; write the handoff by
 165.
 
+## Enforcement
+
+The budget is a **worktree lease** in `progress/.session-budget.json`, shared by the OpenCode plugin
+and `scripts/ci/session-budget.py`. It is not chat-scoped. A continuation prompt or a new chat
+session reads the same lease; it does not reset the clock.
+
+```bash
+python3 scripts/ci/session-budget.py start --id session-<id> --minutes 180 --max-prs 2
+python3 scripts/ci/session-budget.py check
+python3 scripts/ci/session-budget.py claim-pr --number <PR>
+```
+
+The plugin blocks mutating tools at 180 minutes or after the second claimed PR. The operator must run
+`close` after the session to start a new lease; the agent cannot extend an expired or exhausted one.
+
+Every PR body must include:
+
+```text
+<!-- session: <id> started: <ISO8601> -->
+```
+
+The required `Session Budget` check counts same-author PRs created in the three hours before the
+current PR. Three or more PRs fail, and a PR opened more than three hours after its session start
+fails. The rolling count is independent of the session ID, so a fresh marker cannot bypass it.
+
+RCA for the original gap: the plugin landed mid-session and keyed its clock to the chat session, and
+the PR cap was prose only. A continuation prompt could therefore look like a new session, and no
+check counted opened PRs. The worktree lease and the required rolling check replace both controls.
+
 ## Step 1: Sync and triage
 
 ```bash
@@ -88,7 +117,9 @@ A second PR may be opened only when all of these hold:
 - The session still has one open authored PR at a time.
 
 Maximum two opened PRs per session. Merging an already-open green PR from a previous session does
-not count. The exception is optional; closeout quality comes first.
+not count. The exception is optional; closeout quality comes first. The required `Session Budget`
+check is the backstop: a third PR in the rolling three-hour window fails even when the local claim is
+missing.
 
 ## Step 3: Deep analysis (only if no work)
 
@@ -163,7 +194,9 @@ Add the WASM or deep lane when the trigger table requires it. Do not open a PR w
 required check.
 
 The PR must state the goal, evidence, risks, rollback, and the item link, and fill
-`.github/PULL_REQUEST_TEMPLATE.md`. Do not check boxes for checks that were not run.
+`.github/PULL_REQUEST_TEMPLATE.md`. Include
+`<!-- session: <id> started: <ISO8601> -->` in the body. Do not check boxes for checks that were not
+run. After opening the PR, run `scripts/ci/session-budget.py claim-pr --number <PR>`.
 
 Review and CI budget:
 

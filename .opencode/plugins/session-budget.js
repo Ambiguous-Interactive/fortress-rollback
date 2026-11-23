@@ -1,25 +1,31 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+import path from "node:path"
+
 import { Plugin } from "@opencode/plugin"
 
 import {
   createBudgetTracker,
   isReadOnlyTool,
+  newBudgetState,
+  parseBudgetState,
   removeMutatingTools,
 } from "./lib/session-budget-core.mjs"
-
-const STORAGE_PREFIX = "session-budget:start:"
 
 export default Plugin.define({
   id: "fortress.session-budget",
   async setup(ctx) {
     const requestedMinutes = Number(ctx.options?.minutes ?? 180)
-    const budget = createBudgetTracker({ minutes: requestedMinutes })
+    const directory = ctx.location?.directory ?? process.cwd()
+    const budgetPath = path.join(directory, "progress", ".session-budget.json")
     if (Number.isFinite(requestedMinutes) && requestedMinutes > 180) {
       console.error("[session-budget] minutes capped at 180")
     }
+
     const registrations = []
     const timers = new Map()
+    const trackers = new Map()
+    const leaseStarts = new Map()
     const armed = new Set()
-    const unpersisted = new Set()
     const lastLevel = new Map()
     let toolGuardAvailable = false
 
@@ -29,11 +35,10 @@ export default Plugin.define({
       timers.delete(sessionID)
     }
 
-    const arm = (sessionID) => {
+    const arm = (sessionID, state) => {
       if (armed.has(sessionID)) return
-      const remaining = budget.remainingMs(sessionID)
-      if (remaining === undefined) return
       armed.add(sessionID)
+      const remaining = state.expiresAt - Date.now()
       const timer = setTimeout(async () => {
         try {
           await ctx.session.interrupt({ sessionID, resume: false })
@@ -45,52 +50,64 @@ export default Plugin.define({
       timers.set(sessionID, timer)
     }
 
-    const persistStart = async (sessionID) => {
-      const started = budget.startedAt(sessionID)
-      if (started === undefined) return false
-      if (typeof ctx.storage?.set !== "function") {
-        unpersisted.add(sessionID)
-        console.error("[session-budget] durable storage is unavailable")
-        return false
-      }
+    const readBudget = async () => {
       try {
-        await ctx.storage.set(`${STORAGE_PREFIX}${sessionID}`, started)
-        unpersisted.delete(sessionID)
-        return true
+        return parseBudgetState(await readFile(budgetPath, "utf8"))
       } catch (error) {
-        unpersisted.add(sessionID)
-        console.error("[session-budget] failed to persist the start:", error)
-        return false
+        if (error?.code === "ENOENT") return { ok: false, missing: true }
+        console.error("[session-budget] failed to read the worktree budget:", error)
+        return { ok: false, reason: "the worktree budget cannot be read" }
       }
     }
 
-    const startSession = async (sessionID) => {
-      if (budget.startedAt(sessionID) !== undefined) {
-        if (unpersisted.has(sessionID) && !(await persistStart(sessionID))) {
-          arm(sessionID)
-          return false
-        }
-        arm(sessionID)
-        return true
-      }
-      let stored
+    const ensureBudget = async (sessionID) => {
+      const existing = await readBudget()
+      if (existing.ok || !existing.missing) return existing
+      const state = newBudgetState(sessionID, Date.now(), requestedMinutes, 2)
       try {
-        stored = await ctx.storage?.get(`${STORAGE_PREFIX}${sessionID}`)
+        await mkdir(path.dirname(budgetPath), { recursive: true })
+        await writeFile(budgetPath, `${JSON.stringify(state, null, 2)}\n`, {
+          encoding: "utf8",
+          flag: "wx",
+        })
       } catch (error) {
-        console.error("[session-budget] failed to read the stored start:", error)
-        return false
-      }
-      if (typeof stored === "number" && Number.isFinite(stored)) {
-        budget.restore(sessionID, stored)
-      } else {
-        budget.start(sessionID)
-        if (!(await persistStart(sessionID))) {
-          arm(sessionID)
-          return false
+        if (error?.code !== "EEXIST") {
+          console.error("[session-budget] failed to create the worktree budget:", error)
+          return { ok: false, reason: "the worktree budget cannot be created" }
         }
       }
-      arm(sessionID)
-      return true
+      return readBudget()
+    }
+
+    const trackerFor = (sessionID, state) => {
+      const existing = trackers.get(sessionID)
+      if (existing !== undefined && existing.expiresAt === state.expiresAt) {
+        return existing.tracker
+      }
+      const tracker = createBudgetTracker({ minutes: state.minutes })
+      tracker.restore(sessionID, state.startedAt)
+      trackers.set(sessionID, { expiresAt: state.expiresAt, tracker })
+      return tracker
+    }
+
+    const startSession = async (sessionID) => {
+      const state = await ensureBudget(sessionID)
+      if (!state.ok) return { ok: false, reason: state.reason ?? "budget unavailable" }
+      if (leaseStarts.get(sessionID) !== state.startedAt) {
+        clearTimer(sessionID)
+        armed.delete(sessionID)
+        lastLevel.delete(sessionID)
+        leaseStarts.set(sessionID, state.startedAt)
+      }
+      const tracker = trackerFor(sessionID, state)
+      arm(sessionID, state)
+      if (state.expired) {
+        return { ok: false, reason: "the 3-hour session budget is expired" }
+      }
+      if (state.prsExhausted) {
+        return { ok: false, reason: "the 2-PR session budget is exhausted" }
+      }
+      return { ok: true, state, tracker }
     }
 
     try {
@@ -102,7 +119,10 @@ export default Plugin.define({
               "session-budget tool guard is unavailable; refusing to start an unguarded session",
             )
           }
-          await startSession(event.sessionID)
+          const ready = await startSession(event.sessionID)
+          if (!ready.ok) {
+            throw new Error(`session-budget: ${ready.reason}; start a fresh session`)
+          }
         }),
       )
       registrations.push(
@@ -117,16 +137,18 @@ export default Plugin.define({
             return
           }
           const ready = await startSession(event.sessionID)
-          if (!ready) {
+          if (!ready.ok) {
             removeMutatingTools(event.tools)
             event.system.push({
               type: "text",
-              text: "SESSION BUDGET: the session clock is unavailable; mutating tools are blocked until it recovers.",
+              text: `SESSION BUDGET: ${ready.reason}; mutating tools are removed until a fresh session starts.`,
             })
             return
           }
-          const status = budget.check(event.sessionID)
-          if (status.blocked) removeMutatingTools(event.tools)
+          const status = ready.tracker.check(event.sessionID)
+          if (status.blocked || ready.state.prsExhausted) {
+            removeMutatingTools(event.tools)
+          }
           if (status.message === undefined) return
           if (status.level <= (lastLevel.get(event.sessionID) ?? 0)) return
           lastLevel.set(event.sessionID, status.level)
@@ -143,17 +165,20 @@ export default Plugin.define({
         await ctx.tool.hook("execute.before", async (event) => {
           if (typeof event.sessionID !== "string") return
           const ready = await startSession(event.sessionID)
-          if (!ready) {
+          if (!ready.ok) {
             if (isReadOnlyTool(event.tool)) return
             throw new Error(
-              "SESSION BUDGET: the session clock is unavailable; mutating tools are blocked until it recovers.",
+              `SESSION BUDGET: ${ready.reason}; only read-only inspection is allowed until a fresh session starts.`,
             )
           }
-          const status = budget.check(event.sessionID)
-          if (!status.blocked) return
+          const status = ready.tracker.check(event.sessionID)
+          if (!status.blocked && !ready.state.prsExhausted) return
           if (isReadOnlyTool(event.tool)) return
+          const reason = ready.state.prsExhausted
+            ? "the 2-PR session budget is exhausted"
+            : "the 3-hour session budget is expired"
           throw new Error(
-            `${status.message} Only read-only inspection is allowed; end the session and hand off.`,
+            `SESSION BUDGET: ${reason}; only read-only inspection is allowed.`,
           )
         }),
       )
@@ -167,8 +192,9 @@ export default Plugin.define({
       timers.clear()
       for (const registration of registrations) await registration.dispose()
       registrations.length = 0
+      trackers.clear()
+      leaseStarts.clear()
       armed.clear()
-      unpersisted.clear()
       lastLevel.clear()
     }
   },
