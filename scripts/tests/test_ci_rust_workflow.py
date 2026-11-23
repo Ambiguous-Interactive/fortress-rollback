@@ -376,7 +376,7 @@ def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
     assert rust_step["with"]["targets"] == "s390x-unknown-linux-gnu"
 
     commands = _cargo_commands(job["steps"], "test")
-    assert len(commands) == 2
+    assert len(commands) == 6
     for command in commands:
         assert _option_values(command, "--target") == ["s390x-unknown-linux-gnu"]
         assert "--workspace" not in command
@@ -387,8 +387,20 @@ def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
         }
     assert Counter(
         command[command.index("-p") + 1] for command in commands
-    ) == Counter(("fortress-rollback", "fortress-replay-fixture"))
-    assert any("wire_codec_digest_is_pinned" in command for command in commands)
+    ) == Counter(
+        {
+            "fortress-rollback": 5,
+            "fortress-replay-fixture": 1,
+        }
+    )
+    for expected in (
+        "wire_codec_digest_is_pinned",
+        "wire_golden_v6",
+        "wire_codec_hot_join_digest_is_pinned",
+        "serialization_golden_",
+        "integer_writers_match_fixed_width_little_endian_bytes",
+    ):
+        assert any(expected in command for command in commands), expected
 
 
 def test_wasm_job_covers_browser_emscripten_and_wasi_targets() -> None:

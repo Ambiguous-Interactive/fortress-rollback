@@ -1033,9 +1033,10 @@ jobs:
           -E "test(sessions::hot_join::)"
 
   # Every other runtime lane is little-endian. This narrow lane executes the
-  # pinned wire-codec digest and the replay/machine-width fixture on a
-  # big-endian CPU under QEMU. It stays outside Miri (apt cost) and outside the
-  # 35-minute cross-arch matrix; the package-scoped tests keep it under budget.
+  # pinned wire-codec and hot-join digests, exact all-variant and serialization
+  # goldens, and the replay/machine-width fixture on a big-endian CPU under
+  # QEMU. It stays outside Miri (apt cost) and outside the 35-minute cross-arch
+  # matrix; the package-scoped, non-simulation tests keep it under budget.
   big-endian-runtime:
     name: Big-Endian Runtime (s390x QEMU)
     runs-on: ubuntu-latest
@@ -1073,6 +1074,27 @@ jobs:
         run: >-
           cargo test -p fortress-rollback --locked
           --target s390x-unknown-linux-gnu --lib wire_codec_digest_is_pinned
+
+      - name: Run exact all-variant wire goldens
+        run: >-
+          cargo test -p fortress-rollback --locked --features hot-join
+          --target s390x-unknown-linux-gnu --lib wire_golden_v6
+
+      - name: Run hot-join wire-codec digest
+        run: >-
+          cargo test -p fortress-rollback --locked --features hot-join
+          --target s390x-unknown-linux-gnu --lib wire_codec_hot_join_digest_is_pinned
+
+      - name: Run serialization goldens
+        run: >-
+          cargo test -p fortress-rollback --locked --features hot-join
+          --target s390x-unknown-linux-gnu --lib serialization_golden_
+
+      - name: Run portable integer-writer hashes
+        run: >-
+          cargo test -p fortress-rollback --locked
+          --target s390x-unknown-linux-gnu --lib
+          integer_writers_match_fixed_width_little_endian_bytes
 
       - name: Run replay fixture and portable machine-width checks
         run: >-
