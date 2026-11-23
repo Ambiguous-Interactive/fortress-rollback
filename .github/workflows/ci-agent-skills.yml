@@ -6,16 +6,22 @@ on:
   push:
     paths:
       - '.agents/skills/**'
+      - '.opencode/plugins/**'
+      - 'scripts/ci/session-budget.py'
       - 'scripts/hooks/validate-agent-skills.py'
       - 'scripts/docs/check-agent-skills.sh'
+      - 'scripts/tests/test_session_budget.py'
       - 'scripts/tests/test_validate_agent_skills.py'
       - 'scripts/tests/test_check_agent_skills.sh'
   merge_group:
   pull_request:
     paths:
       - '.agents/skills/**'
+      - '.opencode/plugins/**'
+      - 'scripts/ci/session-budget.py'
       - 'scripts/hooks/validate-agent-skills.py'
       - 'scripts/docs/check-agent-skills.sh'
+      - 'scripts/tests/test_session_budget.py'
       - 'scripts/tests/test_validate_agent_skills.py'
       - 'scripts/tests/test_check_agent_skills.sh'
 
@@ -28,13 +34,22 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
       - name: Install test and validator dependencies
         run: pip install --disable-pip-version-check --no-cache-dir pytest pyyaml==6.0.3
       - name: Test Agent Skills validators
         run: |
           python -m pytest scripts/tests/test_validate_agent_skills.py -q
+          python -m pytest scripts/tests/test_session_budget.py -q
           bash scripts/tests/test_check_agent_skills.sh
       - name: Validate Agent Skills open format
         run: python scripts/hooks/validate-agent-skills.py
       - name: Check skill code example quality
         run: bash scripts/docs/check-agent-skills.sh
+      - name: Check session budget plugin
+        run: |
+          node --check .opencode/plugins/session-budget.js
+          node --check .opencode/plugins/lib/session-budget-core.mjs
+          node --test .opencode/plugins/lib/session-budget-core.test.mjs

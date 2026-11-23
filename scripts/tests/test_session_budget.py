@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""Unit tests for scripts/ci/session-budget.py."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+import pytest
+
+scripts_dir = Path(__file__).parent.parent
+spec = importlib.util.spec_from_file_location(
+    "session_budget",
+    scripts_dir / "ci" / "session-budget.py",
+)
+assert spec is not None
+assert spec.loader is not None
+session_budget = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = session_budget
+spec.loader.exec_module(session_budget)
+
+START = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+
+
+def test_start_writes_state_and_expiry(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+
+    state = session_budget.start("session-1", 180, now=START, path=path)
+
+    assert state["session_id"] == "session-1"
+    assert state["started_at"] == "2026-11-23T12:00:00Z"
+    assert state["expires_at"] == "2026-11-23T15:00:00Z"
+    assert session_budget.load(path) == state
+
+
+def test_check_reports_remaining_minutes(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state, remaining = session_budget.check(
+        now=START + timedelta(minutes=60), path=path
+    )
+
+    assert state["session_id"] == "session-1"
+    assert remaining == pytest.approx(120.0)
+
+
+def test_check_reports_expired(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    _, remaining = session_budget.check(now=START + timedelta(minutes=181), path=path)
+
+    assert remaining < 0
+
+
+def test_check_missing_budget_fails(tmp_path: Path) -> None:
+    with pytest.raises(session_budget.BudgetError, match="cannot read"):
+        session_budget.check(path=tmp_path / "missing.json")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not json",
+        json.dumps([]),
+        json.dumps({"session_id": "s"}),
+        json.dumps(
+            {
+                "session_id": "s",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-23T15:00:00Z",
+                "minutes": 181,
+            }
+        ),
+        json.dumps(
+            {
+                "session_id": "s",
+                "started_at": "2026-11-23T12:00:00",
+                "expires_at": "2026-11-23T15:00:00Z",
+                "minutes": 180,
+            }
+        ),
+    ],
+)
+def test_check_malformed_budget_fails(tmp_path: Path, payload: str) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(payload, encoding="utf-8")
+
+    with pytest.raises(session_budget.BudgetError):
+        session_budget.check(path=path)
+
+
+@pytest.mark.parametrize("minutes", [0, 181])
+def test_start_rejects_out_of_range_minutes(tmp_path: Path, minutes: int) -> None:
+    with pytest.raises(session_budget.BudgetError, match="between"):
+        session_budget.start("session-1", minutes, now=START, path=tmp_path / "b.json")
+
+
+def test_start_rejects_empty_id(tmp_path: Path) -> None:
+    with pytest.raises(session_budget.BudgetError, match="session id"):
+        session_budget.start(" ", 180, now=START, path=tmp_path / "b.json")
+
+
+def test_close_removes_state(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    assert session_budget.close(path) is True
+    assert not path.exists()
+    assert session_budget.close(path) is False
+
+
+def test_cli_check_json_before_expiry_returns_zero(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, path=path)
+
+    exit_code = session_budget.main(["check", "--state", str(path), "--json"])
+
+    assert exit_code == 0
+    assert json.loads(capsys.readouterr().out)["expired"] is False
+
+
+def test_cli_check_reports_expired(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "budget.json"
+    state = session_budget.start("session-1", 180, path=path)
+    expired = session_budget.utc_now() - timedelta(minutes=1)
+    path.write_text(
+        json.dumps({**state, "expires_at": session_budget._format_time(expired)}),
+        encoding="utf-8",
+    )
+
+    exit_code = session_budget.main(["check", "--state", str(path), "--json"])
+
+    assert exit_code == 2
+    assert json.loads(capsys.readouterr().out)["expired"] is True
+
+
+def test_cli_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    path = tmp_path / "budget.json"
+
+    assert session_budget.main(
+        ["start", "--id", "session-1", "--minutes", "180", "--state", str(path)]
+    ) == 0
+    assert "session-1" in capsys.readouterr().out
+    assert session_budget.main(["check", "--state", str(path)]) == 0
+    assert "remaining" in capsys.readouterr().out
+    assert session_budget.main(["close", "--state", str(path)]) == 0
+    assert "budget removed" in capsys.readouterr().out
