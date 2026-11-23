@@ -371,16 +371,22 @@ def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
         for entry in miri_job["strategy"]["matrix"]["include"]
         if entry["name"].startswith("Windows - misc")
     }
-    assert set(lanes) == {"Windows - misc A", "Windows - misc B"}
+    assert set(lanes) == {
+        "Windows - misc A",
+        "Windows - misc B",
+        "Windows - misc C",
+    }
 
     lane_a = lanes["Windows - misc A"]
     lane_b = lanes["Windows - misc B"]
-    for lane in (lane_a, lane_b):
+    lane_c = lanes["Windows - misc C"]
+    for lane in (lane_a, lane_b, lane_c):
         assert lane["os"] == "windows-latest"
         assert lane["seeds"] == "0..1"
 
-    assert lane_a["test_filter"].split() == ["input_queue::", "error::", "tests::"]
-    assert lane_b["test_filter"] == ""
+    assert lane_a["test_filter"].split() == ["input_queue::"]
+    assert lane_b["test_filter"].split() == ["error::", "tests::"]
+    assert lane_c["test_filter"] == ""
 
     def skips(entry: dict) -> set[str]:
         words = shlex.split(entry["skip_filter"])
@@ -394,7 +400,8 @@ def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
         "sync_layer::",
     }
     assert skips(lane_a) == dedicated
-    assert skips(lane_b) == dedicated | {"input_queue::", "error::", "tests::"}
+    assert skips(lane_b) == dedicated | {"input_queue::"}
+    assert skips(lane_c) == dedicated | {"input_queue::", "error::", "tests::"}
 
 
 def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
