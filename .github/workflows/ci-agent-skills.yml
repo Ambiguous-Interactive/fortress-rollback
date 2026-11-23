@@ -8,8 +8,10 @@ on:
       - '.agents/skills/**'
       - '.opencode/plugins/**'
       - 'scripts/ci/session-budget.py'
+      - 'scripts/hooks/check-plan-hygiene.py'
       - 'scripts/hooks/validate-agent-skills.py'
       - 'scripts/docs/check-agent-skills.sh'
+      - 'scripts/tests/test_plan_hygiene.py'
       - 'scripts/tests/test_session_budget.py'
       - 'scripts/tests/test_validate_agent_skills.py'
       - 'scripts/tests/test_check_agent_skills.sh'
@@ -19,8 +21,10 @@ on:
       - '.agents/skills/**'
       - '.opencode/plugins/**'
       - 'scripts/ci/session-budget.py'
+      - 'scripts/hooks/check-plan-hygiene.py'
       - 'scripts/hooks/validate-agent-skills.py'
       - 'scripts/docs/check-agent-skills.sh'
+      - 'scripts/tests/test_plan_hygiene.py'
       - 'scripts/tests/test_session_budget.py'
       - 'scripts/tests/test_validate_agent_skills.py'
       - 'scripts/tests/test_check_agent_skills.sh'
@@ -43,6 +47,7 @@ jobs:
         run: |
           python -m pytest scripts/tests/test_validate_agent_skills.py -q
           python -m pytest scripts/tests/test_session_budget.py -q
+          python -m pytest scripts/tests/test_plan_hygiene.py -q
           bash scripts/tests/test_check_agent_skills.sh
       - name: Validate Agent Skills open format
         run: python scripts/hooks/validate-agent-skills.py

@@ -42,13 +42,14 @@ export default Plugin.define({
     const startSession = async (sessionID) => {
       if (budget.startedAt(sessionID) !== undefined) {
         arm(sessionID)
-        return
+        return true
       }
       let stored
       try {
         stored = await ctx.storage?.get(`${STORAGE_PREFIX}${sessionID}`)
       } catch (error) {
         console.error("[session-budget] failed to read the stored start:", error)
+        return false
       }
       if (typeof stored === "number" && Number.isFinite(stored)) {
         budget.restore(sessionID, stored)
@@ -61,6 +62,7 @@ export default Plugin.define({
         }
       }
       arm(sessionID)
+      return true
     }
 
     try {
@@ -73,7 +75,14 @@ export default Plugin.define({
       registrations.push(
         await ctx.session.hook("context", async (event) => {
           if (typeof event.sessionID !== "string") return
-          await startSession(event.sessionID)
+          const ready = await startSession(event.sessionID)
+          if (!ready) {
+            event.system.push({
+              type: "text",
+              text: "SESSION BUDGET: the stored clock cannot be read; mutating tools are blocked until it recovers.",
+            })
+            return
+          }
           const status = budget.check(event.sessionID)
           if (status.message === undefined) return
           if (status.level <= (lastLevel.get(event.sessionID) ?? 0)) return
@@ -90,7 +99,13 @@ export default Plugin.define({
       registrations.push(
         await ctx.tool.hook("execute.before", async (event) => {
           if (typeof event.sessionID !== "string") return
-          await startSession(event.sessionID)
+          const ready = await startSession(event.sessionID)
+          if (!ready) {
+            if (isReadOnlyTool(event.tool)) return
+            throw new Error(
+              "SESSION BUDGET: the stored clock cannot be read; mutating tools are blocked until it recovers.",
+            )
+          }
           const status = budget.check(event.sessionID)
           if (!status.blocked) return
           if (isReadOnlyTool(event.tool)) return

@@ -110,12 +110,19 @@ def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
     session_id = state.get("session_id")
     if not isinstance(session_id, str) or not session_id.strip():
         raise BudgetError("session_id must be a non-empty string")
-    _parse_time(state.get("started_at"), "started_at")
-    _parse_time(state.get("expires_at"), "expires_at")
+    started = _parse_time(state.get("started_at"), "started_at")
+    expires = _parse_time(state.get("expires_at"), "expires_at")
     minutes = state.get("minutes")
     if not isinstance(minutes, int) or not MIN_MINUTES <= minutes <= MAX_MINUTES:
         raise BudgetError(
             f"minutes must be an integer between {MIN_MINUTES} and {MAX_MINUTES}"
+        )
+    ttl_seconds = (expires - started).total_seconds()
+    if ttl_seconds <= 0:
+        raise BudgetError("expires_at must be after started_at")
+    if ttl_seconds > minutes * 60:
+        raise BudgetError(
+            f"expires_at is more than the configured {minutes} minutes after started_at"
         )
     return state
 

@@ -142,6 +142,42 @@ def test_check_malformed_budget_fails(tmp_path: Path, payload: str) -> None:
         session_budget.check(path=path)
 
 
+def test_check_rejects_expiry_beyond_configured_minutes(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-24T12:00:00Z",
+                "minutes": 180,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(session_budget.BudgetError, match="more than the configured"):
+        session_budget.check(path=path)
+
+
+def test_check_rejects_expiry_before_start(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-23T11:00:00Z",
+                "minutes": 180,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(session_budget.BudgetError, match="must be after"):
+        session_budget.check(path=path)
+
+
 def test_check_invalid_utf8_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     path.write_bytes(b"\xff\xfe\x00")
@@ -186,10 +222,16 @@ def test_cli_check_reports_expired(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "budget.json"
-    state = session_budget.start("session-1", 180, path=path)
-    expired = session_budget.utc_now() - timedelta(minutes=1)
+    now = session_budget.utc_now()
     path.write_text(
-        json.dumps({**state, "expires_at": session_budget._format_time(expired)}),
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": session_budget._format_time(now - timedelta(hours=2)),
+                "expires_at": session_budget._format_time(now - timedelta(hours=1)),
+                "minutes": 180,
+            }
+        ),
         encoding="utf-8",
     )
 
