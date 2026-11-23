@@ -15,6 +15,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+_fcntl: Any
+_msvcrt: Any
+try:
+    import fcntl as _fcntl
+except ImportError:  # pragma: no cover - Windows
+    _fcntl = None
+try:
+    import msvcrt as _msvcrt
+except ImportError:  # pragma: no cover - POSIX
+    _msvcrt = None
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE_PATH = REPO_ROOT / "progress" / ".session-budget.json"
 DEFAULT_MINUTES = 180
@@ -93,37 +104,34 @@ def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
 
 @contextmanager
 def _state_lock(path: Path, timeout: float = 1.0) -> Iterator[None]:
-    """Serialize budget updates through a short-lived lock file."""
+    """Serialize budget updates with an OS-released advisory lock."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(f".{path.name}.lock")
     deadline = time.monotonic() + timeout
-    handle: int | None = None
-    while handle is None:
-        try:
-            handle = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(handle, f"{os.getpid()} {time.time()}\n".encode())
-        except FileExistsError:
+    with open(lock_path, "a+b") as handle:
+        locked = False
+        while not locked:
             try:
-                age = time.time() - lock_path.stat().st_mtime
-            except FileNotFoundError:
-                continue
-            if age > 30:
-                try:
-                    lock_path.unlink()
-                except FileNotFoundError:
-                    pass
-                continue
-            if time.monotonic() >= deadline:
-                raise BudgetError(f"another session is updating {path}") from None
-            time.sleep(0.01)
-    try:
-        yield
-    finally:
-        os.close(handle)
+                if _fcntl is not None:
+                    _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                elif _msvcrt is not None:
+                    handle.seek(0)
+                    _msvcrt.locking(handle.fileno(), _msvcrt.LK_NBLCK, 1)
+                else:
+                    raise BudgetError("no file-locking primitive is available")
+                locked = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise BudgetError(f"another session is updating {path}") from None
+                time.sleep(0.01)
         try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            pass
+            yield
+        finally:
+            if _fcntl is not None:
+                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
+            elif _msvcrt is not None:
+                handle.seek(0)
+                _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
 
 
 def start(

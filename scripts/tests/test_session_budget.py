@@ -150,7 +150,7 @@ def test_concurrent_expired_replacements_leave_one_winner(tmp_path: Path) -> Non
     assert stored["session_id"] in {"session-0", "session-1"}
 
 
-def test_stale_lock_is_recovered(tmp_path: Path) -> None:
+def test_lock_file_is_reusable_after_a_crash(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     lock_path = path.with_name(f".{path.name}.lock")
     lock_path.write_text("stale", encoding="utf-8")
@@ -160,7 +160,8 @@ def test_stale_lock_is_recovered(tmp_path: Path) -> None:
     state = session_budget.start("session-1", 180, now=START, path=path)
 
     assert state["session_id"] == "session-1"
-    assert not lock_path.exists()
+    assert lock_path.exists()
+    assert session_budget.close(path) is True
 
 
 def test_check_reports_remaining_minutes(tmp_path: Path) -> None:
