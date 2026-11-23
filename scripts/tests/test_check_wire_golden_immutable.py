@@ -765,3 +765,44 @@ def test_committed_base_ref_mode_accepts_bump_with_matching_suite(repo: Path) ->
     _git(repo, "add", ".")
     _git(repo, "commit", "-qm", "protocol v2")
     assert HOOK.check_diff(repo, base_ref=base)
+
+
+def test_local_amend_of_unreleased_active_golden_passes_against_branch_point(
+    repo: Path,
+) -> None:
+    """An amended PR may still refine its unreleased active suite.
+
+    The pre-commit local mode must compare against the branch point, not the
+    already-amended HEAD; otherwise every re-stage of the new active golden
+    looks like a released-golden rewrite without a version bump.
+    """
+    base = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git(repo, "switch", "-c", "feature")
+    _git(repo, "branch", "-f", "main", base)
+    lib = repo / "src/lib.rs"
+    lib.write_text(
+        lib.read_text(encoding="utf-8").replace(
+            "pub const PROTOCOL_VERSION: u8 = 1;",
+            "pub const PROTOCOL_VERSION: u8 = 2;",
+        ),
+        encoding="utf-8",
+    )
+    _add_v2_suite(repo)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "unreleased v2")
+
+    # Amend the unreleased v2 fixture and stage it. The branch point still has
+    # v1, so the active suite is still covered by the v2 bump.
+    _write(repo, "src/network/wire_golden_v2.rs", "const V2: &[u8] = &[9];\n")
+    _git(repo, "add", "src/network/wire_golden_v2.rs")
+    assert HOOK.check_local(repo)
+
+    # A released v1 fixture rewrite is still rejected in the same local view.
+    _write(repo, "src/network/wire_golden_v1.rs", "changed\n")
+    _git(repo, "add", "src/network/wire_golden_v1.rs")
+    assert not HOOK.check_local(repo)

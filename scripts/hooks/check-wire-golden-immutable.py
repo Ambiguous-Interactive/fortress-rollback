@@ -53,12 +53,23 @@ def _git(repo_root: Path, args: list[str]) -> bytes:
 
 
 def _changed_existing_goldens(
-    repo_root: Path, cached: bool, base_ref: str | None
+    repo_root: Path,
+    cached: bool,
+    base_ref: str | None,
+    candidate_head: bool = False,
 ) -> list[str]:
     args = ["diff", "--name-status", "--find-renames", "--find-copies-harder", "-z"]
     if cached:
         args.append("--cached")
-    args.extend([base_ref, "HEAD"] if base_ref is not None else ["HEAD"])
+    if base_ref is not None:
+        # `candidate_head` selects the committed HEAD tree; otherwise the diff
+        # is against the index (cached) or worktree, which is what pre-commit
+        # needs when an in-progress branch is amended.
+        args.append(base_ref)
+        if candidate_head:
+            args.append("HEAD")
+    else:
+        args.append("HEAD")
     fields = _git(repo_root, args).split(b"\0")
     changed: set[str] = set()
     index = 0
@@ -94,9 +105,9 @@ def _candidate_version_text(repo_root: Path, cached: bool) -> str:
 
 
 def _candidate_file_text(
-    repo_root: Path, path: str, cached: bool, base_ref: str | None
+    repo_root: Path, path: str, cached: bool, candidate_head: bool
 ) -> str:
-    if base_ref is not None:
+    if candidate_head:
         return _git(repo_root, ["show", f"HEAD:{path}"]).decode("utf-8")
     if cached:
         return _git(repo_root, ["show", f":{path}"]).decode("utf-8")
@@ -104,10 +115,10 @@ def _candidate_file_text(
 
 
 def _candidate_has_path(
-    repo_root: Path, path: str, cached: bool, base_ref: str | None
+    repo_root: Path, path: str, cached: bool, candidate_head: bool
 ) -> bool:
     """Return whether the candidate tree contains `path`."""
-    if base_ref is not None:
+    if candidate_head:
         return bool(_git(repo_root, ["ls-tree", "-z", "--name-only", "HEAD", "--", path]))
     if cached:
         try:
@@ -468,13 +479,13 @@ def _suite_has_required_structure(suite: str, codec: str, version: int) -> bool:
 
 
 def _candidate_has_version_suite(
-    repo_root: Path, version: int, cached: bool, base_ref: str | None
+    repo_root: Path, version: int, cached: bool, candidate_head: bool
 ) -> bool:
     path = f"src/network/wire_golden_v{version}.rs"
     try:
-        suite = _candidate_file_text(repo_root, path, cached, base_ref)
+        suite = _candidate_file_text(repo_root, path, cached, candidate_head)
         codec = _candidate_file_text(
-            repo_root, "src/network/codec.rs", cached, base_ref
+            repo_root, "src/network/codec.rs", cached, candidate_head
         )
     except (OSError, UnicodeError, RuntimeError):
         return False
@@ -482,15 +493,26 @@ def _candidate_has_version_suite(
 
 
 def check_diff(
-    repo_root: Path, cached: bool = False, base_ref: str | None = None
+    repo_root: Path,
+    cached: bool = False,
+    base_ref: str | None = None,
+    candidate_head: bool | None = None,
 ) -> bool:
-    """Check a local candidate or committed `base_ref..HEAD` diff."""
+    """Check a local candidate or committed `base_ref..HEAD` diff.
+
+    `candidate_head=None` keeps the historical behavior: a `base_ref` compares
+    committed HEAD against that ref. Pre-commit passes `candidate_head=False`
+    with a merge-base so staged/worktree changes are compared against the branch
+    point rather than the already-amended HEAD.
+    """
+    if candidate_head is None:
+        candidate_head = base_ref is not None
     try:
         if _candidate_has_path(
-            repo_root, _SERIALIZATION_GOLDEN_PATH, cached, base_ref
+            repo_root, _SERIALIZATION_GOLDEN_PATH, cached, candidate_head
         ):
             candidate_lib = _candidate_file_text(
-                repo_root, _VERSION_PATH, cached, base_ref
+                repo_root, _VERSION_PATH, cached, candidate_head
             )
             if not _has_serialization_golden_registration(candidate_lib):
                 print(
@@ -498,7 +520,9 @@ def check_diff(
                     file=sys.stderr,
                 )
                 return False
-        changed = _changed_existing_goldens(repo_root, cached, base_ref)
+        changed = _changed_existing_goldens(
+            repo_root, cached, base_ref, candidate_head
+        )
         if not changed:
             return True
         immutable_serialization = sorted(
@@ -520,7 +544,7 @@ def check_diff(
         base_version = parse_protocol_version(base_text)
         candidate_text = (
             _git(repo_root, ["show", f"HEAD:{_VERSION_PATH}"]).decode("utf-8")
-            if base_ref is not None
+            if candidate_head
             else _candidate_version_text(repo_root, cached)
         )
         candidate_version = parse_protocol_version(candidate_text)
@@ -529,7 +553,7 @@ def check_diff(
         return False
 
     if candidate_version > base_version and _candidate_has_version_suite(
-        repo_root, candidate_version, cached, base_ref
+        repo_root, candidate_version, cached, candidate_head
     ):
         return True
 
@@ -545,10 +569,32 @@ def check_diff(
     return False
 
 
+def _local_base_ref(repo_root: Path) -> str | None:
+    """Return the branch point with the upstream/main when available."""
+    for ref in ("@{upstream}", "origin/main", "main"):
+        try:
+            return (
+                _git(repo_root, ["merge-base", "HEAD", ref])
+                .decode("utf-8")
+                .strip()
+            )
+        except RuntimeError:
+            continue
+    return None
+
+
 def check_local(repo_root: Path) -> bool:
-    """Check both worktree and index views against HEAD."""
-    worktree_ok = check_diff(repo_root)
-    index_ok = check_diff(repo_root, cached=True)
+    """Check worktree and index views against the branch point.
+
+    Comparing against the branch point (rather than the current HEAD) lets an
+    in-progress PR amend its unreleased active golden suite and still prove that
+    no *released* golden changed. Without an upstream/main, fall back to HEAD.
+    """
+    base_ref = _local_base_ref(repo_root)
+    worktree_ok = check_diff(repo_root, base_ref=base_ref, candidate_head=False)
+    index_ok = check_diff(
+        repo_root, cached=True, base_ref=base_ref, candidate_head=False
+    )
     return worktree_ok and index_ok
 
 
