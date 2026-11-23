@@ -3929,6 +3929,96 @@ mod hot_join_tests {
     }
 
     #[test]
+    fn state_snapshot_checksum_basis_rejects_noncanonical_events() {
+        let message = |basis| Message {
+            header: MessageHeader::new(0xABCD),
+            body: MessageBody::StateSnapshot(StateSnapshot {
+                frame: Frame::new(10),
+                num_players: 2,
+                state_bytes: Vec::new(),
+                bridge_inputs: Vec::new(),
+                bridge_statuses: Vec::new(),
+                checksum: None,
+                certified_dropped: Vec::new(),
+                checksum_basis: basis,
+            }),
+        };
+        let invalid = [
+            crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(2), 0)],
+            },
+            crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(2), 1), (Frame::new(2), 1)],
+            },
+            crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(3), 1), (Frame::new(2), 1)],
+            },
+            crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::new(4),
+                events: vec![(Frame::new(4), 1)],
+            },
+        ];
+        for basis in invalid {
+            let bytes = encode(&message(basis)).unwrap();
+            assert!(
+                decode_message(&bytes).is_err(),
+                "non-canonical checksum basis must reject at decode"
+            );
+        }
+    }
+
+    #[test]
+    fn state_snapshot_checksum_basis_event_cap_is_exact() {
+        let events = |count: usize| {
+            (0..count)
+                .map(|index| (Frame::new(i32::try_from(index).expect("fits")), 1))
+                .collect::<Vec<_>>()
+        };
+        let snapshot = |events| StateSnapshot {
+            frame: Frame::new(10),
+            num_players: 2,
+            state_bytes: Vec::new(),
+            bridge_inputs: Vec::new(),
+            bridge_statuses: Vec::new(),
+            checksum: None,
+            certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events,
+            },
+        };
+
+        for count in [
+            crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS,
+            crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS + 1,
+        ] {
+            let message = Message {
+                header: MessageHeader::new(0xABCD),
+                body: MessageBody::StateSnapshot(snapshot(events(count))),
+            };
+            let bytes = encode(&message).unwrap();
+            let result = decode_message(&bytes);
+            if count == crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS {
+                assert_eq!(result, Ok((message, bytes.len())));
+            } else {
+                let error = result.expect_err("over-cap basis must reject");
+                assert!(
+                    error.to_string().contains("above the"),
+                    "over-cap rejection names the event cap: {error}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn decode_message_roundtrips_state_snapshot_without_checksum() {
         roundtrip(Message {
             header: MessageHeader::new(0xABCD),

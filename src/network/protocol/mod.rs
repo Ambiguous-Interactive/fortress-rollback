@@ -6880,7 +6880,7 @@ mod tests {
             let report = ChecksumReport {
                 frame: Frame::new(frame),
                 checksum: frame as u128,
-                basis_token: 0,
+                basis_token: frame as u64,
             };
             protocol.on_checksum_report(&report);
         }
@@ -6893,6 +6893,82 @@ mod tests {
         assert!(protocol.pending_checksums.contains_key(&max_frame));
         // Old frames should be gone
         assert!(!protocol.pending_checksums.contains_key(&Frame::new(0)));
+        assert_eq!(
+            protocol
+                .pending_checksum_basis_tokens
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            protocol
+                .pending_checksums
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            "the basis-token map must prune to exactly the same frames"
+        );
+        assert_eq!(
+            protocol.pending_checksum_basis_token(max_frame),
+            max_frame.as_i32() as u64
+        );
+    }
+
+    #[test]
+    fn checksum_history_retention_drops_everything_below_the_window() {
+        let protocol_config = ProtocolConfig {
+            max_checksum_history: 2,
+            ..ProtocolConfig::default()
+        };
+        let mut protocol: UdpProtocol<TestConfig> = UdpProtocol::new(
+            vec![PlayerHandle::new(0)],
+            test_addr(),
+            2,
+            1,
+            8,
+            Duration::from_secs(5),
+            Duration::from_secs(3),
+            60,
+            DesyncDetection::On { interval: 100 },
+            SyncConfig::default(),
+            protocol_config,
+            TimeSyncConfig::default(),
+        )
+        .expect("Failed to create test protocol");
+
+        for frame in [0_i32, 50] {
+            protocol.on_checksum_report(&ChecksumReport {
+                frame: Frame::new(frame),
+                checksum: frame as u128,
+                basis_token: frame as u64,
+            });
+        }
+        assert_eq!(protocol.pending_checksums.len(), 2);
+
+        // A far-ahead report at the cap must retain only the configured window
+        // around frame 500, not merely pop one lowest entry.
+        protocol.on_checksum_report(&ChecksumReport {
+            frame: Frame::new(500),
+            checksum: 500,
+            basis_token: 500,
+        });
+
+        assert_eq!(
+            protocol
+                .pending_checksums
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![Frame::new(500)],
+            "entries below frame 500 - 100 must be dropped before insertion"
+        );
+        assert_eq!(
+            protocol
+                .pending_checksum_basis_tokens
+                .keys()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![Frame::new(500)],
+            "the basis-token map must drop the same out-of-window entries"
+        );
     }
 
     #[test]
@@ -6926,7 +7002,7 @@ mod tests {
                     protocol.on_checksum_report(&ChecksumReport {
                         frame: Frame::new(1_000_000 - offset),
                         checksum: offset as u128,
-                        basis_token: 0,
+                        basis_token: offset as u64,
                     });
                 }
 
@@ -6941,6 +7017,16 @@ mod tests {
                         .pending_checksums
                         .contains_key(&Frame::new(1_000_000)),
                     "the highest reported frame should survive the count bound"
+                );
+                assert_eq!(
+                    protocol.pending_checksum_basis_tokens.len(),
+                    max_history,
+                    "the basis-token map must saturate with the checksum map"
+                );
+                assert_eq!(
+                    protocol.pending_checksum_basis_token(Frame::new(1_000_000)),
+                    0,
+                    "the highest frame's basis token must survive with its checksum"
                 );
             }
         }

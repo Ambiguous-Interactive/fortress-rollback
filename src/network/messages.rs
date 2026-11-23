@@ -896,6 +896,24 @@ mod checksum_basis_tests {
         }
         .is_valid());
         assert!(
+            ChecksumBasis {
+                base: 0,
+                floor: Frame::new(0),
+                events: vec![(Frame::new(1), 1)],
+            }
+            .is_valid(),
+            "frame zero is a valid fold floor"
+        );
+        assert!(
+            !ChecksumBasis {
+                base: 0,
+                floor: Frame::new(-2),
+                events: Vec::new(),
+            }
+            .is_valid(),
+            "a negative non-null fold floor is invalid"
+        );
+        assert!(
             !ChecksumBasis {
                 floor: Frame::new(2),
                 events: vec![(Frame::new(2), 1)],
@@ -919,6 +937,14 @@ mod checksum_basis_tests {
             }
             .is_valid(),
             "zero-count events are not canonical"
+        );
+        assert!(
+            !ChecksumBasis {
+                events: vec![(Frame::new(3), 1), (Frame::new(3), 1)],
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "duplicate floors must be consolidated before the wire"
         );
         assert!(
             !ChecksumBasis {
