@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -82,6 +83,33 @@ def test_start_replaces_an_expired_budget(tmp_path: Path) -> None:
 
     assert state["session_id"] == "session-2"
     assert state["expires_at"] == "2026-11-23T18:01:00Z"
+
+
+def test_concurrent_starts_create_one_budget(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    barrier = threading.Barrier(2)
+    results: list[tuple[str, object]] = []
+
+    def worker(session_id: str) -> None:
+        barrier.wait()
+        try:
+            results.append(
+                ("ok", session_budget.start(session_id, 180, now=START, path=path))
+            )
+        except session_budget.BudgetError as exc:
+            results.append(("error", str(exc)))
+
+    threads = [
+        threading.Thread(target=worker, args=(f"session-{index}",))
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len([result for result, _ in results if result == "ok"]) == 1
+    assert len([result for result, _ in results if result == "error"]) == 1
 
 
 def test_check_reports_remaining_minutes(tmp_path: Path) -> None:

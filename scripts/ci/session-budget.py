@@ -7,6 +7,8 @@ import argparse
 import json
 import os
 import sys
+import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -50,13 +52,41 @@ def _parse_time(value: object, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _serialize(state: dict[str, Any]) -> str:
+    return json.dumps(state, indent=2, sort_keys=True) + "\n"
+
+
 def _write_state(state: dict[str, Any], path: Path) -> None:
+    """Replace the state through a unique temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    handle, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
-    os.replace(temporary, path)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as temporary:
+            temporary.write(_serialize(state))
+        os.replace(temporary_name, path)
+    except Exception:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
+    """Create a new state file only when no other writer won the race."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as created:
+            created.write(_serialize(state))
+    except Exception:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def start(
@@ -74,9 +104,10 @@ def start(
             f"minutes must be between {MIN_MINUTES} and {MAX_MINUTES}: {minutes}"
         )
     started = (now or utc_now()).astimezone(timezone.utc)
+    session_key = session_id.strip()
     if path.exists():
         existing = load(path)
-        if existing["session_id"] == session_id.strip():
+        if existing["session_id"] == session_key:
             return existing
         existing_expires = _parse_time(existing["expires_at"], "expires_at")
         if existing_expires > started:
@@ -84,15 +115,38 @@ def start(
                 f"session {existing['session_id']} already has an active budget "
                 f"until {existing['expires_at']}"
             )
+        state = _new_state(session_key, started, minutes)
+        _write_state(state, path)
+        return state
+
+    state = _new_state(session_key, started, minutes)
+    for _ in range(5):
+        try:
+            _create_state_exclusive(state, path)
+            return state
+        except FileExistsError:
+            time.sleep(0.02)
+            try:
+                existing = load(path)
+            except BudgetError:
+                continue
+            if existing["session_id"] == session_key:
+                return existing
+            raise BudgetError(
+                f"session {existing['session_id']} already has an active budget "
+                f"until {existing['expires_at']}"
+            ) from None
+    raise BudgetError(f"could not create a session budget at {path}")
+
+
+def _new_state(session_id: str, started: datetime, minutes: int) -> dict[str, Any]:
     expires = started + timedelta(minutes=minutes)
-    state = {
-        "session_id": session_id.strip(),
+    return {
+        "session_id": session_id,
         "started_at": _format_time(started),
         "expires_at": _format_time(expires),
         "minutes": minutes,
     }
-    _write_state(state, path)
-    return state
 
 
 def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:

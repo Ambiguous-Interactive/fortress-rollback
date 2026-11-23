@@ -16,6 +16,7 @@ export default Plugin.define({
     const timers = new Map()
     const armed = new Set()
     const lastLevel = new Map()
+    let toolGuardAvailable = false
 
     const clearTimer = (sessionID) => {
       const timer = timers.get(sessionID)
@@ -69,12 +70,24 @@ export default Plugin.define({
       registrations.push(
         await ctx.session.hook("prompt", async (event) => {
           if (typeof event.sessionID !== "string") return
+          if (!toolGuardAvailable) {
+            throw new Error(
+              "session-budget tool guard is unavailable; refusing to start an unguarded session",
+            )
+          }
           await startSession(event.sessionID)
         }),
       )
       registrations.push(
         await ctx.session.hook("context", async (event) => {
           if (typeof event.sessionID !== "string") return
+          if (!toolGuardAvailable) {
+            event.system.push({
+              type: "text",
+              text: "SESSION BUDGET: the tool guard is unavailable; a new session cannot start until it is restored.",
+            })
+            return
+          }
           const ready = await startSession(event.sessionID)
           if (!ready) {
             event.system.push({
@@ -114,8 +127,9 @@ export default Plugin.define({
           )
         }),
       )
+      toolGuardAvailable = true
     } catch (error) {
-      console.error("[session-budget] tool guard unavailable:", error)
+      console.error("[session-budget] tool guard unavailable; prompts will be refused:", error)
     }
 
     return async () => {
