@@ -74,6 +74,16 @@ def start(
             f"minutes must be between {MIN_MINUTES} and {MAX_MINUTES}: {minutes}"
         )
     started = (now or utc_now()).astimezone(timezone.utc)
+    if path.exists():
+        existing = load(path)
+        if existing["session_id"] == session_id.strip():
+            return existing
+        existing_expires = _parse_time(existing["expires_at"], "expires_at")
+        if existing_expires > started:
+            raise BudgetError(
+                f"session {existing['session_id']} already has an active budget "
+                f"until {existing['expires_at']}"
+            )
     expires = started + timedelta(minutes=minutes)
     state = {
         "session_id": session_id.strip(),
@@ -89,7 +99,7 @@ def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
     """Load and validate the stored budget."""
     try:
         raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise BudgetError(f"cannot read session budget at {path}: {exc}") from exc
     try:
         state = json.loads(raw)

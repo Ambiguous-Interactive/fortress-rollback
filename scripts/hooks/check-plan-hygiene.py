@@ -15,7 +15,7 @@ MAX_CLAIM_SECONDS = 3 * 60 * 60
 ALLOWED_SECTIONS = frozenset({"future", "in progress"})
 COMPLETED_TASK = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+\[[xX]\]")
 HEADING = re.compile(r"^(#{2,6})\s+(.+?)\s*$")
-LIST_ITEM = re.compile(r"^[-*+]\s+")
+LIST_ITEM = re.compile(r"^( {0,3})(?:[-*+]|\d+[.)])\s+")
 TIMESTAMP = r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?"
 CLAIM = re.compile(rf"\bClaimed:\s*(\S+)\s+({TIMESTAMP})")
 EXPIRES = re.compile(rf"\bExpires:\s*({TIMESTAMP})")
@@ -44,14 +44,24 @@ def _parse_timestamp(value: str) -> datetime | None:
 def _in_progress_items(lines: list[str]) -> list[tuple[int, str]]:
     """Return top-level list items in the `In progress` section."""
     in_progress = False
+    last_indent: int | None = None
     items: list[tuple[int, str]] = []
     for line_number, line in enumerate(lines, start=1):
         heading = HEADING.match(line)
         if heading is not None and len(heading.group(1)) == 2:
             in_progress = heading.group(2).strip().casefold() == "in progress"
+            last_indent = None
             continue
-        if in_progress and LIST_ITEM.match(line):
-            items.append((line_number, line))
+        if not in_progress:
+            continue
+        match = LIST_ITEM.match(line)
+        if match is None:
+            continue
+        indent = len(match.group(1))
+        if last_indent is not None and indent > last_indent:
+            continue
+        items.append((line_number, line))
+        last_indent = indent
     return items
 
 

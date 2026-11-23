@@ -1,7 +1,11 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 
-import { createBudgetTracker } from "./session-budget-core.mjs"
+import {
+  createBudgetTracker,
+  isReadOnlyTool,
+  normalizeMinutes,
+} from "./session-budget-core.mjs"
 
 function trackerAt(now) {
   return createBudgetTracker({ now: () => now.value, minutes: 180 })
@@ -76,4 +80,31 @@ test("forget removes the clock", () => {
   budget.forget("session-1")
   assert.equal(budget.check("session-1").started, false)
   assert.equal(budget.remainingMs("session-1"), undefined)
+})
+
+test("clamps configured minutes to the 180-minute maximum", () => {
+  assert.equal(normalizeMinutes(240), 180)
+  assert.equal(normalizeMinutes(30), 30)
+  assert.equal(normalizeMinutes(Number.NaN), 180)
+  assert.equal(normalizeMinutes("not-a-number"), 180)
+})
+
+test("allows only explicit read-only tools after the budget", () => {
+  for (const tool of ["read", "grep", "glob", "list", "webfetch", "websearch", "skill"]) {
+    assert.equal(isReadOnlyTool(tool), true, tool)
+  }
+  for (const tool of ["bash", "shell", "edit", "write", "patch", "task", "subagent", "write_file", "custom"]) {
+    assert.equal(isReadOnlyTool(tool), false, tool)
+  }
+})
+
+test("restores a persisted original start without moving the deadline", () => {
+  const now = { value: 170 * 60 * 1000 }
+  const budget = createBudgetTracker({ now: () => now.value, minutes: 180 })
+  budget.restore("session-1", 0)
+  assert.equal(budget.startedAt("session-1"), 0)
+  assert.equal(budget.remainingMs("session-1"), 10 * 60 * 1000)
+  assert.equal(budget.check("session-1").level, 165)
+  budget.restore("session-1", 99 * 60 * 1000)
+  assert.equal(budget.startedAt("session-1"), 0)
 })

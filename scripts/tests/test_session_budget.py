@@ -36,6 +36,54 @@ def test_start_writes_state_and_expiry(tmp_path: Path) -> None:
     assert session_budget.load(path) == state
 
 
+def test_repeated_start_preserves_the_deadline(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    first = session_budget.start("session-1", 180, now=START, path=path)
+
+    second = session_budget.start(
+        "session-1", 180, now=START + timedelta(minutes=60), path=path
+    )
+
+    assert second == first
+    assert second["expires_at"] == "2026-11-23T15:00:00Z"
+
+
+def test_start_does_not_reset_an_expired_same_session(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    first = session_budget.start("session-1", 180, now=START, path=path)
+
+    second = session_budget.start(
+        "session-1", 180, now=START + timedelta(minutes=200), path=path
+    )
+
+    assert second == first
+    assert second["expires_at"] == "2026-11-23T15:00:00Z"
+
+
+def test_start_rejects_another_active_session(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    with pytest.raises(
+        session_budget.BudgetError, match="already has an active budget"
+    ):
+        session_budget.start(
+            "session-2", 180, now=START + timedelta(minutes=5), path=path
+        )
+
+
+def test_start_replaces_an_expired_budget(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state = session_budget.start(
+        "session-2", 180, now=START + timedelta(minutes=181), path=path
+    )
+
+    assert state["session_id"] == "session-2"
+    assert state["expires_at"] == "2026-11-23T18:01:00Z"
+
+
 def test_check_reports_remaining_minutes(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)
@@ -91,6 +139,14 @@ def test_check_malformed_budget_fails(tmp_path: Path, payload: str) -> None:
     path.write_text(payload, encoding="utf-8")
 
     with pytest.raises(session_budget.BudgetError):
+        session_budget.check(path=path)
+
+
+def test_check_invalid_utf8_fails_closed(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    path.write_bytes(b"\xff\xfe\x00")
+
+    with pytest.raises(session_budget.BudgetError, match="cannot read"):
         session_budget.check(path=path)
 
 

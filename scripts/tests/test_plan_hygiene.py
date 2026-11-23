@@ -49,6 +49,44 @@ def test_no_in_progress_item_passes(tmp_path: Path) -> None:
     assert check_plan(plan) == []
 
 
+def test_ordered_in_progress_items_are_checked(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n1. [ ] First.\n2. [ ] Second.\n",
+        encoding="utf-8",
+    )
+
+    issues = check_plan(plan)
+
+    assert any("In progress has 2 items" in issue for issue in issues)
+    assert any("In progress item needs" in issue for issue in issues)
+
+
+def test_nested_child_items_are_ignored(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n"
+        "- [ ] Fix. Claimed: session-1 2026-11-23T12:00Z. "
+        "Expires: 2026-11-23T15:00Z. Exit: x.\n"
+        "  - [ ] Child note without claim fields.\n",
+        encoding="utf-8",
+    )
+
+    assert check_plan(plan) == []
+
+
+def test_indented_top_level_item_is_checked(tmp_path: Path) -> None:
+    plan = tmp_path / "PLAN.md"
+    plan.write_text(
+        "# Project Plan\n\n## In progress\n\n"
+        "  - [ ] Fix. Claimed: session-1 2026-11-23T12:00Z. "
+        "Expires: 2026-11-23T15:00Z. Exit: x.\n",
+        encoding="utf-8",
+    )
+
+    assert check_plan(plan) == []
+
+
 def test_multiple_in_progress_items_fail(tmp_path: Path) -> None:
     plan = tmp_path / "PLAN.md"
     plan.write_text(

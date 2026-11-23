@@ -35,12 +35,14 @@ Cutoffs:
 
 - Do not open a PR after T+150.
 - Do not start a merge attempt after T+165.
-- If a cutoff is missed, push the work-in-progress branch, write the handoff, and stop. The next
-  session finishes the PR before starting new work.
+- If a cutoff is missed, commit session-owned changes as a WIP commit, push the branch, write the
+  handoff, and stop. Preserve unrelated user changes. The next session finishes the PR before
+  starting new work.
 
-If the OpenCode session-budget plugin is active, it emits the clock and interrupts at 180 minutes. In
-other harnesses, run `scripts/ci/session-budget.py start`, `check`, and `close` at the same
-boundaries. Do not rely on writing files after 180 minutes; write the handoff by 165.
+If the OpenCode session-budget plugin is active, it emits the clock and interrupts at 180 minutes.
+After the limit it allows only an explicit read-only tool allowlist; unknown and custom tools are
+blocked. In other harnesses, run `scripts/ci/session-budget.py start`, `check`, and `close` at the
+same boundaries. Do not rely on writing files after 180 minutes; write the handoff by 165.
 
 ## Step 1: Sync and triage
 
@@ -175,7 +177,8 @@ blocker.
 
 - At session start, check the latest `main` runs. A red `main` caused by a recent merge is the
   session's item.
-- After merge, do not poll `main`. Record "main CI pending" in the progress log and end the session.
+- After merge, do not poll `main`. Record "main CI pending" in the progress log. End the session
+  unless the second-PR exception applies and is used.
 - The next session checks `main` first. If it is red, it becomes that session's only item.
 - A cancelled job is not green. Classify it as infrastructure, timeout, or a real failure before
   calling it a flake.
@@ -221,8 +224,11 @@ takeover, heal, split view, delayed and duplicated control messages.
 | Performance or allocation | Native benchmark and wasm size/benchmark; allocation-contract check |
 | Docs or CI only | Owning checks: `actionlint`, links, markdownlint |
 
-FMA is bit-exact on FMA hardware but can degrade to unfused `a*b + c` elsewhere; `sqrt` is exact.
-Record which lanes ran; do not claim a lane that was skipped.
+Rust specifies `mul_add` as a single-rounded fused operation; a software fallback still implements
+the fused result. Do not assume a separate `a*b + c` expression produces the same bits, because
+compilers may contract it, and do not assume transcendentals are shared across targets. `sqrt` is
+correctly rounded, not mathematically exact. Keep the repository's `mul_add` restriction until each
+target has pinned evidence. Record which lanes ran; do not claim a lane that was skipped.
 
 ## Step 7: Closeout
 

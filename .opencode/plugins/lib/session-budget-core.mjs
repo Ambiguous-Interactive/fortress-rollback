@@ -1,4 +1,14 @@
 const DEFAULT_MINUTES = 180
+const MAX_MINUTES = 180
+const READ_ONLY_TOOLS = new Set([
+  "read",
+  "grep",
+  "glob",
+  "list",
+  "webfetch",
+  "websearch",
+  "skill",
+])
 const WARNINGS = [
   { level: 120, remainingMinutes: 60, action: "stop starting new work and finish the current step" },
   { level: 150, remainingMinutes: 30, action: "run full validation and open or update the PR" },
@@ -6,23 +16,44 @@ const WARNINGS = [
   { level: 180, remainingMinutes: 0, action: "stop; the session budget is exhausted" },
 ]
 
+export function isReadOnlyTool(tool) {
+  return typeof tool === "string" && READ_ONLY_TOOLS.has(tool)
+}
+
+export function normalizeMinutes(value) {
+  const requested = Number(value)
+  if (!Number.isFinite(requested)) return DEFAULT_MINUTES
+  return Math.min(MAX_MINUTES, Math.max(1, requested))
+}
+
 export function createBudgetTracker({
   now = Date.now,
   minutes = DEFAULT_MINUTES,
   warnings = WARNINGS,
 } = {}) {
-  const budgetMs = Math.max(1, Number(minutes) || DEFAULT_MINUTES) * 60 * 1000
+  const budgetMs = normalizeMinutes(minutes) * 60 * 1000
   const starts = new Map()
 
-  function start(sessionID) {
+  function start(sessionID, at = now()) {
+    if (typeof sessionID !== "string" || sessionID.length === 0) return undefined
+    if (!starts.has(sessionID)) starts.set(sessionID, at)
+    return starts.get(sessionID)
+  }
+
+  function restore(sessionID, startedAt) {
     if (typeof sessionID !== "string" || sessionID.length === 0) return
-    if (!starts.has(sessionID)) starts.set(sessionID, now())
+    if (!Number.isFinite(startedAt)) return
+    if (!starts.has(sessionID)) starts.set(sessionID, startedAt)
+  }
+
+  function startedAt(sessionID) {
+    return starts.get(sessionID)
   }
 
   function remainingMs(sessionID) {
-    const startedAt = starts.get(sessionID)
-    if (startedAt === undefined) return undefined
-    return budgetMs - (now() - startedAt)
+    const started = starts.get(sessionID)
+    if (started === undefined) return undefined
+    return budgetMs - (now() - started)
   }
 
   function check(sessionID) {
@@ -48,7 +79,7 @@ export function createBudgetTracker({
     starts.delete(sessionID)
   }
 
-  return { start, remainingMs, check, forget, budgetMs }
+  return { start, restore, startedAt, remainingMs, check, forget, budgetMs }
 }
 
-export { DEFAULT_MINUTES, WARNINGS }
+export { DEFAULT_MINUTES, MAX_MINUTES, READ_ONLY_TOOLS, WARNINGS }
