@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795401407026,
+  "lastUpdate": 1795410158431,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "0c6a97e9facf88c442c386da9dfba11df7f64778",
-          "message": "fix: close CAP drop-certificate liveness and rollback-floor/checkpoint defects (#442)\n\n## Summary\n\nDeep correctness/CAP/cross-platform sweep. Fixes a rollback-floor\nliveness defect, two\ncheckpoint/confirmed-input trust defects, two measured checksum/hot-path\nperformance costs, and the browser-wasm `tokio` build break. Adds the\nmissing permanent\nstrict-majority CAP row and the missing clock-skew + healed-partition\nrow, executes checked-in\ncorpus replays on the 32-bit/ARM lanes, and removes a vacuous hot-join\ncorpus guard.\n\n## Production fixes\n\n### 1. In-window rollback below the retained input floor wedged\n`advance_frame`\n\nThe previous floor raise ran only when the target was at/below the\nprediction-window\nfloor. A gossip-lowered target strictly inside the window but below the\ndiscard edge\n(`confirmed - 1`) still loaded a saved state and then failed\n`SynchronizedInputsFailed`\nforever. The target is now raised to the oldest **servable** frame. The\nnew\n`oldest_servable_input_frame` folds retained-ring starts, disconnected\nslots' frozen-value\nwindows, and hot-join reactivation floors, so legitimate sub-activation\nrollbacks keep\ntheir exact load target (both N-peer sub-F hot-join tests stay green).\n\n```text\npre-fix:  Err(SynchronizedInputsFailed { frame: Frame(5) })\npost-fix: loads Frame(7), current_frame stays 8\n```\n\n### 2. Cleared `GameStateCell` was treated as a loadable checkpoint\n\n`save(frame, None, ..)` is a documented clear, but `load_frame`,\n`saved_state_by_frame`,\nand the sparse earlier-checkpoint search tested only the frame stamp.\nAll three now\nrequire stored data; a cleared cell returns `MissingState` instead of\nsilently\nre-simulating from the caller's current state.\n\n### 3. `confirmed_input(Frame::NULL)` fabricated a blank confirmed input\n\n`-1 as usize` wrapped to the last ring slot and could match a blank\n`Frame::NULL` entry.\nNegative frames now return `NoConfirmedInput` before indexing. The\npreviously vacuous\npublic null-frame test now asserts the error.\n\n### 4. Checksum cost\n\n`compute_checksum` / `compute_checksum_fletcher16` now serialize once\nthrough\n`codec::encode_single_pass` instead of a counting pass followed by an\nencoding pass.\n`fletcher16` accumulates in bounded 4096-byte `u32` blocks and reduces\nmod 255 once per\nblock; a property test proves bit identity with the per-byte form across\nthe boundary.\n\n### 5. Hot-join feature tax on plain sessions\n\n`poll_hot_join` cleared the poll-time confirmed-frame cache\nunconditionally, forcing two\nfull mesh folds per frame for every session built with `--features\nhot-join`, even when it\nnever serves or joins. It now clears only when hot-join state exists.\n\n### 6. Browser-wasm `tokio` build\n\n`mio`'s net backend rejects `wasm32-unknown-unknown`, but the `tokio`\nfeature was\nunscoped. The dependency is now target-scoped; the feature is a\ndocumented no-op on\nbrowser wasm and keeps `TokioUdpSocket` on native/WASI/Emscripten. CI\npins the no-op build.\n\n## New CAP / deterministic coverage\n\n- `skew_gated_partition_healed_before_timeout_keeps_one_history` — N=4\n`2/2` partition\nhealed below the disconnect timeout under `FrameModel::SkewGated60Hz`\nwith independent\nper-peer clock rates; all peers Running and within the prediction window\nafterward.\n- Cross-arch CI now executes the checked-in mixed-transport and\nextended-ring corpus\n  replays on i686 and aarch64, not only the pinned smoke trace digest.\n- The hot-join corpus test no longer passes over an empty directory: it\nfalls back to the\ncanonical generated N-peer hot-join schedule and still picks up promoted\nartifacts.\n- Dependency bump: `clap` 4.6.7 → 4.6.8, `clap_lex` 1.1.1 → 1.1.2 (dev\ntooling).\n\n## Validation\n\n- `cargo nextest run --workspace --features tokio,json`: 3238 passed, 75\nskipped.\n- `cargo nextest run --workspace --features tokio,json,hot-join`: 3529\npassed, 76 skipped.\n- `cargo clippy --workspace --all-targets --features tokio,json,hot-join\n-- -D warnings`: clean.\n- i686 cross-arch corpus-replay selection: 12 passed (including mixed\ntransport + extended ring).\n- `cargo check --target wasm32-unknown-unknown --no-default-features\n--features tokio`: pass.\n- wasm union\n(`hot-join,json,sync-send,paranoid,trace-validation,violation-census`):\npass.\n- `cargo test -p wasm-browser-smoke --target wasm32-unknown-unknown\n--lib --no-run`: pass.\n- `RUSTFLAGS=\"--cap-lints allow\" cargo kani --only-codegen`: pass.\n- `cd loom-tests && RUSTFLAGS=\"--cfg loom\" cargo test --release`: 9\npassed.\n- `cargo doc --no-deps --features tokio,json,hot-join`: clean.\n- `python3 scripts/ci/agent-preflight.py --full --auto-fix`: all checks\npass.\n- `actionlint`, CI workflow contract tests, changelog hook,\nviolation-site baseline regeneration: pass.\n\n## Follow-ups (not in this PR)\n\n-\n[#445](https://github.com/Ambiguous-Interactive/fortress-rollback/issues/445):\npermanent\nstrict-majority partition with two isolated peers fail-closes the\nmajority; the asymmetric\ntimeout reconciliation needs a protocol-level design and was\ndeliberately reverted from\n  this PR after review.\n-\n[#444](https://github.com/Ambiguous-Interactive/fortress-rollback/issues/444):\ndisconnected\n  relay fresh-floor asymmetry during a poll-only pause.\n-\n[#443](https://github.com/Ambiguous-Interactive/fortress-rollback/issues/443):\nN≥8 warmed\n  `advance_frame` benchmark/allocation row.",
-          "timestamp": "2026-11-17T02:56:37Z",
-          "tree_id": "e0e306277f09a129bcbdf314b6d400f5572d93d5",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/0c6a97e9facf88c442c386da9dfba11df7f64778"
-        },
-        "date": 1794884906545,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 40360,
-            "range": "± 1148",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 25942,
-            "range": "± 712",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1091,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1244,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 2772,
-            "range": "± 170",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 3019,
             "range": "± 180",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de5feee8651a7366befe5b7683305a1670af7407",
+          "message": "fix: bound player-domain wire and replay counts (#545)\n\n## Description\n\nThe same malformed bytes currently decode differently on 32-bit and\n64-bit targets:\n\n- Hot-join `JoinRequest.player_handle`, `ReactivateSlot`/`Ack`,\n`JoinCommitted`/`Aborted` handles, and `StateSnapshot::num_players` read\na `u64` and convert to `usize` before any domain check. `u64::MAX` is\naccepted on 64-bit and rejected on 32-bit.\n- Replay header and metadata `num_players` have the same pattern.\n\nThe session domain is already `u16` (`SessionConfigBlock::num_players`,\nendpoint narrowing), so no valid handle, snapshot player count, or\nreplay player count exceeds `u16::MAX`. This reads the wire `u64` first,\nrejects values above the `u16` domain with a target-independent error,\nthen converts to `usize`.\n\nThe replay byte-bound and zero-sized-input tests are preserved with\nvalid-width counts: a `u16::MAX` frame is still larger than the\nremaining bytes, and multiple valid-width frames cross the cumulative\nzero-sized-input limit.\n\nNo wire format, protocol version, or valid input behavior changes.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (no new production\n`unwrap`/`expect`/`panic!`/`todo!`)\n- [x] I have added tests that prove the fix is effective\n- [x] I have run `cargo fmt --all -- --check` and clippy with no\nwarnings\n- [x] I have run `cargo nextest run --workspace --features tokio,json\n--no-fail-fast` and all tests pass\n\n### If Applicable\n\n- [ ] I have updated the documentation accordingly (not applicable)\n- [x] I have added an entry to `CHANGELOG.md`\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n| Check | Result |\n| --- | --- |\n| Full workspace nextest (`--workspace --features tokio,json`) | **3,771\npassed, 77 skipped, 0 failed** |\n| `cargo test --target i686-unknown-linux-gnu --lib --features\ntokio,json,hot-join` | **2,351 passed** |\n| `cargo test --target i686 ... codec/replay bound tests` | pass |\n| `cargo fmt --all -- --check` | pass |\n| clippy (workspace, all targets, tokio/json/hot-join) | clean |\n| `scripts/ci/agent-preflight.py --full --auto-fix` | all checks pass |\n\nNew regressions use the same hard-coded `u64::MAX` bytes on both\ntargets:\n- all five hot-join handle variants reject with the `u16 player domain`\nmessage;\n- `StateSnapshot::num_players` rejects the same bytes;\n- replay `num_players` rejects the same bytes.\n\nExisting replay byte-bound and zero-sized-input protections still pass\nwith valid `u16`-width counts.\n\n## Risks and rollback\n\n- Rejects only values that could never belong to a constructible session\nor valid replay. Valid wire bytes and replays are unchanged.\n- Roll back by reverting this PR; malformed-input acceptance becomes\npointer-width dependent again.\n\n## Related Issues\n\n- Determinism/cross-platform audit follow-up. Issues filed for the CAP\nand retransmission findings: #542, #543, #544.",
+          "timestamp": "2026-11-23T04:50:10Z",
+          "tree_id": "0b397eb63193f1e9eb6991f4ceebcff49f906295",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/de5feee8651a7366befe5b7683305a1670af7407"
+        },
+        "date": 1795410157717,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 38133,
+            "range": "± 905",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 23669,
+            "range": "± 620",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1091,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1244,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 2765,
+            "range": "± 161",
             "unit": "ns/iter"
           }
         ]
