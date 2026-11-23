@@ -28,8 +28,11 @@ def utc_now() -> datetime:
 
 
 def _format_time(value: datetime) -> str:
-    return value.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace(
-        "+00:00", "Z"
+    return (
+        value.astimezone(timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
     )
 
 
@@ -39,7 +42,9 @@ def _parse_time(value: object, field: str) -> datetime:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as exc:
-        raise BudgetError(f"{field} is not a valid ISO-8601 timestamp: {value}") from exc
+        raise BudgetError(
+            f"{field} is not a valid ISO-8601 timestamp: {value}"
+        ) from exc
     if parsed.tzinfo is None:
         raise BudgetError(f"{field} must include a UTC offset")
     return parsed.astimezone(timezone.utc)

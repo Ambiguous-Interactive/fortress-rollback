@@ -55,9 +55,7 @@ def _in_progress_items(lines: list[str]) -> list[tuple[int, str]]:
     return items
 
 
-def _check_claim(
-    path: str, line_number: int, line: str
-) -> list[str]:
+def _check_claim(path: str, line_number: int, line: str) -> list[str]:
     """Validate the claim fields on one in-progress item."""
     issues: list[str] = []
     claim = CLAIM.search(line)

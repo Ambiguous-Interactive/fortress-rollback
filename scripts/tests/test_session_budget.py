@@ -146,9 +146,12 @@ def test_cli_check_reports_expired(
 def test_cli_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     path = tmp_path / "budget.json"
 
-    assert session_budget.main(
-        ["start", "--id", "session-1", "--minutes", "180", "--state", str(path)]
-    ) == 0
+    assert (
+        session_budget.main(
+            ["start", "--id", "session-1", "--minutes", "180", "--state", str(path)]
+        )
+        == 0
+    )
     assert "session-1" in capsys.readouterr().out
     assert session_budget.main(["check", "--state", str(path)]) == 0
     assert "remaining" in capsys.readouterr().out

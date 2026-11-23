@@ -65,9 +65,7 @@ def test_multiple_in_progress_items_fail(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("missing", ["Claimed:", "Expires:", "Exit:"])
-def test_in_progress_item_requires_claim_fields(
-    tmp_path: Path, missing: str
-) -> None:
+def test_in_progress_item_requires_claim_fields(tmp_path: Path, missing: str) -> None:
     fields = {
         "Claimed:": "Claimed: session-1 2026-11-23T12:00Z.",
         "Expires:": "Expires: 2026-11-23T15:00Z.",
@@ -126,7 +124,9 @@ def test_claim_timestamp_requires_offset(tmp_path: Path) -> None:
 
     issues = check_plan(plan)
 
-    assert any("Claimed timestamp must include a UTC offset" in issue for issue in issues)
+    assert any(
+        "Claimed timestamp must include a UTC offset" in issue for issue in issues
+    )
 
 
 def test_line_budget_rejects_bloated_plan(tmp_path: Path) -> None:
