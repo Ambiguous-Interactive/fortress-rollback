@@ -324,7 +324,7 @@ jobs:
             os: windows-latest
             seeds: "0..1"
             test_filter: "input_queue:: error:: tests::"
-            skip_filter: "--skip property_tests --skip concurrent"
+            skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer::"
 
           # Windows Job 4: Remaining modules (~345 tests in the native list).
           # The skips above are repeated here so each remaining test runs in

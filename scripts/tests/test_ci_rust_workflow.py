@@ -379,15 +379,22 @@ def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
         assert lane["os"] == "windows-latest"
         assert lane["seeds"] == "0..1"
 
-    for module in ("input_queue::", "error::", "tests::"):
-        assert module in lane_a["test_filter"]
+    assert lane_a["test_filter"].split() == ["input_queue::", "error::", "tests::"]
     assert lane_b["test_filter"] == ""
-    for module in ("input_queue::", "error::", "tests::"):
-        assert f"--skip {module}" in lane_b["skip_filter"], (
-            "the second misc shard must skip every module owned by the first"
-        )
-    for skipped in ("property_tests", "concurrent", "sessions::", "network::", "sync_layer::"):
-        assert f"--skip {skipped}" in lane_b["skip_filter"]
+
+    def skips(entry: dict) -> set[str]:
+        words = shlex.split(entry["skip_filter"])
+        return {words[index + 1] for index, word in enumerate(words) if word == "--skip"}
+
+    dedicated = {
+        "property_tests",
+        "concurrent",
+        "sessions::",
+        "network::",
+        "sync_layer::",
+    }
+    assert skips(lane_a) == dedicated
+    assert skips(lane_b) == dedicated | {"input_queue::", "error::", "tests::"}
 
 
 def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
