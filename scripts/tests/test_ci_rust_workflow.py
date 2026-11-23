@@ -379,10 +379,10 @@ def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
         assert lane["os"] == "windows-latest"
         assert lane["seeds"] == "0..1"
 
-    assert "input_queue::" in lane_a["test_filter"]
-    assert "time_sync::" in lane_a["test_filter"]
+    for module in ("input_queue::", "error::", "tests::"):
+        assert module in lane_a["test_filter"]
     assert lane_b["test_filter"] == ""
-    for module in ("input_queue::", "time_sync::"):
+    for module in ("input_queue::", "error::", "tests::"):
         assert f"--skip {module}" in lane_b["skip_filter"], (
             "the second misc shard must skip every module owned by the first"
         )

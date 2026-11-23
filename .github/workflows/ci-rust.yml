@@ -317,22 +317,23 @@ jobs:
             test_filter: "network:: sync_layer::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Windows Job 3: Input queue + time sync (~150 tests). Split from the
-          # old combined misc job, which repeatedly hit the 30-minute Windows
-          # Miri timeout. The positive filter keeps this shard bounded.
+          # Windows Job 3: Input queue, error, and misc unit tests (~345 tests
+          # in the native list). Split from the old combined misc job, which
+          # repeatedly hit the 30-minute Windows Miri timeout.
           - name: Windows - misc A
             os: windows-latest
             seeds: "0..1"
-            test_filter: "input_queue:: time_sync::"
+            test_filter: "input_queue:: error:: tests::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Windows Job 4: Everything else. The skips above are repeated here
-          # so each remaining test runs in exactly one misc shard.
+          # Windows Job 4: Remaining modules (~345 tests in the native list).
+          # The skips above are repeated here so each remaining test runs in
+          # exactly one misc shard.
           - name: Windows - misc B
             os: windows-latest
             seeds: "0..1"
             test_filter: ""
-            skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer:: --skip input_queue:: --skip time_sync::"
+            skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer:: --skip input_queue:: --skip error:: --skip tests::"
 
           # ============================================================
           # macOS jobs (1 seed each, 2 jobs total)
