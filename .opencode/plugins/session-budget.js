@@ -19,6 +19,7 @@ export default Plugin.define({
     const registrations = []
     const timers = new Map()
     const armed = new Set()
+    const unpersisted = new Set()
     const lastLevel = new Map()
     let toolGuardAvailable = false
 
@@ -44,8 +45,31 @@ export default Plugin.define({
       timers.set(sessionID, timer)
     }
 
+    const persistStart = async (sessionID) => {
+      const started = budget.startedAt(sessionID)
+      if (started === undefined) return false
+      if (typeof ctx.storage?.set !== "function") {
+        unpersisted.add(sessionID)
+        console.error("[session-budget] durable storage is unavailable")
+        return false
+      }
+      try {
+        await ctx.storage.set(`${STORAGE_PREFIX}${sessionID}`, started)
+        unpersisted.delete(sessionID)
+        return true
+      } catch (error) {
+        unpersisted.add(sessionID)
+        console.error("[session-budget] failed to persist the start:", error)
+        return false
+      }
+    }
+
     const startSession = async (sessionID) => {
       if (budget.startedAt(sessionID) !== undefined) {
+        if (unpersisted.has(sessionID) && !(await persistStart(sessionID))) {
+          arm(sessionID)
+          return false
+        }
         arm(sessionID)
         return true
       }
@@ -60,10 +84,9 @@ export default Plugin.define({
         budget.restore(sessionID, stored)
       } else {
         budget.start(sessionID)
-        try {
-          await ctx.storage?.set(`${STORAGE_PREFIX}${sessionID}`, budget.startedAt(sessionID))
-        } catch (error) {
-          console.error("[session-budget] failed to persist the start:", error)
+        if (!(await persistStart(sessionID))) {
+          arm(sessionID)
+          return false
         }
       }
       arm(sessionID)
@@ -98,7 +121,7 @@ export default Plugin.define({
             removeMutatingTools(event.tools)
             event.system.push({
               type: "text",
-              text: "SESSION BUDGET: the stored clock cannot be read; mutating tools are blocked until it recovers.",
+              text: "SESSION BUDGET: the session clock is unavailable; mutating tools are blocked until it recovers.",
             })
             return
           }
@@ -123,7 +146,7 @@ export default Plugin.define({
           if (!ready) {
             if (isReadOnlyTool(event.tool)) return
             throw new Error(
-              "SESSION BUDGET: the stored clock cannot be read; mutating tools are blocked until it recovers.",
+              "SESSION BUDGET: the session clock is unavailable; mutating tools are blocked until it recovers.",
             )
           }
           const status = budget.check(event.sessionID)
@@ -145,6 +168,7 @@ export default Plugin.define({
       for (const registration of registrations) await registration.dispose()
       registrations.length = 0
       armed.clear()
+      unpersisted.clear()
       lastLevel.clear()
     }
   },
