@@ -639,6 +639,24 @@ fn read_usize(bytes: &[u8], cursor: &mut usize, field: &'static str) -> CodecRes
         .map_err(|_err| decode_message_error(format!("{} length exceeds usize", field)))
 }
 
+/// Reads a player handle or player count.
+///
+/// The session configuration carries `num_players` as a `u16`, so no valid
+/// handle or count exceeds that domain. Bounding here keeps malformed-input
+/// acceptance identical on 32-bit and 64-bit targets instead of making the
+/// same bytes decode on one pointer width and fail on the other.
+#[cfg(feature = "hot-join")]
+fn read_player_domain(bytes: &[u8], cursor: &mut usize, field: &'static str) -> CodecResult<usize> {
+    let value = read_u64(bytes, cursor, field)?;
+    if value > u64::from(u16::MAX) {
+        return Err(decode_message_error(format!(
+            "{} exceeds the u16 player domain",
+            field
+        )));
+    }
+    usize::try_from(value).map_err(|_err| decode_message_error(format!("{} exceeds usize", field)))
+}
+
 fn decode_connection_status(bytes: &[u8], cursor: &mut usize) -> CodecResult<ConnectionStatus> {
     // Field order MUST match the `ConnectionStatus` declaration (serde/bincode
     // serializes struct fields in declaration order): `disconnected`,
@@ -1048,7 +1066,7 @@ fn read_option_u128(
 #[cfg(feature = "hot-join")]
 fn decode_state_snapshot(bytes: &[u8], cursor: &mut usize) -> CodecResult<StateSnapshot> {
     let frame = Frame::new(read_i32(bytes, cursor, "state_snapshot.frame")?);
-    let num_players = read_usize(bytes, cursor, "state_snapshot.num_players")?;
+    let num_players = read_player_domain(bytes, cursor, "state_snapshot.num_players")?;
 
     let state_len = read_usize(bytes, cursor, "state_snapshot.state_bytes.len")?;
     // alloc-bound: `state_len` is a peer-controlled length prefix. Before reserving,
@@ -1750,7 +1768,7 @@ pub fn decode_message(bytes: &[u8]) -> CodecResult<(Message, usize)> {
         9 => MessageBody::FloorReply(decode_floor_reply(bytes, &mut cursor)?),
         #[cfg(feature = "hot-join")]
         10 => MessageBody::JoinRequest(JoinRequest {
-            player_handle: read_usize(bytes, &mut cursor, "join_request.player_handle")?,
+            player_handle: read_player_domain(bytes, &mut cursor, "join_request.player_handle")?,
         }),
         #[cfg(feature = "hot-join")]
         11 => MessageBody::StateSnapshot(decode_state_snapshot(bytes, &mut cursor)?),
@@ -1760,22 +1778,22 @@ pub fn decode_message(bytes: &[u8]) -> CodecResult<(Message, usize)> {
         }),
         #[cfg(feature = "hot-join")]
         13 => MessageBody::ReactivateSlot(ReactivateSlot {
-            handle: read_usize(bytes, &mut cursor, "reactivate_slot.handle")?,
+            handle: read_player_domain(bytes, &mut cursor, "reactivate_slot.handle")?,
             frame: Frame::new(read_i32(bytes, &mut cursor, "reactivate_slot.frame")?),
         }),
         #[cfg(feature = "hot-join")]
         14 => MessageBody::ReactivateSlotAck(ReactivateSlotAck {
-            handle: read_usize(bytes, &mut cursor, "reactivate_slot_ack.handle")?,
+            handle: read_player_domain(bytes, &mut cursor, "reactivate_slot_ack.handle")?,
             frame: Frame::new(read_i32(bytes, &mut cursor, "reactivate_slot_ack.frame")?),
         }),
         #[cfg(feature = "hot-join")]
         15 => MessageBody::JoinCommitted(JoinCommitted {
-            handle: read_usize(bytes, &mut cursor, "join_committed.handle")?,
+            handle: read_player_domain(bytes, &mut cursor, "join_committed.handle")?,
             frame: Frame::new(read_i32(bytes, &mut cursor, "join_committed.frame")?),
         }),
         #[cfg(feature = "hot-join")]
         16 => MessageBody::JoinAborted(JoinAborted {
-            handle: read_usize(bytes, &mut cursor, "join_aborted.handle")?,
+            handle: read_player_domain(bytes, &mut cursor, "join_aborted.handle")?,
             frame: Frame::new(read_i32(bytes, &mut cursor, "join_aborted.frame")?),
         }),
         #[cfg(not(feature = "hot-join"))]
@@ -3972,6 +3990,45 @@ mod hot_join_tests {
                 "non-canonical checksum basis must reject at decode"
             );
         }
+    }
+
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn decode_message_rejects_handles_and_counts_outside_the_u16_domain() {
+        let huge = u64::MAX.to_le_bytes();
+        for variant in [10_u32, 13, 14, 15, 16] {
+            let mut bytes = wire_prefix(1, variant);
+            bytes.extend_from_slice(&huge);
+            if variant != 10 {
+                bytes.extend_from_slice(&0_i32.to_le_bytes());
+            }
+            let error = decode_message(&bytes)
+                .expect_err("an oversized hot-join handle must reject on every target");
+            assert!(
+                error.to_string().contains("u16 player domain"),
+                "variant {variant} rejection: {error}"
+            );
+        }
+
+        // StateSnapshot: header (8) + variant (4) + frame (4), then num_players.
+        let snapshot = Message {
+            header: MessageHeader::new(0xABCD),
+            body: MessageBody::StateSnapshot(StateSnapshot {
+                frame: Frame::new(4),
+                num_players: 2,
+                state_bytes: Vec::new(),
+                bridge_inputs: Vec::new(),
+                bridge_statuses: Vec::new(),
+                checksum: None,
+                certified_dropped: Vec::new(),
+                checksum_basis: crate::network::messages::ChecksumBasis::none(),
+            }),
+        };
+        let mut bytes = encode(&snapshot).unwrap();
+        bytes[16..24].copy_from_slice(&huge);
+        let error = decode_message(&bytes)
+            .expect_err("an oversized snapshot player count must reject on every target");
+        assert!(error.to_string().contains("u16 player domain"));
     }
 
     #[test]

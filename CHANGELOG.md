@@ -76,6 +76,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pre-existing:** malformed wire handles and player counts above `u16::MAX` now reject
+  identically on 32-bit and 64-bit targets. Hot-join handles and `StateSnapshot::num_players`, plus
+  replay header/metadata player counts, are bounded to the session's `u16` player domain before the
+  target `usize` conversion; previously the same bytes were accepted on 64-bit but rejected on
+  32-bit. Valid sessions, wire bytes, and replay files are unchanged.
 - **Pre-existing:** a checksum mismatch latched before a confirmed-history rewrite no longer
   keeps `sync_health` reporting `DesyncDetected` after the rewrite invalidates its local basis.
   Freeze convergence, certified-cut resimulation, and reserved-slot convergence clear a latched
