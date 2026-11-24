@@ -300,11 +300,12 @@ Expect `0 0` and an empty status. Delete local and remote feature branches after
 5. Release the lease for the next session:
 
 ```bash
-python3 scripts/ci/session-budget.py close
+python3 scripts/ci/session-budget.py close --id session-<id>
 ```
 
-This is an agent closeout step, not an operator step. If it is missed, the next session takes over
-automatically once this lease is idle or expired.
+This is an agent closeout step, not an operator step. Use the session ID from
+`session-budget.py check --json`; `close` refuses a lease owned by another session. If it is
+missed, the next session takes over automatically once this lease is idle or expired.
 6. Do not start new work after T+180.
 
 ## Metrics

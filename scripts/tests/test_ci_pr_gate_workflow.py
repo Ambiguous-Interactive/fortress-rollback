@@ -102,6 +102,12 @@ def test_pr_gate_runs_on_pull_requests_and_merge_groups() -> None:
     triggers = _triggers(_load(PR_GATE))
     assert "pull_request" in triggers
     assert "merge_group" in triggers
+    assert set(triggers["pull_request"]["types"]) == {
+        "opened",
+        "synchronize",
+        "reopened",
+        "edited",
+    }
 
 
 def test_pr_gate_has_one_aggregate_required_job() -> None:

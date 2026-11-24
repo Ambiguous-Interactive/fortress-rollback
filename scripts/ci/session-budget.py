@@ -415,9 +415,20 @@ def claim_pr(
         return updated
 
 
-def close(path: Path = DEFAULT_STATE_PATH) -> bool:
-    """Remove the stored budget; return whether a file was removed."""
+def close(
+    session_id: str, path: Path = DEFAULT_STATE_PATH
+) -> bool:
+    """Remove the stored budget when it belongs to `session_id`."""
+    if not session_id.strip():
+        raise BudgetError("session id must not be empty")
     with _state_lock(path):
+        if path.exists():
+            state = load(path)
+            if state["session_id"] != session_id.strip():
+                raise BudgetError(
+                    f"session {state['session_id']} owns the budget; "
+                    f"{session_id} cannot close it"
+                )
         try:
             path.unlink()
         except FileNotFoundError:
@@ -485,6 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_state_argument(claim_parser)
 
     close_parser = commands.add_parser("close", help="Remove the stored budget")
+    close_parser.add_argument("--id", required=True, help="Session identifier")
     _add_state_argument(close_parser)
     return parser
 
@@ -551,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "close":
-            removed = close(args.state)
+            removed = close(args.id, args.state)
             print("budget removed" if removed else "no budget to remove")
             return 0
     except BudgetError as exc:

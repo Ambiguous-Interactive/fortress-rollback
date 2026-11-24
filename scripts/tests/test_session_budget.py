@@ -218,7 +218,7 @@ def test_lock_directory_is_reusable_after_a_crash(tmp_path: Path) -> None:
 
     assert state["session_id"] == "session-1"
     assert not lock_dir.exists()
-    assert session_budget.close(path) is True
+    assert session_budget.close("session-1", path) is True
 
 
 def test_lock_does_not_steal_a_live_owner(tmp_path: Path) -> None:
@@ -615,9 +615,20 @@ def test_close_removes_state(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)
 
-    assert session_budget.close(path) is True
+    assert session_budget.close("session-1", path) is True
     assert not path.exists()
-    assert session_budget.close(path) is False
+    assert session_budget.close("session-1", path) is False
+
+
+def test_close_rejects_another_session(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    with pytest.raises(session_budget.BudgetError, match="owns the budget"):
+        session_budget.close("session-2", path)
+
+    assert path.exists()
+    assert session_budget.close("session-1", path) is True
 
 
 def test_cli_check_json_before_expiry_returns_zero(
@@ -667,5 +678,5 @@ def test_cli_round_trip(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     assert "session-1" in capsys.readouterr().out
     assert session_budget.main(["check", "--state", str(path)]) == 0
     assert "remaining" in capsys.readouterr().out
-    assert session_budget.main(["close", "--state", str(path)]) == 0
+    assert session_budget.main(["close", "--id", "session-1", "--state", str(path)]) == 0
     assert "budget removed" in capsys.readouterr().out
