@@ -94,6 +94,12 @@ def evaluate_session_budget(
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     if started > current + timedelta(minutes=5):
         raise BudgetError("session start is in the future")
+    if current - started > window:
+        raise BudgetError(
+            f"the session marker is {(current - started).total_seconds() / 3600:.2f} hours "
+            f"old; the maximum is {window.total_seconds() / 3600:.0f}. Re-mark the PR with "
+            "the current session start"
+        )
     # A PR carried over from an earlier session is re-marked with the new
     # session start, so `started` may legitimately be after `created`.
     if created - started > window:

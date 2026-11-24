@@ -48,12 +48,31 @@ export async function withBudgetLock(
         continue
       }
       if (now() - modified > staleMs) {
+        let observedOwner
+        try {
+          observedOwner = await readFile(ownerPath, "utf8")
+        } catch {
+          observedOwner = undefined
+        }
         // Rename before removal so two reapers cannot delete a fresh lock that
         // a winner created between the stat and the unlink.
         const stale = `${lockPath}.stale.${token}`
         try {
           await rename(lockPath, stale)
         } catch {
+          await sleep(25)
+          continue
+        }
+        let renamedOwner
+        try {
+          renamedOwner = await readFile(path.join(stale, "owner"), "utf8")
+        } catch {
+          renamedOwner = undefined
+        }
+        if (renamedOwner !== observedOwner) {
+          // A fresh owner replaced the stale lock between our stat and rename.
+          // Put it back instead of entering the critical section.
+          await rename(stale, lockPath).catch(() => {})
           await sleep(25)
           continue
         }

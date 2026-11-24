@@ -124,10 +124,26 @@ def _state_lock(path: Path, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[N
                 except FileNotFoundError:
                     continue
             if time.time() - modified > LOCK_STALE_SECONDS:
+                try:
+                    observed_owner = owner.read_text(encoding="utf-8")
+                except OSError:
+                    observed_owner = None
                 stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
                 try:
                     os.rename(lock_dir, stale)
                 except OSError:
+                    continue
+                try:
+                    renamed_owner = (stale / "owner").read_text(encoding="utf-8")
+                except OSError:
+                    renamed_owner = None
+                if renamed_owner != observed_owner:
+                    # A fresh owner replaced the stale lock between our stat and
+                    # rename. Put it back instead of entering the critical section.
+                    try:
+                        os.rename(stale, lock_dir)
+                    except OSError:
+                        pass
                     continue
                 shutil.rmtree(stale, ignore_errors=True)
                 continue
