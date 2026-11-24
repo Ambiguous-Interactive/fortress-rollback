@@ -167,13 +167,25 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out the trusted base branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          path: base
+          fetch-depth: 1
+
+      - name: Check out the pull request
+        uses: actions/checkout@v7
+        with:
+          path: pr
+          fetch-depth: 1
 
       - name: Enforce the rolling three-hour, two-PR window
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
         run: |
           set -euo pipefail
           if [ -z "$PR_NUMBER" ]; then
@@ -183,7 +195,14 @@ jobs:
             echo "cannot resolve the pull request number for the session budget" >&2
             exit 1
           fi
-          python3 scripts/ci/check-session-pr-budget.py \
+          if [ -f base/scripts/ci/check-session-pr-budget.py ]; then
+            TRUSTED_SCRIPT=base/scripts/ci/check-session-pr-budget.py
+            echo "Running the base-branch session budget checker at $BASE_SHA"
+          else
+            TRUSTED_SCRIPT=pr/scripts/ci/check-session-pr-budget.py
+            echo "::warning::the base branch has no session budget checker; bootstrap uses the PR copy"
+          fi
+          python3 "$TRUSTED_SCRIPT" \
             --repo "$GITHUB_REPOSITORY" \
             --pr "$PR_NUMBER"
 

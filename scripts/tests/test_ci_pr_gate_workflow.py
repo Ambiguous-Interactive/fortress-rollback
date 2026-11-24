@@ -139,6 +139,22 @@ def test_pr_gate_enforces_the_session_budget() -> None:
     assert "check-session-pr-budget.py" in step["run"]
     assert "pull_request.number" in step["env"]["PR_NUMBER"]
     assert "merge_group.head_ref" in step["env"]["MERGE_GROUP_HEAD_REF"]
+    assert "pull_request.base.sha" in step["env"]["BASE_SHA"]
+    assert "merge_group.base_sha" in step["env"]["BASE_SHA"]
+
+    checkouts = [
+        candidate for candidate in job["steps"] if candidate.get("uses") == "actions/checkout@v7"
+    ]
+    assert len(checkouts) == 2
+    assert checkouts[0]["with"]["path"] == "base"
+    assert "pull_request.base.sha" in checkouts[0]["with"]["ref"]
+    assert checkouts[1]["with"]["path"] == "pr"
+
+    run = step["run"]
+    assert "base/scripts/ci/check-session-pr-budget.py" in run
+    assert "pr/scripts/ci/check-session-pr-budget.py" in run
+    assert 'python3 "$TRUSTED_SCRIPT"' in run
+    assert "bootstrap uses the PR copy" in run
 
 
 def test_pr_gate_compiles_the_cfg_kani_tree_without_running_proofs() -> None:
