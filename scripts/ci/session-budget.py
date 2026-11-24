@@ -135,11 +135,17 @@ def _state_lock(path: Path, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[N
                     continue
                 try:
                     renamed_owner = (stale / "owner").read_text(encoding="utf-8")
+                    renamed_modified = (stale / "owner").stat().st_mtime
                 except OSError:
                     renamed_owner = None
-                if renamed_owner != observed_owner:
-                    # A fresh owner replaced the stale lock between our stat and
-                    # rename. Put it back instead of entering the critical section.
+                    renamed_modified = None
+                if renamed_owner != observed_owner or (
+                    renamed_modified is not None
+                    and time.time() - renamed_modified <= LOCK_STALE_SECONDS
+                ):
+                    # A heartbeat or a fresh owner replaced the stale lock
+                    # between our stat and rename. Put it back instead of
+                    # entering the critical section.
                     try:
                         os.rename(stale, lock_dir)
                     except OSError:
@@ -219,7 +225,8 @@ def _start_locked(
     path: Path,
 ) -> dict[str, Any]:
     if path.exists():
-        existing = load(path, now=started)
+        permissive_now = max(started, utc_now().astimezone(timezone.utc))
+        existing = load(path, now=permissive_now)
         existing_updated = _parse_time(existing["updated_at"], "updated_at")
         if existing["session_id"] == session_key:
             activity = max(started, existing_updated)

@@ -64,14 +64,20 @@ export async function withBudgetLock(
           continue
         }
         let renamedOwner
+        let renamedModified
         try {
           renamedOwner = await readFile(path.join(stale, "owner"), "utf8")
+          renamedModified = (await stat(path.join(stale, "owner"))).mtimeMs
         } catch {
           renamedOwner = undefined
+          renamedModified = undefined
         }
-        if (renamedOwner !== observedOwner) {
-          // A fresh owner replaced the stale lock between our stat and rename.
-          // Put it back instead of entering the critical section.
+        if (
+          renamedOwner !== observedOwner ||
+          (renamedModified !== undefined && now() - renamedModified <= staleMs)
+        ) {
+          // A heartbeat or a fresh owner replaced the stale lock between our
+          // stat and rename. Put it back instead of entering the critical section.
           await rename(stale, lockPath).catch(() => {})
           await sleep(25)
           continue

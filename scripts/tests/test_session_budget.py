@@ -67,6 +67,19 @@ def test_start_does_not_reset_an_expired_same_session(tmp_path: Path) -> None:
     assert second["updated_at"] == "2026-11-23T15:20:00Z"
 
 
+def test_start_same_session_tolerates_a_backward_clock(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    first = session_budget.start("session-1", 180, now=START, path=path)
+
+    second = session_budget.start(
+        "session-1", 180, now=START - timedelta(minutes=2), path=path
+    )
+
+    assert second["started_at"] == first["started_at"]
+    assert second["expires_at"] == "2026-11-23T15:00:00Z"
+    assert second["updated_at"] == "2026-11-23T12:00:00Z"
+
+
 def test_start_rejects_a_recently_active_session(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)

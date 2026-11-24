@@ -97,9 +97,16 @@ export default Plugin.define({
 
     const ownerActive = async (ownerID) => {
       if (busySessions.has(ownerID)) return true
+      let unresolved = false
       for (const sessionID of busySessions) {
-        if ((await rootSessionID(sessionID)) === ownerID) return true
+        const root = await rootSessionID(sessionID)
+        if (root === undefined) {
+          unresolved = true
+          continue
+        }
+        if (root === ownerID) return true
       }
+      if (unresolved) return undefined
       if (!activityKnown) return undefined
       return false
     }
