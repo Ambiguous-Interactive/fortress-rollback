@@ -84,6 +84,34 @@ def test_start_same_session_tolerates_a_backward_clock(
     assert second["updated_at"] == "2026-11-23T12:00:00Z"
 
 
+def test_start_rejects_a_future_timestamp_for_another_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-23T15:00:00Z",
+                "updated_at": "2026-11-23T12:10:00Z",
+                "minutes": 180,
+                "max_prs": 2,
+                "prs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(session_budget, "utc_now", lambda: START)
+
+    with pytest.raises(session_budget.BudgetError, match="future"):
+        session_budget.start("session-2", 180, now=START, path=path)
+
+    recovered = session_budget.start("session-1", 180, now=START, path=path)
+    assert recovered["session_id"] == "session-1"
+    assert recovered["updated_at"] == "2026-11-23T12:10:00Z"
+
+
 def test_start_rejects_a_recently_active_session(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)

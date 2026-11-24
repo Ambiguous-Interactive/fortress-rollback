@@ -271,6 +271,10 @@ def _start_locked(
             if "in the future" not in str(exc):
                 raise
             raw_state = json.loads(path.read_text(encoding="utf-8"))
+            if raw_state.get("session_id") != session_key:
+                # Only the owning session may recover from a future timestamp
+                # caused by a backward clock change.
+                raise
             stored_updated = _parse_time(raw_state.get("updated_at"), "updated_at")
             existing = load(path, now=max(permissive_now, stored_updated))
         existing_updated = _parse_time(existing["updated_at"], "updated_at")
