@@ -74,14 +74,22 @@ export function parseBudgetState(raw, now = Date.now()) {
   if (expiresAt <= startedAt) {
     return { ok: false, reason: "session budget expiry precedes its start" }
   }
-  const minutes = Number.isInteger(state.minutes) ? state.minutes : DEFAULT_MINUTES
-  if (minutes < 1 || minutes > MAX_MINUTES) {
+  const rawMinutes = state.minutes
+  if (
+    rawMinutes !== undefined &&
+    (!Number.isInteger(rawMinutes) || rawMinutes < 1 || rawMinutes > MAX_MINUTES)
+  ) {
     return { ok: false, reason: "session budget minutes are out of range" }
   }
-  const maxPrs = Number.isInteger(state.max_prs) ? state.max_prs : DEFAULT_MAX_PRS
-  if (maxPrs < 1 || maxPrs > MAX_PRS) {
+  const minutes = rawMinutes === undefined ? DEFAULT_MINUTES : rawMinutes
+  const rawMaxPrs = state.max_prs
+  if (
+    rawMaxPrs !== undefined &&
+    (!Number.isInteger(rawMaxPrs) || rawMaxPrs < 1 || rawMaxPrs > MAX_PRS)
+  ) {
     return { ok: false, reason: "session budget max_prs is out of range" }
   }
+  const maxPrs = rawMaxPrs === undefined ? DEFAULT_MAX_PRS : rawMaxPrs
   if (state.prs !== undefined && !Array.isArray(state.prs)) {
     return { ok: false, reason: "session budget PR list is malformed" }
   }

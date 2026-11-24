@@ -151,7 +151,7 @@ export default Plugin.define({
       }
     }
 
-    const writeBudget = async (state) => {
+    const writeBudget = async (state, fence) => {
       await mkdir(path.dirname(budgetPath), { recursive: true })
       const temporary = `${budgetPath}.${process.pid}.${Date.now()}.tmp`
       try {
@@ -159,6 +159,7 @@ export default Plugin.define({
           encoding: "utf8",
           mode: 0o600,
         })
+        if (fence !== undefined) await fence()
         await rename(temporary, budgetPath)
       } catch (error) {
         await rm(temporary, { force: true }).catch(() => {})
@@ -192,14 +193,14 @@ export default Plugin.define({
         return { ok: false, reason: "the session hierarchy cannot be resolved" }
       }
       try {
-        return await withBudgetLock(lockPath, async () => {
+        return await withBudgetLock(lockPath, async ({ fence }) => {
           const existing = await readBudget()
           if (!existing.ok && !existing.missing) {
             return { ok: false, reason: existing.reason ?? "the worktree budget is malformed" }
           }
           if (existing.missing) {
             const state = newBudgetState(ownerID, Date.now(), requestedMinutes, 2)
-            await writeBudget(state)
+            await writeBudget(state, fence)
             return ready(parseBudgetState(JSON.stringify(state)))
           }
           const decision = decideLease(existing, ownerID, {
@@ -217,7 +218,7 @@ export default Plugin.define({
           }
           if (decision.action === "rotate") {
             const state = newBudgetState(ownerID, Date.now(), existing.minutes, existing.maxPrs)
-            await writeBudget(state)
+            await writeBudget(state, fence)
             console.error(
               `[session-budget] lease handed off from ${existing.sessionId} to ${ownerID} (${decision.reason})`,
             )
@@ -230,7 +231,7 @@ export default Plugin.define({
           const last = lastTouch.get(existing.sessionId) ?? 0
           if (Date.now() - last >= TOUCH_INTERVAL_MS) {
             const touched = touchBudgetState(existing, Date.now())
-            await writeBudget(touched)
+            await writeBudget(touched, fence)
             lastTouch.set(existing.sessionId, Date.now())
             current = parseBudgetState(JSON.stringify(touched))
           }

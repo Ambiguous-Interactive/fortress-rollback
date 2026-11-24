@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import sys
 import threading
 import time
@@ -233,6 +234,20 @@ def test_lock_does_not_steal_a_live_owner(tmp_path: Path) -> None:
 
     assert lock_dir.exists()
     assert (lock_dir / "owner").read_text(encoding="utf-8") == "other"
+
+
+def test_write_state_fence_rejects_a_lost_lock(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    moved = lock_dir.with_name(f"{lock_dir.name}.moved")
+
+    with pytest.raises(session_budget.BudgetError, match="lock was lost"):
+        with session_budget._state_lock(path) as fence:
+            os.rename(lock_dir, moved)
+            session_budget._write_state({"session_id": "session-1"}, path, fence)
+
+    assert moved.exists()
+    shutil.rmtree(moved)
 
 
 def test_claim_pr_records_one_and_two_prs(tmp_path: Path) -> None:

@@ -12,7 +12,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -70,7 +70,11 @@ def _serialize(state: dict[str, Any]) -> str:
     return json.dumps(state, indent=2, sort_keys=True) + "\n"
 
 
-def _write_state(state: dict[str, Any], path: Path) -> None:
+def _write_state(
+    state: dict[str, Any],
+    path: Path,
+    fence: Callable[[], None] | None = None,
+) -> None:
     """Replace the state through a unique temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(
@@ -79,6 +83,8 @@ def _write_state(state: dict[str, Any], path: Path) -> None:
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as temporary:
             temporary.write(_serialize(state))
+        if fence is not None:
+            fence()
         os.replace(temporary_name, path)
     except Exception:
         try:
@@ -88,9 +94,15 @@ def _write_state(state: dict[str, Any], path: Path) -> None:
         raise
 
 
-def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
+def _create_state_exclusive(
+    state: dict[str, Any],
+    path: Path,
+    fence: Callable[[], None] | None = None,
+) -> None:
     """Create a new state file only when no other writer won the race."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if fence is not None:
+        fence()
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as created:
@@ -104,7 +116,9 @@ def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
 
 
 @contextmanager
-def _state_lock(path: Path, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
+def _state_lock(
+    path: Path, timeout: float = LOCK_TIMEOUT_SECONDS
+) -> Iterator[Callable[[], None]]:
     """Serialize budget updates with a shared directory lock."""
     lock_dir = path.with_name(f"{path.name}.lock")
     lock_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -174,8 +188,17 @@ def _state_lock(path: Path, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[N
 
     thread = threading.Thread(target=heartbeat, daemon=True)
     thread.start()
+
+    def fence() -> None:
+        try:
+            current = owner.read_text(encoding="utf-8")
+        except OSError:
+            raise BudgetError("the session budget lock was lost") from None
+        if current != token:
+            raise BudgetError("the session budget lock was lost")
+
     try:
-        yield
+        yield fence
     finally:
         stop.set()
         thread.join(timeout=2.0)
@@ -211,9 +234,9 @@ def start(
         )
     started = (now or utc_now()).astimezone(timezone.utc)
     session_key = session_id.strip()
-    with _state_lock(path):
+    with _state_lock(path) as fence:
         return _start_locked(
-            session_key, started, minutes, max_prs, takeover, handoff, path
+            session_key, started, minutes, max_prs, takeover, handoff, path, fence
         )
 
 
@@ -225,6 +248,7 @@ def _start_locked(
     takeover: bool,
     handoff: timedelta,
     path: Path,
+    fence: Callable[[], None],
 ) -> dict[str, Any]:
     if path.exists():
         permissive_now = max(started, utc_now().astimezone(timezone.utc))
@@ -234,7 +258,7 @@ def _start_locked(
             activity = max(started, existing_updated)
             if activity != existing_updated:
                 touched = {**existing, "updated_at": _format_time(activity)}
-                _write_state(touched, path)
+                _write_state(touched, path, fence)
                 return touched
             return existing
         existing_expires = _parse_time(existing["expires_at"], "expires_at")
@@ -246,13 +270,13 @@ def _start_locked(
                 "wait for it to go idle or pass --takeover"
             )
         state = _new_state(session_key, started, minutes, max_prs)
-        _write_state(state, path)
+        _write_state(state, path, fence)
         return state
 
     state = _new_state(session_key, started, minutes, max_prs)
     for _ in range(5):
         try:
-            _create_state_exclusive(state, path)
+            _create_state_exclusive(state, path, fence)
             return state
         except FileExistsError:
             time.sleep(0.02)
@@ -359,7 +383,7 @@ def touch(
 ) -> dict[str, Any]:
     """Record owner activity without moving the deadline."""
     current = (now or utc_now()).astimezone(timezone.utc)
-    with _state_lock(path):
+    with _state_lock(path) as fence:
         state = load(path, now=current)
         if state["session_id"] != session_id:
             raise BudgetError(
@@ -371,7 +395,7 @@ def touch(
             raise BudgetError("session budget is expired; start a new session")
         activity = max(current, _parse_time(state["updated_at"], "updated_at"))
         updated = {**state, "updated_at": _format_time(activity)}
-        _write_state(updated, path)
+        _write_state(updated, path, fence)
         return updated
 
 
@@ -388,7 +412,7 @@ def claim_pr(
     if not session_id.strip():
         raise BudgetError("session id must not be empty")
     current = (now or utc_now()).astimezone(timezone.utc)
-    with _state_lock(path):
+    with _state_lock(path) as fence:
         state = load(path, now=current)
         if state["session_id"] != session_id.strip():
             raise BudgetError(
@@ -401,7 +425,7 @@ def claim_pr(
         activity = max(current, _parse_time(state["updated_at"], "updated_at"))
         if number in state["prs"]:
             updated = {**state, "updated_at": _format_time(activity)}
-            _write_state(updated, path)
+            _write_state(updated, path, fence)
             return updated
         if len(state["prs"]) >= state["max_prs"]:
             raise BudgetError(
@@ -413,7 +437,7 @@ def claim_pr(
             "updated_at": _format_time(activity),
             "prs": sorted([*state["prs"], number]),
         }
-        _write_state(updated, path)
+        _write_state(updated, path, fence)
         return updated
 
 
@@ -423,7 +447,7 @@ def close(
     """Remove the stored budget when it belongs to `session_id`."""
     if not session_id.strip():
         raise BudgetError("session id must not be empty")
-    with _state_lock(path):
+    with _state_lock(path) as fence:
         if path.exists():
             state = load(path)
             if state["session_id"] != session_id.strip():
@@ -431,6 +455,7 @@ def close(
                     f"session {state['session_id']} owns the budget; "
                     f"{session_id} cannot close it"
                 )
+        fence()
         try:
             path.unlink()
         except FileNotFoundError:

@@ -1,6 +1,6 @@
 import test from "node:test"
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -80,6 +80,18 @@ test("reaps a stale lock after a crash", async (t) => {
 
   assert.equal(result, "recovered")
   assert.equal(await exists(lockPath), false)
+})
+
+test("fence rejects a writer after the lock is moved", async (t) => {
+  const { lockPath } = await setup(t)
+  const moved = `${lockPath}.moved`
+
+  await withBudgetLock(lockPath, async ({ fence }) => {
+    await rename(lockPath, moved)
+    await assert.rejects(fence(), /lock was lost/)
+  })
+
+  await rm(moved, { recursive: true, force: true })
 })
 
 test("heartbeat keeps a live lock from being reaped", async (t) => {

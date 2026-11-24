@@ -161,9 +161,40 @@ test("rejects malformed worktree budgets", () => {
       max_prs: 2,
       prs: ["bad"],
     }),
+    JSON.stringify({
+      session_id: "s",
+      started_at: "2026-11-23T12:00:00Z",
+      expires_at: "2026-11-23T15:00:00Z",
+      minutes: true,
+      max_prs: 2,
+      prs: [],
+    }),
+    JSON.stringify({
+      session_id: "s",
+      started_at: "2026-11-23T12:00:00Z",
+      expires_at: "2026-11-23T15:00:00Z",
+      minutes: 180,
+      max_prs: true,
+      prs: [],
+    }),
   ]) {
     assert.equal(parseBudgetState(raw).ok, false, raw)
   }
+})
+
+test("defaults missing minutes and max_prs for legacy state", () => {
+  const raw = JSON.stringify({
+    session_id: "session-1",
+    started_at: "2026-11-23T12:00:00Z",
+    expires_at: "2026-11-23T15:00:00Z",
+    prs: [],
+  })
+
+  const parsed = parseBudgetState(raw, Date.parse("2026-11-23T12:30:00Z"))
+
+  assert.equal(parsed.ok, true)
+  assert.equal(parsed.minutes, 180)
+  assert.equal(parsed.maxPrs, 2)
 })
 
 test("reuses the lease for the owning session", () => {

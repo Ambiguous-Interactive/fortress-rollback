@@ -104,8 +104,19 @@ export async function withBudgetLock(
     void utimes(ownerPath, new Date(), new Date()).catch(() => {})
   }, heartbeatMs)
   heartbeat.unref?.()
+  const fence = async () => {
+    try {
+      const current = await readFile(ownerPath, "utf8")
+      if (current !== token) throw new Error("the worktree budget lock was lost")
+    } catch (error) {
+      if (error?.code === "ENOENT") {
+        throw new Error("the worktree budget lock was lost")
+      }
+      throw error
+    }
+  }
   try {
-    return await callback()
+    return await callback({ fence })
   } finally {
     released = true
     clearInterval(heartbeat)
