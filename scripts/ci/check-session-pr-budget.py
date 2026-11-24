@@ -152,7 +152,7 @@ def fetch_pr(repo: str, number: int, token: str) -> dict[str, Any]:
 
 
 def fetch_recent_prs(repo: str, since: datetime, token: str) -> list[dict[str, Any]]:
-    """Fetch pull requests created at or after `since`."""
+    """Fetch pull requests created at or after `since`, or fail closed."""
     collected: list[dict[str, Any]] = []
     for page in range(1, MAX_PAGES + 1):
         url = (
@@ -163,15 +163,18 @@ def fetch_recent_prs(repo: str, since: datetime, token: str) -> list[dict[str, A
         if not isinstance(payload, list):
             raise BudgetError("GitHub returned an invalid pull request list")
         if not payload:
-            break
+            return collected
         for pr in payload:
             if not isinstance(pr, dict):
                 raise BudgetError("GitHub returned a malformed pull request entry")
             if _pr_created(pr) >= since:
                 collected.append(pr)
         if _pr_created(payload[-1]) < since:
-            break
-    return collected
+            return collected
+    raise BudgetError(
+        f"pull request history exceeds {MAX_PAGES * PAGE_LIMIT} entries; "
+        "cannot verify the rolling window"
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

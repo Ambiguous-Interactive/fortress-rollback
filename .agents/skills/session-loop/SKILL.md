@@ -58,7 +58,7 @@ subagent sessions inherit their parent's lease, so starting new work needs no ma
 ```bash
 python3 scripts/ci/session-budget.py start --id session-<id> --minutes 180 --max-prs 2
 python3 scripts/ci/session-budget.py check
-python3 scripts/ci/session-budget.py claim-pr --number <PR>
+python3 scripts/ci/session-budget.py claim-pr --id session-<id> --number <PR>
 python3 scripts/ci/session-budget.py touch --id session-<id>
 ```
 
@@ -210,7 +210,7 @@ The PR must state the goal, evidence, risks, rollback, and the item link, and fi
 `<!-- session: <id> started: <ISO8601> -->` in the body. A PR carried over from an earlier session
 is re-marked with the current session's start; the rolling count still uses the PR creation time. Do
 not check boxes for checks that were not run. After opening the PR, run
-`scripts/ci/session-budget.py claim-pr --number <PR>`.
+`scripts/ci/session-budget.py claim-pr --id session-<id> --number <PR>`.
 
 Review and CI budget:
 

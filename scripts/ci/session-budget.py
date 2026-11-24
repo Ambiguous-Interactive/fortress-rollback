@@ -6,25 +6,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
+import shutil
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-
-_fcntl: Any
-_msvcrt: Any
-try:
-    import fcntl as _fcntl
-except ImportError:  # pragma: no cover - Windows
-    _fcntl = None
-try:
-    import msvcrt as _msvcrt
-except ImportError:  # pragma: no cover - POSIX
-    _msvcrt = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE_PATH = REPO_ROOT / "progress" / ".session-budget.json"
@@ -37,6 +29,9 @@ MIN_PR_NUMBER = 1
 DEFAULT_HANDOFF_MINUTES = 5
 MAX_HANDOFF_MINUTES = 60
 CLOCK_SKEW_SECONDS = 60
+LOCK_STALE_SECONDS = 10
+LOCK_HEARTBEAT_SECONDS = 1.0
+LOCK_TIMEOUT_SECONDS = 5.0
 
 
 class BudgetError(Exception):
@@ -109,35 +104,62 @@ def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
 
 
 @contextmanager
-def _state_lock(path: Path, timeout: float = 1.0) -> Iterator[None]:
-    """Serialize budget updates with an OS-released advisory lock."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(f".{path.name}.lock")
+def _state_lock(path: Path, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
+    """Serialize budget updates with a shared directory lock."""
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_hex(16)
+    owner = lock_dir / "owner"
     deadline = time.monotonic() + timeout
-    with open(lock_path, "a+b") as handle:
-        locked = False
-        while not locked:
-            try:
-                if _fcntl is not None:
-                    _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-                elif _msvcrt is not None:
-                    handle.seek(0)
-                    _msvcrt.locking(handle.fileno(), _msvcrt.LK_NBLCK, 1)
-                else:
-                    raise BudgetError("no file-locking primitive is available")
-                locked = True
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise BudgetError(f"another session is updating {path}") from None
-                time.sleep(0.01)
+    while True:
         try:
-            yield
-        finally:
-            if _fcntl is not None:
-                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
-            elif _msvcrt is not None:
-                handle.seek(0)
-                _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
+            os.mkdir(lock_dir)
+            break
+        except FileExistsError:
+            try:
+                modified = owner.stat().st_mtime
+            except FileNotFoundError:
+                try:
+                    modified = lock_dir.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+            if time.time() - modified > LOCK_STALE_SECONDS:
+                stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
+                try:
+                    os.rename(lock_dir, stale)
+                except OSError:
+                    continue
+                shutil.rmtree(stale, ignore_errors=True)
+                continue
+            if time.monotonic() >= deadline:
+                raise BudgetError(f"another session is updating {path}")
+            time.sleep(0.01)
+    try:
+        owner.write_text(token, encoding="utf-8")
+    except OSError:
+        shutil.rmtree(lock_dir, ignore_errors=True)
+        raise
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop.wait(LOCK_HEARTBEAT_SECONDS):
+            try:
+                os.utime(owner, None)
+            except OSError:
+                return
+
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        try:
+            if owner.read_text(encoding="utf-8") == token:
+                shutil.rmtree(lock_dir, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def start(
@@ -153,12 +175,12 @@ def start(
     """Create a budget for one session and return the stored state."""
     if not session_id.strip():
         raise BudgetError("session id must not be empty")
-    if minutes < MIN_MINUTES or minutes > MAX_MINUTES:
+    if type(minutes) is not int or not MIN_MINUTES <= minutes <= MAX_MINUTES:
         raise BudgetError(
-            f"minutes must be between {MIN_MINUTES} and {MAX_MINUTES}: {minutes}"
+            f"minutes must be an integer between {MIN_MINUTES} and {MAX_MINUTES}: {minutes}"
         )
-    if max_prs < 1 or max_prs > MAX_PRS_LIMIT:
-        raise BudgetError(f"max_prs must be between 1 and {MAX_PRS_LIMIT}: {max_prs}")
+    if type(max_prs) is not int or not 1 <= max_prs <= MAX_PRS_LIMIT:
+        raise BudgetError(f"max_prs must be an integer between 1 and {MAX_PRS_LIMIT}: {max_prs}")
     if handoff <= timedelta(0) or handoff > timedelta(minutes=MAX_HANDOFF_MINUTES):
         raise BudgetError(
             f"handoff must be between 0 and {MAX_HANDOFF_MINUTES} minutes"
@@ -257,7 +279,7 @@ def load(
     started = _parse_time(state.get("started_at"), "started_at")
     expires = _parse_time(state.get("expires_at"), "expires_at")
     minutes = state.get("minutes")
-    if not isinstance(minutes, int) or not MIN_MINUTES <= minutes <= MAX_MINUTES:
+    if type(minutes) is not int or not MIN_MINUTES <= minutes <= MAX_MINUTES:
         raise BudgetError(
             f"minutes must be an integer between {MIN_MINUTES} and {MAX_MINUTES}"
         )
@@ -276,11 +298,11 @@ def load(
     if updated > current + timedelta(seconds=CLOCK_SKEW_SECONDS):
         raise BudgetError("updated_at must not be in the future")
     max_prs = state.get("max_prs", DEFAULT_MAX_PRS)
-    if not isinstance(max_prs, int) or not 1 <= max_prs <= MAX_PRS_LIMIT:
+    if type(max_prs) is not int or not 1 <= max_prs <= MAX_PRS_LIMIT:
         raise BudgetError(f"max_prs must be between 1 and {MAX_PRS_LIMIT}")
     prs = state.get("prs", [])
     if not isinstance(prs, list) or not all(
-        isinstance(number, int) and number >= MIN_PR_NUMBER for number in prs
+        type(number) is int and number >= MIN_PR_NUMBER for number in prs
     ):
         raise BudgetError("prs must be a list of positive pull request numbers")
     return {
@@ -322,28 +344,38 @@ def touch(
         expires = _parse_time(state["expires_at"], "expires_at")
         if expires <= current:
             raise BudgetError("session budget is expired; start a new session")
-        updated = {**state, "updated_at": _format_time(current)}
+        activity = max(current, _parse_time(state["updated_at"], "updated_at"))
+        updated = {**state, "updated_at": _format_time(activity)}
         _write_state(updated, path)
         return updated
 
 
 def claim_pr(
     number: int,
+    session_id: str,
     *,
     now: datetime | None = None,
     path: Path = DEFAULT_STATE_PATH,
 ) -> dict[str, Any]:
-    """Record one opened PR and enforce the session PR limit."""
-    if number < MIN_PR_NUMBER:
+    """Record one opened PR for the owning session and enforce the limit."""
+    if type(number) is not int or number < MIN_PR_NUMBER:
         raise BudgetError(f"pull request number must be positive: {number}")
+    if not session_id.strip():
+        raise BudgetError("session id must not be empty")
     current = (now or utc_now()).astimezone(timezone.utc)
     with _state_lock(path):
         state = load(path, now=current)
+        if state["session_id"] != session_id.strip():
+            raise BudgetError(
+                f"session {state['session_id']} owns the budget; "
+                f"{session_id} cannot claim a pull request"
+            )
         expires = _parse_time(state["expires_at"], "expires_at")
         if expires <= current:
             raise BudgetError("session budget is expired; start a new session")
+        activity = max(current, _parse_time(state["updated_at"], "updated_at"))
         if number in state["prs"]:
-            updated = {**state, "updated_at": _format_time(current)}
+            updated = {**state, "updated_at": _format_time(activity)}
             _write_state(updated, path)
             return updated
         if len(state["prs"]) >= state["max_prs"]:
@@ -353,7 +385,7 @@ def claim_pr(
             )
         updated = {
             **state,
-            "updated_at": _format_time(current),
+            "updated_at": _format_time(activity),
             "prs": sorted([*state["prs"], number]),
         }
         _write_state(updated, path)
@@ -426,6 +458,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     claim_parser = commands.add_parser("claim-pr", help="Record an opened pull request")
     claim_parser.add_argument("--number", type=int, required=True)
+    claim_parser.add_argument("--id", required=True, help="Session identifier")
     _add_state_argument(claim_parser)
 
     close_parser = commands.add_parser("close", help="Remove the stored budget")
@@ -488,7 +521,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 0
         if args.command == "claim-pr":
-            state = claim_pr(args.number, path=args.state)
+            state = claim_pr(args.number, args.id, path=args.state)
             print(
                 f"session {state['session_id']}: claimed PR "
                 f"#{args.number} ({len(state['prs'])}/{state['max_prs']})"

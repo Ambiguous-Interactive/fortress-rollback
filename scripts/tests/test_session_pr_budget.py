@@ -188,3 +188,34 @@ def test_invalid_window_is_rejected() -> None:
         check_session_pr_budget.evaluate_session_budget(
             current, [current], window=timedelta(hours=4)
         )
+
+
+def test_truncated_pagination_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current = pr(900, START)
+    monkeypatch.setattr(
+        check_session_pr_budget,
+        "_request_json",
+        lambda url, token: [current],
+    )
+
+    with pytest.raises(
+        check_session_pr_budget.BudgetError, match="cannot verify"
+    ):
+        check_session_pr_budget.fetch_recent_prs("owner/repo", START, "token")
+
+
+def test_pagination_stops_when_the_page_predates_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old = pr(100, START - timedelta(hours=4))
+    monkeypatch.setattr(
+        check_session_pr_budget,
+        "_request_json",
+        lambda url, token: [old],
+    )
+
+    assert (
+        check_session_pr_budget.fetch_recent_prs("owner/repo", START, "token") == []
+    )

@@ -59,4 +59,6 @@ jobs:
         run: |
           node --check .opencode/plugins/session-budget.js
           node --check .opencode/plugins/lib/session-budget-core.mjs
+          node --check .opencode/plugins/lib/session-budget-lock.mjs
           node --test .opencode/plugins/lib/session-budget-core.test.mjs
+          node --test .opencode/plugins/lib/session-budget-lock.test.mjs

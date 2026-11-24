@@ -1,8 +1,9 @@
-import { mkdir, open, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises"
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import path from "node:path"
 
 import { Plugin } from "@opencode/plugin"
 
+import { withBudgetLock } from "./lib/session-budget-lock.mjs"
 import {
   createBudgetTracker,
   decideLease,
@@ -14,8 +15,6 @@ import {
 } from "./lib/session-budget-core.mjs"
 
 const TOUCH_INTERVAL_MS = 30_000
-const LOCK_STALE_MS = 10_000
-const LOCK_TIMEOUT_MS = 2_000
 const MAX_PARENT_DEPTH = 10
 
 export default Plugin.define({
@@ -87,7 +86,9 @@ export default Plugin.define({
           if (typeof parentID !== "string" || parentID.length === 0) break
           current = parentID
         } catch {
-          break
+          // Do not cache a partial resolution. A later call retries, and the
+          // caller fails closed until the hierarchy is known.
+          return undefined
         }
       }
       rootCache.set(sessionID, current)
@@ -95,11 +96,11 @@ export default Plugin.define({
     }
 
     const ownerActive = async (ownerID) => {
-      if (!activityKnown) return undefined
       if (busySessions.has(ownerID)) return true
       for (const sessionID of busySessions) {
         if ((await rootSessionID(sessionID)) === ownerID) return true
       }
+      if (!activityKnown) return undefined
       return false
     }
 
@@ -152,37 +153,6 @@ export default Plugin.define({
       }
     }
 
-    const withBudgetLock = async (callback) => {
-      await mkdir(path.dirname(lockPath), { recursive: true })
-      const deadline = Date.now() + LOCK_TIMEOUT_MS
-      for (;;) {
-        let handle
-        try {
-          handle = await open(lockPath, "wx")
-        } catch (error) {
-          if (error?.code !== "EEXIST") throw error
-          try {
-            const info = await stat(lockPath)
-            if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
-              await unlink(lockPath).catch(() => {})
-              continue
-            }
-          } catch {
-            continue
-          }
-          if (Date.now() >= deadline) throw new Error("timed out waiting for the worktree budget")
-          await new Promise((resolve) => setTimeout(resolve, 25))
-          continue
-        }
-        try {
-          return await callback()
-        } finally {
-          await handle.close().catch(() => {})
-          await unlink(lockPath).catch(() => {})
-        }
-      }
-    }
-
     const trackerFor = (ownerID, state) => {
       const existing = trackers.get(ownerID)
       if (existing !== undefined && existing.expiresAt === state.expiresAt) {
@@ -205,8 +175,11 @@ export default Plugin.define({
 
     const ensureBudget = async (sessionID) => {
       const ownerID = await rootSessionID(sessionID)
+      if (ownerID === undefined) {
+        return { ok: false, reason: "the session hierarchy cannot be resolved" }
+      }
       try {
-        return await withBudgetLock(async () => {
+        return await withBudgetLock(lockPath, async () => {
           const existing = await readBudget()
           if (!existing.ok && !existing.missing) {
             return { ok: false, reason: existing.reason ?? "the worktree budget is malformed" }

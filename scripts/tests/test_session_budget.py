@@ -192,26 +192,42 @@ def test_concurrent_expired_replacements_leave_one_winner(tmp_path: Path) -> Non
     assert stored["session_id"] in {"session-0", "session-1"}
 
 
-def test_lock_file_is_reusable_after_a_crash(tmp_path: Path) -> None:
+def test_lock_directory_is_reusable_after_a_crash(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
-    lock_path = path.with_name(f".{path.name}.lock")
-    lock_path.write_text("stale", encoding="utf-8")
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    owner = lock_dir / "owner"
+    owner.write_text("stale", encoding="utf-8")
     old = time.time() - 120
-    os.utime(lock_path, (old, old))
+    os.utime(owner, (old, old))
 
     state = session_budget.start("session-1", 180, now=START, path=path)
 
     assert state["session_id"] == "session-1"
-    assert lock_path.exists()
+    assert not lock_dir.exists()
     assert session_budget.close(path) is True
+
+
+def test_lock_does_not_steal_a_live_owner(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    (lock_dir / "owner").write_text("other", encoding="utf-8")
+
+    with pytest.raises(session_budget.BudgetError, match="another session"):
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert lock_dir.exists()
+    assert (lock_dir / "owner").read_text(encoding="utf-8") == "other"
 
 
 def test_claim_pr_records_one_and_two_prs(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)
 
-    first = session_budget.claim_pr(101, now=START, path=path)
-    second = session_budget.claim_pr(102, now=START, path=path)
+    first = session_budget.claim_pr(101, "session-1", now=START, path=path)
+    second = session_budget.claim_pr(102, "session-1", now=START, path=path)
 
     assert first["prs"] == [101]
     assert second["prs"] == [101, 102]
@@ -224,7 +240,7 @@ def test_claim_pr_refreshes_activity_without_moving_the_deadline(
     session_budget.start("session-1", 180, now=START, path=path)
 
     state = session_budget.claim_pr(
-        101, now=START + timedelta(minutes=30), path=path
+        101, "session-1", now=START + timedelta(minutes=30), path=path
     )
 
     assert state["updated_at"] == "2026-11-23T12:30:00Z"
@@ -234,7 +250,7 @@ def test_claim_pr_refreshes_activity_without_moving_the_deadline(
 def test_claim_pr_activity_prevents_a_handoff(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)
-    session_budget.claim_pr(101, now=START + timedelta(minutes=30), path=path)
+    session_budget.claim_pr(101, "session-1", now=START + timedelta(minutes=30), path=path)
 
     with pytest.raises(
         session_budget.BudgetError, match="already has an active budget"
@@ -247,9 +263,9 @@ def test_claim_pr_activity_prevents_a_handoff(tmp_path: Path) -> None:
 def test_claim_pr_is_idempotent_for_the_same_number(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)
-    session_budget.claim_pr(101, now=START, path=path)
+    session_budget.claim_pr(101, "session-1", now=START, path=path)
 
-    state = session_budget.claim_pr(101, now=START, path=path)
+    state = session_budget.claim_pr(101, "session-1", now=START, path=path)
 
     assert state["prs"] == [101]
 
@@ -257,11 +273,11 @@ def test_claim_pr_is_idempotent_for_the_same_number(tmp_path: Path) -> None:
 def test_claim_pr_rejects_a_third_pr(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)
-    session_budget.claim_pr(101, now=START, path=path)
-    session_budget.claim_pr(102, now=START, path=path)
+    session_budget.claim_pr(101, "session-1", now=START, path=path)
+    session_budget.claim_pr(102, "session-1", now=START, path=path)
 
     with pytest.raises(session_budget.BudgetError, match="exhausted"):
-        session_budget.claim_pr(103, now=START, path=path)
+        session_budget.claim_pr(103, "session-1", now=START, path=path)
 
 
 def test_claim_pr_rejects_an_expired_budget(tmp_path: Path) -> None:
@@ -269,7 +285,7 @@ def test_claim_pr_rejects_an_expired_budget(tmp_path: Path) -> None:
     session_budget.start("session-1", 180, now=START, path=path)
 
     with pytest.raises(session_budget.BudgetError, match="expired"):
-        session_budget.claim_pr(101, now=START + timedelta(minutes=181), path=path)
+        session_budget.claim_pr(101, "session-1", now=START + timedelta(minutes=181), path=path)
 
 
 def test_check_reports_pr_budget_exhaustion(
@@ -278,8 +294,8 @@ def test_check_reports_pr_budget_exhaustion(
     path = tmp_path / "budget.json"
     monkeypatch.setattr(session_budget, "utc_now", lambda: START)
     session_budget.start("session-1", 180, now=START, path=path)
-    session_budget.claim_pr(101, now=START, path=path)
-    session_budget.claim_pr(102, now=START, path=path)
+    session_budget.claim_pr(101, "session-1", now=START, path=path)
+    session_budget.claim_pr(102, "session-1", now=START, path=path)
 
     exit_code = session_budget.main(["check", "--state", str(path), "--json"])
 
@@ -288,6 +304,98 @@ def test_check_reports_pr_budget_exhaustion(
     assert payload["expired"] is False
     assert payload["pr_budget_exhausted"] is True
     assert payload["prs"] == [101, 102]
+
+
+def test_touch_preserves_activity_when_the_clock_moves_back(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state = session_budget.touch(
+        "session-1", now=START - timedelta(seconds=30), path=path
+    )
+
+    assert state["updated_at"] == "2026-11-23T12:00:00Z"
+
+
+def test_claim_pr_preserves_activity_when_the_clock_moves_back(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state = session_budget.claim_pr(
+        101, "session-1", now=START - timedelta(seconds=30), path=path
+    )
+
+    assert state["updated_at"] == "2026-11-23T12:00:00Z"
+    assert state["prs"] == [101]
+
+
+def test_claim_pr_rejects_another_session(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    with pytest.raises(session_budget.BudgetError, match="owns the budget"):
+        session_budget.claim_pr(101, "session-2", now=START, path=path)
+
+
+def test_claim_pr_rejects_a_boolean_number(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    with pytest.raises(session_budget.BudgetError, match="positive"):
+        session_budget.claim_pr(True, "session-1", now=START, path=path)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"minutes": True},
+        {"max_prs": True},
+        {"prs": [True]},
+    ],
+)
+def test_load_rejects_boolean_fields(tmp_path: Path, overrides: dict) -> None:
+    path = tmp_path / "budget.json"
+    state = {
+        "session_id": "session-1",
+        "started_at": "2026-11-23T12:00:00Z",
+        "expires_at": "2026-11-23T15:00:00Z",
+        "updated_at": "2026-11-23T12:00:00Z",
+        "minutes": 180,
+        "max_prs": 2,
+        "prs": [],
+    }
+    state.update(overrides)
+    path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(session_budget.BudgetError):
+        session_budget.load(path, now=START)
+
+
+def test_load_rejects_boolean_minutes(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-23T15:00:00Z",
+                "minutes": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(session_budget.BudgetError, match="minutes"):
+        session_budget.load(path, now=START)
+
+
+def test_start_rejects_a_boolean_minutes_value(tmp_path: Path) -> None:
+    with pytest.raises(session_budget.BudgetError, match="integer"):
+        session_budget.start(
+            "session-1", True, now=START, path=tmp_path / "budget.json"
+        )
 
 
 def test_load_defaults_pr_fields_for_legacy_state(tmp_path: Path) -> None:
