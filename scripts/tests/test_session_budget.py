@@ -39,7 +39,9 @@ def test_start_writes_state_and_expiry(tmp_path: Path) -> None:
     assert session_budget.load(path) == state
 
 
-def test_repeated_start_preserves_the_deadline(tmp_path: Path) -> None:
+def test_repeated_start_preserves_the_deadline_and_refreshes_activity(
+    tmp_path: Path,
+) -> None:
     path = tmp_path / "budget.json"
     first = session_budget.start("session-1", 180, now=START, path=path)
 
@@ -47,8 +49,9 @@ def test_repeated_start_preserves_the_deadline(tmp_path: Path) -> None:
         "session-1", 180, now=START + timedelta(minutes=60), path=path
     )
 
-    assert second == first
+    assert second["started_at"] == first["started_at"]
     assert second["expires_at"] == "2026-11-23T15:00:00Z"
+    assert second["updated_at"] == "2026-11-23T13:00:00Z"
 
 
 def test_start_does_not_reset_an_expired_same_session(tmp_path: Path) -> None:
@@ -59,8 +62,9 @@ def test_start_does_not_reset_an_expired_same_session(tmp_path: Path) -> None:
         "session-1", 180, now=START + timedelta(minutes=200), path=path
     )
 
-    assert second == first
+    assert second["started_at"] == first["started_at"]
     assert second["expires_at"] == "2026-11-23T15:00:00Z"
+    assert second["updated_at"] == "2026-11-23T15:20:00Z"
 
 
 def test_start_rejects_a_recently_active_session(tmp_path: Path) -> None:
@@ -211,6 +215,33 @@ def test_claim_pr_records_one_and_two_prs(tmp_path: Path) -> None:
 
     assert first["prs"] == [101]
     assert second["prs"] == [101, 102]
+
+
+def test_claim_pr_refreshes_activity_without_moving_the_deadline(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state = session_budget.claim_pr(
+        101, now=START + timedelta(minutes=30), path=path
+    )
+
+    assert state["updated_at"] == "2026-11-23T12:30:00Z"
+    assert state["expires_at"] == "2026-11-23T15:00:00Z"
+
+
+def test_claim_pr_activity_prevents_a_handoff(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+    session_budget.claim_pr(101, now=START + timedelta(minutes=30), path=path)
+
+    with pytest.raises(
+        session_budget.BudgetError, match="already has an active budget"
+    ):
+        session_budget.start(
+            "session-2", 180, now=START + timedelta(minutes=33), path=path
+        )
 
 
 def test_claim_pr_is_idempotent_for_the_same_number(tmp_path: Path) -> None:

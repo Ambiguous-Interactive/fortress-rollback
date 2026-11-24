@@ -182,10 +182,15 @@ def _start_locked(
 ) -> dict[str, Any]:
     if path.exists():
         existing = load(path, now=started)
+        existing_updated = _parse_time(existing["updated_at"], "updated_at")
         if existing["session_id"] == session_key:
+            activity = max(started, existing_updated)
+            if activity != existing_updated:
+                touched = {**existing, "updated_at": _format_time(activity)}
+                _write_state(touched, path)
+                return touched
             return existing
         existing_expires = _parse_time(existing["expires_at"], "expires_at")
-        existing_updated = _parse_time(existing["updated_at"], "updated_at")
         idle_for = started - existing_updated
         if existing_expires > started and not takeover and idle_for < handoff:
             raise BudgetError(
@@ -338,7 +343,9 @@ def claim_pr(
         if expires <= current:
             raise BudgetError("session budget is expired; start a new session")
         if number in state["prs"]:
-            return state
+            updated = {**state, "updated_at": _format_time(current)}
+            _write_state(updated, path)
+            return updated
         if len(state["prs"]) >= state["max_prs"]:
             raise BudgetError(
                 f"session PR budget is exhausted: {len(state['prs'])} of "
@@ -346,6 +353,7 @@ def claim_pr(
             )
         updated = {
             **state,
+            "updated_at": _format_time(current),
             "prs": sorted([*state["prs"], number]),
         }
         _write_state(updated, path)
