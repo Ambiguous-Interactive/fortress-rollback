@@ -76,6 +76,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Pre-existing:** replay decoding now rejects a zero-sized input-count bomb from the header,
+  where `frame_count * num_players` already exceeds `MAX_ZERO_SIZED_INPUTS`, instead of walking
+  the frame list and decoding up to the limit first. Valid replays and their wire bytes are
+  unchanged; the pathological case no longer spends minutes of interpretation time under Miri.
 - **Pre-existing:** malformed wire handles and player counts above `u16::MAX` now reject
   identically on 32-bit and 64-bit targets. Hot-join handles and `StateSnapshot::num_players`, plus
   replay header/metadata player counts, are bounded to the session's `u16` player domain before the
