@@ -37,6 +37,7 @@ export async function withBudgetLock(
   await mkdir(path.dirname(lockPath), { recursive: true })
   const deadline = now() + timeoutMs
   for (;;) {
+    if (now() >= deadline) throw new Error("timed out waiting for the worktree budget")
     try {
       await mkdir(lockPath)
       break

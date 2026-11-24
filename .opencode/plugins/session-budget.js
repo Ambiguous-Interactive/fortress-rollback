@@ -73,17 +73,22 @@ export default Plugin.define({
       const cached = rootCache.get(sessionID)
       if (cached !== undefined) return cached
       let current = sessionID
+      let resolved = false
       for (let depth = 0; depth < MAX_PARENT_DEPTH; depth += 1) {
         const known = rootCache.get(current)
         if (known !== undefined) {
           current = known
+          resolved = true
           break
         }
         try {
           const session = await ctx.session.get({ sessionID: current })
           const info = session?.data ?? session
           const parentID = info?.parentID
-          if (typeof parentID !== "string" || parentID.length === 0) break
+          if (typeof parentID !== "string" || parentID.length === 0) {
+            resolved = true
+            break
+          }
           current = parentID
         } catch {
           // Do not cache a partial resolution. A later call retries, and the
@@ -91,6 +96,7 @@ export default Plugin.define({
           return undefined
         }
       }
+      if (!resolved) return undefined
       rootCache.set(sessionID, current)
       return current
     }

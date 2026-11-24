@@ -112,6 +112,8 @@ def _state_lock(path: Path, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[N
     owner = lock_dir / "owner"
     deadline = time.monotonic() + timeout
     while True:
+        if time.monotonic() >= deadline:
+            raise BudgetError(f"another session is updating {path}")
         try:
             os.mkdir(lock_dir)
             break
