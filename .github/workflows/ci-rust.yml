@@ -226,29 +226,23 @@ jobs:
   # 2. Loom provides better concurrency verification for these tests
   # 3. Only 3 tests affected: test_collecting_observer_concurrent_*
   #
-  # Test distribution (cargo nextest list --lib at this commit: 2,074 cases;
-  # the 102 property/concurrent cases are excluded from Miri):
-  # - sessions:: ~751 (36%)
-  # - network:: ~478 (23%)
-  # - sync_layer:: ~120 (6%)
-  # - input_queue:: ~113 (5%)
-  # - rle:: ~60 (3%)
-  # - misc (error, telemetry, frame_info, tests, sync, test_config, hash, rng,
-  #   checksum, time_sync) ~450 (22%)
+  # Test distribution (from analysis, ~951 unit tests after excluding slow tests):
+  # - sessions:: ~253 tests (27%)
+  # - network:: ~225 tests (24%)
+  # - sync_layer:: ~96 tests (10%)
+  # - input_queue:: ~58 tests (6%)
+  # - rle:: ~44 tests (5%)
+  # - misc (error, telemetry, frame_info, tests, sync, test_config, hash, rng, checksum, time_sync): ~275 tests (29%)
   #
-  # Note: The Linux "misc" lane and the macOS "misc B" lane run the same
-  # selection (rle:: plus the remaining modules). Windows splits that selection
-  # further. All three platforms isolate input_queue:: because it dominates
-  # Miri runtime and repeatedly exceeded the 30-minute cap when grouped with
-  # the rest.
+  # Note: The "misc" job runs 319 tests because it includes rle:: (275 + 44 = 319)
+  # Windows/macOS "misc" runs 377 tests (includes input_queue:: too)
   #
   # Platform strategy:
   # - Linux: 4 jobs with 2 seeds for race detection, full coverage
   #   (input_queue + sync_layer split into separate job for balanced load)
-  # - Windows: 5 jobs with 1 seed, platform-specific UB detection
-  #   (misc split into input_queue, error + tests, and the remaining modules)
-  # - macOS: 3 jobs with 1 seed, platform-specific UB detection
-  #   (misc split into input_queue and the remaining modules)
+  # - Windows: 2 jobs with 1 seed, platform-specific UB detection
+  #   (input_queue grouped with misc for fewer total jobs)
+  # - macOS: 2 jobs with 1 seed, platform-specific UB detection
   #
   # Big-endian wire-format coverage runs in the dedicated narrow
   # `big-endian-runtime` lane below (s390x QEMU), alongside the host-native
@@ -260,8 +254,7 @@ jobs:
   # Performance notes:
   # - Property tests are 50-300x slower under Miri (skipped, use proptest directly)
   # - Concurrent tests are extremely slow under Miri (skipped, use loom instead)
-  # - Total: 12 jobs; each shard must stay under the 30-minute cap for
-  #   hosted-runner variance
+  # - Total: 9 jobs; normally under the 30-minute cap for hosted-runner variance
   miri:
     name: Miri (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
@@ -275,28 +268,28 @@ jobs:
           # Skip: property_tests (slow), concurrent (use loom instead)
           # ============================================================
 
-          # Linux Job 1: Sessions module (~751 tests)
+          # Linux Job 1: Sessions module (~253 tests)
           - name: Linux - sessions
             os: ubuntu-latest
             seeds: "0..2"
             test_filter: "sessions::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Linux Job 2: Network module (~478 tests)
+          # Linux Job 2: Network module (~225 tests)
           - name: Linux - network
             os: ubuntu-latest
             seeds: "0..2"
             test_filter: "network::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Linux Job 3: Input queue + sync_layer (~233 tests)
+          # Linux Job 3: Input queue + sync_layer (~154 tests)
           - name: Linux - queues
             os: ubuntu-latest
             seeds: "0..2"
             test_filter: "input_queue:: sync_layer::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Linux Job 4: Everything else (~510 tests)
+          # Linux Job 4: Everything else (~319 tests)
           # Covers: error::, hash::, rng::, checksum::, time_sync::,
           #         telemetry::, frame_info::, sync::, rle::, tests::
           - name: Linux - misc
@@ -306,10 +299,10 @@ jobs:
             skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip input_queue:: --skip sync_layer::"
 
           # ============================================================
-          # Windows jobs (1 seed each, 5 jobs total)
+          # Windows jobs (1 seed each, 3 jobs total)
           # ============================================================
 
-          # Windows Job 1: Sessions (~751 tests). Split from the old combined
+          # Windows Job 1: Sessions (~253 tests). Split from the old combined
           # core job, which repeatedly hit the 30-minute Windows Miri timeout.
           - name: Windows - sessions
             os: windows-latest
@@ -317,34 +310,31 @@ jobs:
             test_filter: "sessions::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Windows Job 2: Network + sync_layer (~598 tests)
+          # Windows Job 2: Network + sync_layer (~321 tests)
           - name: Windows - network
             os: windows-latest
             seeds: "0..1"
             test_filter: "network:: sync_layer::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # Windows Job 3: Input queue (~113 tests after the dedicated skips).
-          # Isolated because the Miri input_queue tests dominate the old misc
-          # lane runtime.
+          # Windows Job 3: Input queue (~123 native tests). Isolated because
+          # the Miri input_queue tests dominate the old misc lane runtime.
           - name: Windows - misc A
             os: windows-latest
             seeds: "0..1"
             test_filter: "input_queue::"
             skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer::"
 
-          # Windows Job 4: The error module plus every test nested under a
-          # `tests` module (~506 native cases). `--skip tests::` is a substring
-          # match, so this lane owns all nested `tests` modules.
+          # Windows Job 4: Error and misc unit tests (~222 native tests).
+          # Keep these together only while a cold-cache run completes.
           - name: Windows - misc B
             os: windows-latest
             seeds: "0..1"
             test_filter: "error:: tests::"
             skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer:: --skip input_queue::"
 
-          # Windows Job 5: The tests that are not nested under a `tests`
-          # module (the serialization golden cases). The skips above are
-          # repeated so every remaining test runs exactly once.
+          # Windows Job 5: Remaining modules (~345 native tests). The skips
+          # above are repeated so every remaining test runs exactly once.
           - name: Windows - misc C
             os: windows-latest
             seeds: "0..1"
@@ -352,33 +342,22 @@ jobs:
             skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer:: --skip input_queue:: --skip error:: --skip tests::"
 
           # ============================================================
-          # macOS jobs (1 seed each, 3 jobs total)
+          # macOS jobs (1 seed each, 2 jobs total)
           # ============================================================
 
-          # macOS Job 1: Core modules (~1,349 tests)
+          # macOS Job 1: Core modules (~574 tests)
           - name: macOS - core
             os: macos-latest
             seeds: "0..1"
             test_filter: "sessions:: network:: sync_layer::"
             skip_filter: "--skip property_tests --skip concurrent"
 
-          # macOS Job 2: Input queue (~113 tests after the dedicated skips).
-          # Isolated because the Miri input_queue tests dominate the old misc
-          # lane runtime, which hit the 30-minute cap on main at 5cd54ec5.
-          - name: macOS - misc A
-            os: macos-latest
-            seeds: "0..1"
-            test_filter: "input_queue::"
-            skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer::"
-
-          # macOS Job 3: The remaining modules (the same selection as the Linux
-          # misc lane). The skips above are repeated so every remaining test runs
-          # in exactly one misc shard.
-          - name: macOS - misc B
+          # macOS Job 2: Everything else (~377 tests)
+          - name: macOS - misc
             os: macos-latest
             seeds: "0..1"
             test_filter: ""
-            skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer:: --skip input_queue::"
+            skip_filter: "--skip property_tests --skip concurrent --skip sessions:: --skip network:: --skip sync_layer::"
 
     steps:
       - uses: actions/checkout@v7

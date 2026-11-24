@@ -358,14 +358,18 @@ fn read_replay_string(
     Ok(out)
 }
 
+fn zero_sized_input_limit_error(total: usize) -> codec::CodecError {
+    replay_decode_error(format!(
+        "zero-sized replay input count {total} exceeds hard limit {MAX_ZERO_SIZED_INPUTS}"
+    ))
+}
+
 fn accumulate_zero_sized_input_count(current: usize, additional: usize) -> CodecResult<usize> {
     let total = current
         .checked_add(additional)
         .ok_or_else(|| replay_decode_error("zero-sized replay input count overflow"))?;
     if total > MAX_ZERO_SIZED_INPUTS {
-        return Err(replay_decode_error(format!(
-            "zero-sized replay input count {total} exceeds hard limit {MAX_ZERO_SIZED_INPUTS}"
-        )));
+        return Err(zero_sized_input_limit_error(total));
     }
     Ok(total)
 }
@@ -446,6 +450,20 @@ where
     let num_players = read_replay_player_count(bytes, &mut cursor, "num_players")?;
     let frame_count = read_replay_usize(bytes, &mut cursor, "frames.len")?;
     let mut zero_sized_input_count = 0_usize;
+
+    // Every frame must carry exactly `num_players` inputs, so the cumulative
+    // zero-sized count is known from the two length prefixes alone. Rejecting a
+    // count bomb here avoids decoding up to the hard limit before the
+    // per-frame check fires; the per-frame accumulation below remains as
+    // defense in depth.
+    if core::mem::size_of::<I>() == 0 {
+        let total = frame_count
+            .checked_mul(num_players)
+            .ok_or_else(|| replay_decode_error("zero-sized replay input count overflow"))?;
+        if total > MAX_ZERO_SIZED_INPUTS {
+            return Err(zero_sized_input_limit_error(total));
+        }
+    }
 
     let mut frames = Vec::new();
     reserve_replay_vec(
@@ -1177,6 +1195,45 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("zero-sized replay input count"));
         assert!(message.contains("exceeds hard limit"));
+    }
+
+    #[test]
+    fn replay_from_bytes_rejects_zero_sized_count_bomb_from_header() {
+        #[derive(Copy, Clone, PartialEq, Eq, Default, Debug, Deserialize)]
+        struct Zst;
+
+        // The two header lengths alone exceed the cumulative limit. Omit every
+        // frame length prefix: the decoder must reject from the header, not
+        // stop on the missing first frame's input count.
+        let players = u64::from(u16::MAX);
+        let frame_count = (MAX_ZERO_SIZED_INPUTS / usize::from(u16::MAX)) + 2;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&players.to_le_bytes()); // num_players
+        bytes.extend_from_slice(&u64::try_from(frame_count).unwrap().to_le_bytes()); // frames.len
+
+        let error = Replay::<Zst>::from_bytes(&bytes)
+            .expect_err("the header count product alone must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("zero-sized replay input count"));
+        assert!(message.contains("exceeds hard limit"));
+        assert!(!message.contains("truncated"));
+    }
+
+    #[test]
+    fn replay_from_bytes_rejects_zero_sized_count_product_overflow() {
+        #[derive(Copy, Clone, PartialEq, Eq, Default, Debug, Deserialize)]
+        struct Zst;
+
+        // `usize::MAX * u16::MAX` overflows on every supported target width.
+        // Only the two header lengths are present; the product check must fail
+        // before the frame vector bound or a frame read.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&u64::from(u16::MAX).to_le_bytes()); // num_players
+        bytes.extend_from_slice(&u64::try_from(usize::MAX).unwrap().to_le_bytes()); // frames.len
+
+        let error = Replay::<Zst>::from_bytes(&bytes)
+            .expect_err("the header count product must not overflow");
+        assert!(error.to_string().contains("count overflow"));
     }
 
     #[test]
