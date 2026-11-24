@@ -126,6 +126,27 @@ export default Plugin.define({
         }),
       ])
 
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({
+          types: ["session.status"],
+          signal: controller.signal,
+        })) {
+          const { sessionID, status } = event.data
+          if (status.type === "idle") busySessions.delete(sessionID)
+          else busySessions.add(sessionID)
+        }
+      } catch (error) {
+        activityKnown = false
+        if (!controller.signal.aborted) {
+          console.error("[session-budget] session activity subscription failed:", error)
+        }
+      }
+    })()
+
+    // Start the status stream before the snapshot, then give it a tick so an
+    // owner that becomes busy in the gap is still observed.
+    await new Promise((resolve) => setTimeout(resolve, 0))
     try {
       if (typeof ctx.session.active === "function") {
         const active = await withTimeout(
@@ -361,24 +382,6 @@ export default Plugin.define({
     } catch (error) {
       console.error("[session-budget] tool guard unavailable; prompts will be refused:", error)
     }
-
-    void (async () => {
-      try {
-        for await (const event of ctx.event.subscribe({
-          types: ["session.status"],
-          signal: controller.signal,
-        })) {
-          const { sessionID, status } = event.data
-          if (status.type === "idle") busySessions.delete(sessionID)
-          else busySessions.add(sessionID)
-        }
-      } catch (error) {
-        activityKnown = false
-        if (!controller.signal.aborted) {
-          console.error("[session-budget] session activity subscription failed:", error)
-        }
-      }
-    })()
 
     return async () => {
       controller.abort()

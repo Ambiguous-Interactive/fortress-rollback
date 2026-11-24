@@ -12,10 +12,12 @@ const defaultSleep = (milliseconds) =>
 const modifiedAt = async (ownerPath, lockPath) => {
   try {
     return (await stat(ownerPath)).mtimeMs
-  } catch {
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error
     try {
       return (await stat(lockPath)).mtimeMs
-    } catch {
+    } catch (inner) {
+      if (inner?.code !== "ENOENT") throw inner
       return undefined
     }
   }
@@ -40,7 +42,6 @@ export async function withBudgetLock(
     if (now() >= deadline) throw new Error("timed out waiting for the worktree budget")
     try {
       await mkdir(lockPath)
-      break
     } catch (error) {
       if (error?.code !== "EEXIST") throw error
       const modified = await modifiedAt(ownerPath, lockPath)
@@ -52,7 +53,8 @@ export async function withBudgetLock(
         let observedOwner
         try {
           observedOwner = await readFile(ownerPath, "utf8")
-        } catch {
+        } catch (error) {
+          if (error?.code !== "ENOENT") throw error
           observedOwner = undefined
         }
         // Rename before removal so two reapers cannot delete a fresh lock that
@@ -69,7 +71,11 @@ export async function withBudgetLock(
         try {
           renamedOwner = await readFile(path.join(stale, "owner"), "utf8")
           renamedModified = (await stat(path.join(stale, "owner"))).mtimeMs
-        } catch {
+        } catch (error) {
+          if (error?.code !== "ENOENT") {
+            await rename(stale, lockPath).catch(() => {})
+            throw error
+          }
           renamedOwner = undefined
           renamedModified = undefined
         }
@@ -89,13 +95,17 @@ export async function withBudgetLock(
       if (now() >= deadline) throw new Error("timed out waiting for the worktree budget")
       await sleep(25)
     }
-  }
-
-  try {
-    await writeFile(ownerPath, token, { encoding: "utf8", mode: 0o600 })
-  } catch (error) {
-    await rm(lockPath, { recursive: true, force: true }).catch(() => {})
-    throw error
+    try {
+      await writeFile(ownerPath, token, { encoding: "utf8", mode: 0o600, flag: "wx" })
+      break
+    } catch (error) {
+      if (error?.code === "EEXIST") {
+        await sleep(25)
+        continue
+      }
+      await rm(lockPath, { recursive: true, force: true }).catch(() => {})
+      throw error
+    }
   }
 
   let released = false

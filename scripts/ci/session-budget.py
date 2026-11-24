@@ -130,7 +130,6 @@ def _state_lock(
             raise BudgetError(f"another session is updating {path}")
         try:
             os.mkdir(lock_dir)
-            break
         except FileExistsError:
             try:
                 modified = owner.stat().st_mtime
@@ -142,7 +141,7 @@ def _state_lock(
             if time.time() - modified > LOCK_STALE_SECONDS:
                 try:
                     observed_owner = owner.read_text(encoding="utf-8")
-                except OSError:
+                except FileNotFoundError:
                     observed_owner = None
                 stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
                 try:
@@ -152,9 +151,15 @@ def _state_lock(
                 try:
                     renamed_owner = (stale / "owner").read_text(encoding="utf-8")
                     renamed_modified = (stale / "owner").stat().st_mtime
-                except OSError:
+                except FileNotFoundError:
                     renamed_owner = None
                     renamed_modified = None
+                except OSError:
+                    try:
+                        os.rename(stale, lock_dir)
+                    except OSError:
+                        pass
+                    raise
                 if renamed_owner != observed_owner or (
                     renamed_modified is not None
                     and time.time() - renamed_modified <= LOCK_STALE_SECONDS
@@ -172,11 +177,18 @@ def _state_lock(
             if time.monotonic() >= deadline:
                 raise BudgetError(f"another session is updating {path}")
             time.sleep(0.01)
-    try:
-        owner.write_text(token, encoding="utf-8")
-    except OSError:
-        shutil.rmtree(lock_dir, ignore_errors=True)
-        raise
+            continue
+        try:
+            handle = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            time.sleep(0.01)
+            continue
+        except OSError:
+            shutil.rmtree(lock_dir, ignore_errors=True)
+            raise
+        with os.fdopen(handle, "w", encoding="utf-8") as created:
+            created.write(token)
+        break
     stop = threading.Event()
 
     def heartbeat() -> None:
@@ -252,7 +264,14 @@ def _start_locked(
 ) -> dict[str, Any]:
     if path.exists():
         permissive_now = max(started, utc_now().astimezone(timezone.utc))
-        existing = load(path, now=permissive_now)
+        try:
+            existing = load(path, now=permissive_now)
+        except BudgetError as exc:
+            if "in the future" not in str(exc):
+                raise
+            raw_state = json.loads(path.read_text(encoding="utf-8"))
+            stored_updated = _parse_time(raw_state.get("updated_at"), "updated_at")
+            existing = load(path, now=max(permissive_now, stored_updated))
         existing_updated = _parse_time(existing["updated_at"], "updated_at")
         if existing["session_id"] == session_key:
             activity = max(started, existing_updated)

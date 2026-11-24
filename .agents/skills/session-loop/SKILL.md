@@ -74,7 +74,7 @@ only delays the handoff until the lease is idle or expired.
 Every PR body must include:
 
 ```text
-<!-- session: <id> started: <ISO8601> -->
+<!-- session: <id> started: <ISO8601 with Z or offset> -->
 ```
 
 The marker belongs to the session that currently owns the PR. A PR carried over from an earlier
@@ -210,7 +210,7 @@ required check.
 
 The PR must state the goal, evidence, risks, rollback, and the item link, and fill
 `.github/PULL_REQUEST_TEMPLATE.md`. Include
-`<!-- session: <id> started: <ISO8601> -->` in the body. A PR carried over from an earlier session
+`<!-- session: <id> started: <ISO8601 with Z or offset> -->` in the body. A PR carried over from an earlier session
 is re-marked with the current session's start; the rolling count still uses the PR creation time. Do
 not check boxes for checks that were not run. After opening the PR, run
 `python3 scripts/ci/session-budget.py claim-pr --id <session_id from check --json> --number <PR>`.
@@ -303,7 +303,7 @@ Expect `0 0` and an empty status. Delete local and remote feature branches after
 5. Release the lease for the next session:
 
 ```bash
-python3 scripts/ci/session-budget.py close --id session-<id>
+python3 scripts/ci/session-budget.py close --id <session_id from check --json>
 ```
 
 This is an agent closeout step, not an operator step. Use the session ID from
