@@ -182,6 +182,12 @@ def _feature_set(command: list[str]) -> frozenset[str]:
     )
 
 
+def _miri_skips(entry: dict) -> set[str]:
+    """Return the ``--skip`` patterns for one Miri matrix entry."""
+    words = shlex.split(entry["skip_filter"])
+    return {words[index + 1] for index, word in enumerate(words) if word == "--skip"}
+
+
 @pytest.mark.parametrize(
     ("section", "key", "expected"),
     (
@@ -388,9 +394,39 @@ def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
     assert lane_b["test_filter"].split() == ["error::", "tests::"]
     assert lane_c["test_filter"] == ""
 
-    def skips(entry: dict) -> set[str]:
-        words = shlex.split(entry["skip_filter"])
-        return {words[index + 1] for index, word in enumerate(words) if word == "--skip"}
+    dedicated = {
+        "property_tests",
+        "concurrent",
+        "sessions::",
+        "network::",
+        "sync_layer::",
+    }
+    assert _miri_skips(lane_a) == dedicated
+    assert _miri_skips(lane_b) == dedicated | {"input_queue::"}
+    assert _miri_skips(lane_c) == dedicated | {"input_queue::", "error::", "tests::"}
+
+
+def test_macos_miri_misc_lane_is_split_without_coverage_gaps() -> None:
+    """The macOS misc shard must stay within the timeout without overlap."""
+    workflow = _load_ci_rust_workflow()
+    miri_job = workflow["jobs"]["miri"]
+
+    assert miri_job["timeout-minutes"] == 30
+    lanes = {
+        entry["name"]: entry
+        for entry in miri_job["strategy"]["matrix"]["include"]
+        if entry["name"].startswith("macOS - misc")
+    }
+    assert set(lanes) == {"macOS - misc A", "macOS - misc B"}
+
+    lane_a = lanes["macOS - misc A"]
+    lane_b = lanes["macOS - misc B"]
+    for lane in (lane_a, lane_b):
+        assert lane["os"] == "macos-latest"
+        assert lane["seeds"] == "0..1"
+
+    assert lane_a["test_filter"].split() == ["input_queue::"]
+    assert lane_b["test_filter"] == ""
 
     dedicated = {
         "property_tests",
@@ -399,9 +435,8 @@ def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
         "network::",
         "sync_layer::",
     }
-    assert skips(lane_a) == dedicated
-    assert skips(lane_b) == dedicated | {"input_queue::"}
-    assert skips(lane_c) == dedicated | {"input_queue::", "error::", "tests::"}
+    assert _miri_skips(lane_a) == dedicated
+    assert _miri_skips(lane_b) == dedicated | {"input_queue::"}
 
 
 def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
