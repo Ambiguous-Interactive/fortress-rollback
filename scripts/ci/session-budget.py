@@ -6,31 +6,32 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
+import shutil
 import sys
 import tempfile
+import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-
-_fcntl: Any
-_msvcrt: Any
-try:
-    import fcntl as _fcntl
-except ImportError:  # pragma: no cover - Windows
-    _fcntl = None
-try:
-    import msvcrt as _msvcrt
-except ImportError:  # pragma: no cover - POSIX
-    _msvcrt = None
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_STATE_PATH = REPO_ROOT / "progress" / ".session-budget.json"
 DEFAULT_MINUTES = 180
 MAX_MINUTES = 180
 MIN_MINUTES = 1
+DEFAULT_MAX_PRS = 2
+MAX_PRS_LIMIT = 2
+MIN_PR_NUMBER = 1
+DEFAULT_HANDOFF_MINUTES = 5
+MAX_HANDOFF_MINUTES = 60
+CLOCK_SKEW_SECONDS = 60
+LOCK_STALE_SECONDS = 10
+LOCK_HEARTBEAT_SECONDS = 1.0
+LOCK_TIMEOUT_SECONDS = 5.0
 
 
 class BudgetError(Exception):
@@ -69,7 +70,11 @@ def _serialize(state: dict[str, Any]) -> str:
     return json.dumps(state, indent=2, sort_keys=True) + "\n"
 
 
-def _write_state(state: dict[str, Any], path: Path) -> None:
+def _write_state(
+    state: dict[str, Any],
+    path: Path,
+    fence: Callable[[], None] | None = None,
+) -> None:
     """Replace the state through a unique temporary file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     handle, temporary_name = tempfile.mkstemp(
@@ -78,6 +83,8 @@ def _write_state(state: dict[str, Any], path: Path) -> None:
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as temporary:
             temporary.write(_serialize(state))
+        if fence is not None:
+            fence()
         os.replace(temporary_name, path)
     except Exception:
         try:
@@ -87,9 +94,15 @@ def _write_state(state: dict[str, Any], path: Path) -> None:
         raise
 
 
-def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
+def _create_state_exclusive(
+    state: dict[str, Any],
+    path: Path,
+    fence: Callable[[], None] | None = None,
+) -> None:
     """Create a new state file only when no other writer won the race."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    if fence is not None:
+        fence()
     handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(handle, "w", encoding="utf-8") as created:
@@ -103,78 +116,191 @@ def _create_state_exclusive(state: dict[str, Any], path: Path) -> None:
 
 
 @contextmanager
-def _state_lock(path: Path, timeout: float = 1.0) -> Iterator[None]:
-    """Serialize budget updates with an OS-released advisory lock."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(f".{path.name}.lock")
+def _state_lock(
+    path: Path, timeout: float = LOCK_TIMEOUT_SECONDS
+) -> Iterator[Callable[[], None]]:
+    """Serialize budget updates with a shared directory lock."""
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.parent.mkdir(parents=True, exist_ok=True)
+    token = secrets.token_hex(16)
+    owner = lock_dir / "owner"
     deadline = time.monotonic() + timeout
-    with open(lock_path, "a+b") as handle:
-        locked = False
-        while not locked:
-            try:
-                if _fcntl is not None:
-                    _fcntl.flock(handle.fileno(), _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-                elif _msvcrt is not None:
-                    handle.seek(0)
-                    _msvcrt.locking(handle.fileno(), _msvcrt.LK_NBLCK, 1)
-                else:
-                    raise BudgetError("no file-locking primitive is available")
-                locked = True
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise BudgetError(f"another session is updating {path}") from None
-                time.sleep(0.01)
+    while True:
+        if time.monotonic() >= deadline:
+            raise BudgetError(f"another session is updating {path}")
         try:
-            yield
-        finally:
-            if _fcntl is not None:
-                _fcntl.flock(handle.fileno(), _fcntl.LOCK_UN)
-            elif _msvcrt is not None:
-                handle.seek(0)
-                _msvcrt.locking(handle.fileno(), _msvcrt.LK_UNLCK, 1)
+            os.mkdir(lock_dir)
+        except FileExistsError:
+            try:
+                modified = owner.stat().st_mtime
+            except FileNotFoundError:
+                try:
+                    modified = lock_dir.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+            if time.time() - modified > LOCK_STALE_SECONDS:
+                try:
+                    observed_owner = owner.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    observed_owner = None
+                stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
+                try:
+                    os.rename(lock_dir, stale)
+                except OSError:
+                    continue
+                try:
+                    renamed_owner = (stale / "owner").read_text(encoding="utf-8")
+                    renamed_modified = (stale / "owner").stat().st_mtime
+                except FileNotFoundError:
+                    renamed_owner = None
+                    renamed_modified = None
+                except OSError:
+                    try:
+                        os.rename(stale, lock_dir)
+                    except OSError:
+                        pass
+                    raise
+                if renamed_owner != observed_owner or (
+                    renamed_modified is not None
+                    and time.time() - renamed_modified <= LOCK_STALE_SECONDS
+                ):
+                    # A heartbeat or a fresh owner replaced the stale lock
+                    # between our stat and rename. Put it back instead of
+                    # entering the critical section.
+                    try:
+                        os.rename(stale, lock_dir)
+                    except OSError:
+                        pass
+                    continue
+                shutil.rmtree(stale, ignore_errors=True)
+                continue
+            if time.monotonic() >= deadline:
+                raise BudgetError(f"another session is updating {path}")
+            time.sleep(0.01)
+            continue
+        try:
+            handle = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            time.sleep(0.01)
+            continue
+        except OSError:
+            # Do not remove lock_dir here: a reaper may have moved our
+            # directory and a replacement owner may now occupy the path.
+            raise
+        with os.fdopen(handle, "w", encoding="utf-8") as created:
+            created.write(token)
+        break
+    stop = threading.Event()
+
+    def heartbeat() -> None:
+        while not stop.wait(LOCK_HEARTBEAT_SECONDS):
+            try:
+                os.utime(owner, None)
+            except OSError:
+                return
+
+    thread = threading.Thread(target=heartbeat, daemon=True)
+    thread.start()
+
+    def fence() -> None:
+        try:
+            current = owner.read_text(encoding="utf-8")
+        except OSError:
+            raise BudgetError("the session budget lock was lost") from None
+        if current != token:
+            raise BudgetError("the session budget lock was lost")
+
+    try:
+        yield fence
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        try:
+            if owner.read_text(encoding="utf-8") == token:
+                shutil.rmtree(lock_dir, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def start(
     session_id: str,
     minutes: int = DEFAULT_MINUTES,
+    max_prs: int = DEFAULT_MAX_PRS,
     *,
+    takeover: bool = False,
+    handoff: timedelta = timedelta(minutes=DEFAULT_HANDOFF_MINUTES),
     now: datetime | None = None,
     path: Path = DEFAULT_STATE_PATH,
 ) -> dict[str, Any]:
     """Create a budget for one session and return the stored state."""
     if not session_id.strip():
         raise BudgetError("session id must not be empty")
-    if minutes < MIN_MINUTES or minutes > MAX_MINUTES:
+    if type(minutes) is not int or not MIN_MINUTES <= minutes <= MAX_MINUTES:
         raise BudgetError(
-            f"minutes must be between {MIN_MINUTES} and {MAX_MINUTES}: {minutes}"
+            f"minutes must be an integer between {MIN_MINUTES} and {MAX_MINUTES}: {minutes}"
+        )
+    if type(max_prs) is not int or not 1 <= max_prs <= MAX_PRS_LIMIT:
+        raise BudgetError(f"max_prs must be an integer between 1 and {MAX_PRS_LIMIT}: {max_prs}")
+    if handoff <= timedelta(0) or handoff > timedelta(minutes=MAX_HANDOFF_MINUTES):
+        raise BudgetError(
+            f"handoff must be between 0 and {MAX_HANDOFF_MINUTES} minutes"
         )
     started = (now or utc_now()).astimezone(timezone.utc)
     session_key = session_id.strip()
-    with _state_lock(path):
-        return _start_locked(session_key, started, minutes, path)
+    with _state_lock(path) as fence:
+        return _start_locked(
+            session_key, started, minutes, max_prs, takeover, handoff, path, fence
+        )
 
 
 def _start_locked(
-    session_key: str, started: datetime, minutes: int, path: Path
+    session_key: str,
+    started: datetime,
+    minutes: int,
+    max_prs: int,
+    takeover: bool,
+    handoff: timedelta,
+    path: Path,
+    fence: Callable[[], None],
 ) -> dict[str, Any]:
     if path.exists():
-        existing = load(path)
+        permissive_now = max(started, utc_now().astimezone(timezone.utc))
+        try:
+            existing = load(path, now=permissive_now)
+        except BudgetError as exc:
+            if "in the future" not in str(exc):
+                raise
+            raw_state = json.loads(path.read_text(encoding="utf-8"))
+            if raw_state.get("session_id") != session_key:
+                # Only the owning session may recover from a future timestamp
+                # caused by a backward clock change.
+                raise
+            stored_updated = _parse_time(raw_state.get("updated_at"), "updated_at")
+            existing = load(path, now=max(permissive_now, stored_updated))
+        existing_updated = _parse_time(existing["updated_at"], "updated_at")
         if existing["session_id"] == session_key:
+            activity = max(started, existing_updated)
+            if activity != existing_updated:
+                touched = {**existing, "updated_at": _format_time(activity)}
+                _write_state(touched, path, fence)
+                return touched
             return existing
         existing_expires = _parse_time(existing["expires_at"], "expires_at")
-        if existing_expires > started:
+        idle_for = started - existing_updated
+        if existing_expires > started and not takeover and idle_for < handoff:
             raise BudgetError(
                 f"session {existing['session_id']} already has an active budget "
-                f"until {existing['expires_at']}"
+                f"until {existing['expires_at']} and was active {_format_time(existing_updated)}; "
+                "wait for it to go idle or pass --takeover"
             )
-        state = _new_state(session_key, started, minutes)
-        _write_state(state, path)
+        state = _new_state(session_key, started, minutes, max_prs)
+        _write_state(state, path, fence)
         return state
 
-    state = _new_state(session_key, started, minutes)
+    state = _new_state(session_key, started, minutes, max_prs)
     for _ in range(5):
         try:
-            _create_state_exclusive(state, path)
+            _create_state_exclusive(state, path, fence)
             return state
         except FileExistsError:
             time.sleep(0.02)
@@ -191,17 +317,24 @@ def _start_locked(
     raise BudgetError(f"could not create a session budget at {path}")
 
 
-def _new_state(session_id: str, started: datetime, minutes: int) -> dict[str, Any]:
+def _new_state(
+    session_id: str, started: datetime, minutes: int, max_prs: int
+) -> dict[str, Any]:
     expires = started + timedelta(minutes=minutes)
     return {
         "session_id": session_id,
         "started_at": _format_time(started),
         "expires_at": _format_time(expires),
+        "updated_at": _format_time(started),
         "minutes": minutes,
+        "max_prs": max_prs,
+        "prs": [],
     }
 
 
-def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+def load(
+    path: Path = DEFAULT_STATE_PATH, *, now: datetime | None = None
+) -> dict[str, Any]:
     """Load and validate the stored budget."""
     try:
         raw = path.read_text(encoding="utf-8")
@@ -219,7 +352,7 @@ def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
     started = _parse_time(state.get("started_at"), "started_at")
     expires = _parse_time(state.get("expires_at"), "expires_at")
     minutes = state.get("minutes")
-    if not isinstance(minutes, int) or not MIN_MINUTES <= minutes <= MAX_MINUTES:
+    if type(minutes) is not int or not MIN_MINUTES <= minutes <= MAX_MINUTES:
         raise BudgetError(
             f"minutes must be an integer between {MIN_MINUTES} and {MAX_MINUTES}"
         )
@@ -230,7 +363,27 @@ def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
         raise BudgetError(
             f"expires_at is more than the configured {minutes} minutes after started_at"
         )
-    return state
+    current = (now or utc_now()).astimezone(timezone.utc)
+    updated_raw = state.get("updated_at")
+    updated = started if updated_raw is None else _parse_time(updated_raw, "updated_at")
+    if updated < started:
+        raise BudgetError("updated_at must not precede started_at")
+    if updated > current + timedelta(seconds=CLOCK_SKEW_SECONDS):
+        raise BudgetError("updated_at must not be in the future")
+    max_prs = state.get("max_prs", DEFAULT_MAX_PRS)
+    if type(max_prs) is not int or not 1 <= max_prs <= MAX_PRS_LIMIT:
+        raise BudgetError(f"max_prs must be between 1 and {MAX_PRS_LIMIT}")
+    prs = state.get("prs", [])
+    if not isinstance(prs, list) or not all(
+        type(number) is int and number >= MIN_PR_NUMBER for number in prs
+    ):
+        raise BudgetError("prs must be a list of positive pull request numbers")
+    return {
+        **state,
+        "updated_at": _format_time(updated),
+        "max_prs": max_prs,
+        "prs": sorted(set(prs)),
+    }
 
 
 def check(
@@ -239,16 +392,94 @@ def check(
     path: Path = DEFAULT_STATE_PATH,
 ) -> tuple[dict[str, Any], float]:
     """Return the state and remaining minutes; negative means expired."""
-    state = load(path)
     current = (now or utc_now()).astimezone(timezone.utc)
+    state = load(path, now=current)
     expires = _parse_time(state["expires_at"], "expires_at")
     remaining_minutes = (expires - current).total_seconds() / 60.0
     return state, remaining_minutes
 
 
-def close(path: Path = DEFAULT_STATE_PATH) -> bool:
-    """Remove the stored budget; return whether a file was removed."""
-    with _state_lock(path):
+def touch(
+    session_id: str,
+    *,
+    now: datetime | None = None,
+    path: Path = DEFAULT_STATE_PATH,
+) -> dict[str, Any]:
+    """Record owner activity without moving the deadline."""
+    current = (now or utc_now()).astimezone(timezone.utc)
+    with _state_lock(path) as fence:
+        state = load(path, now=current)
+        if state["session_id"] != session_id:
+            raise BudgetError(
+                f"session {state['session_id']} owns the budget; "
+                f"{session_id} cannot record activity"
+            )
+        expires = _parse_time(state["expires_at"], "expires_at")
+        if expires <= current:
+            raise BudgetError("session budget is expired; start a new session")
+        activity = max(current, _parse_time(state["updated_at"], "updated_at"))
+        updated = {**state, "updated_at": _format_time(activity)}
+        _write_state(updated, path, fence)
+        return updated
+
+
+def claim_pr(
+    number: int,
+    session_id: str,
+    *,
+    now: datetime | None = None,
+    path: Path = DEFAULT_STATE_PATH,
+) -> dict[str, Any]:
+    """Record one opened PR for the owning session and enforce the limit."""
+    if type(number) is not int or number < MIN_PR_NUMBER:
+        raise BudgetError(f"pull request number must be positive: {number}")
+    if not session_id.strip():
+        raise BudgetError("session id must not be empty")
+    current = (now or utc_now()).astimezone(timezone.utc)
+    with _state_lock(path) as fence:
+        state = load(path, now=current)
+        if state["session_id"] != session_id.strip():
+            raise BudgetError(
+                f"session {state['session_id']} owns the budget; "
+                f"{session_id} cannot claim a pull request"
+            )
+        expires = _parse_time(state["expires_at"], "expires_at")
+        if expires <= current:
+            raise BudgetError("session budget is expired; start a new session")
+        activity = max(current, _parse_time(state["updated_at"], "updated_at"))
+        if number in state["prs"]:
+            updated = {**state, "updated_at": _format_time(activity)}
+            _write_state(updated, path, fence)
+            return updated
+        if len(state["prs"]) >= state["max_prs"]:
+            raise BudgetError(
+                f"session PR budget is exhausted: {len(state['prs'])} of "
+                f"{state['max_prs']} already claimed"
+            )
+        updated = {
+            **state,
+            "updated_at": _format_time(activity),
+            "prs": sorted([*state["prs"], number]),
+        }
+        _write_state(updated, path, fence)
+        return updated
+
+
+def close(
+    session_id: str, path: Path = DEFAULT_STATE_PATH
+) -> bool:
+    """Remove the stored budget when it belongs to `session_id`."""
+    if not session_id.strip():
+        raise BudgetError("session id must not be empty")
+    with _state_lock(path) as fence:
+        if path.exists():
+            state = load(path)
+            if state["session_id"] != session_id.strip():
+                raise BudgetError(
+                    f"session {state['session_id']} owns the budget; "
+                    f"{session_id} cannot close it"
+                )
+        fence()
         try:
             path.unlink()
         except FileNotFoundError:
@@ -278,13 +509,45 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MINUTES,
         help=f"Budget in minutes, at most {MAX_MINUTES} (default: {DEFAULT_MINUTES})",
     )
+    start_parser.add_argument(
+        "--max-prs",
+        type=int,
+        default=DEFAULT_MAX_PRS,
+        help=f"Maximum opened PRs, at most {MAX_PRS_LIMIT} (default: {DEFAULT_MAX_PRS})",
+    )
+    start_parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="Take over another session's active lease",
+    )
+    start_parser.add_argument(
+        "--handoff-minutes",
+        type=int,
+        default=DEFAULT_HANDOFF_MINUTES,
+        help=(
+            "Minutes of inactivity after which another session may take over "
+            f"(default: {DEFAULT_HANDOFF_MINUTES})"
+        ),
+    )
     _add_state_argument(start_parser)
 
     check_parser = commands.add_parser("check", help="Print remaining budget")
     check_parser.add_argument("--json", action="store_true", help="Emit JSON")
     _add_state_argument(check_parser)
 
+    touch_parser = commands.add_parser(
+        "touch", help="Record activity for the owning session"
+    )
+    touch_parser.add_argument("--id", required=True, help="Session identifier")
+    _add_state_argument(touch_parser)
+
+    claim_parser = commands.add_parser("claim-pr", help="Record an opened pull request")
+    claim_parser.add_argument("--number", type=int, required=True)
+    claim_parser.add_argument("--id", required=True, help="Session identifier")
+    _add_state_argument(claim_parser)
+
     close_parser = commands.add_parser("close", help="Remove the stored budget")
+    close_parser.add_argument("--id", required=True, help="Session identifier")
     _add_state_argument(close_parser)
     return parser
 
@@ -294,19 +557,36 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "start":
-            state = start(args.id, args.minutes, path=args.state)
+            state = start(
+                args.id,
+                args.minutes,
+                args.max_prs,
+                takeover=args.takeover,
+                handoff=timedelta(minutes=args.handoff_minutes),
+                path=args.state,
+            )
             print(
                 f"session {state['session_id']}: {state['minutes']} minutes, "
-                f"expires {state['expires_at']}"
+                f"{state['max_prs']} PRs, expires {state['expires_at']}"
             )
             return 0
         if args.command == "check":
             state, remaining = check(path=args.state)
+            prs_remaining = state["max_prs"] - len(state["prs"])
+            idle_minutes = (
+                utc_now() - _parse_time(state["updated_at"], "updated_at")
+            ).total_seconds() / 60.0
             payload = {
                 "session_id": state["session_id"],
                 "expires_at": state["expires_at"],
+                "updated_at": state["updated_at"],
+                "idle_minutes": round(max(0.0, idle_minutes), 1),
                 "remaining_minutes": round(remaining, 1),
                 "expired": remaining <= 0,
+                "prs": state["prs"],
+                "max_prs": state["max_prs"],
+                "prs_remaining": prs_remaining,
+                "pr_budget_exhausted": prs_remaining <= 0,
             }
             if args.json:
                 print(json.dumps(payload, sort_keys=True))
@@ -314,12 +594,27 @@ def main(argv: list[str] | None = None) -> int:
                 state_label = "EXPIRED" if payload["expired"] else "remaining"
                 print(
                     f"session {payload['session_id']}: {state_label} "
-                    f"{abs(payload['remaining_minutes']):.1f} minutes "
+                    f"{abs(payload['remaining_minutes']):.1f} minutes, "
+                    f"PRs {len(payload['prs'])}/{payload['max_prs']} "
                     f"(expires {payload['expires_at']})"
                 )
-            return 2 if payload["expired"] else 0
+            return 2 if payload["expired"] or payload["pr_budget_exhausted"] else 0
+        if args.command == "touch":
+            state = touch(args.id, path=args.state)
+            print(
+                f"session {state['session_id']}: activity at {state['updated_at']}, "
+                f"expires {state['expires_at']}"
+            )
+            return 0
+        if args.command == "claim-pr":
+            state = claim_pr(args.number, args.id, path=args.state)
+            print(
+                f"session {state['session_id']}: claimed PR "
+                f"#{args.number} ({len(state['prs'])}/{state['max_prs']})"
+            )
+            return 0
         if args.command == "close":
-            removed = close(args.state)
+            removed = close(args.id, args.state)
             print("budget removed" if removed else "no budget to remove")
             return 0
     except BudgetError as exc:

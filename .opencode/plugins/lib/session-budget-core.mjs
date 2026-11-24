@@ -1,5 +1,9 @@
 const DEFAULT_MINUTES = 180
 const MAX_MINUTES = 180
+const DEFAULT_MAX_PRS = 2
+const MAX_PRS = 2
+const DEFAULT_HANDOFF_MS = 5 * 60 * 1000
+const CLOCK_SKEW_MS = 60 * 1000
 const READ_ONLY_TOOLS = new Set([
   "read",
   "grep",
@@ -27,10 +31,140 @@ export function removeMutatingTools(tools) {
   }
 }
 
+export function newBudgetState(
+  sessionId,
+  now = Date.now(),
+  minutes = DEFAULT_MINUTES,
+  maxPrs = DEFAULT_MAX_PRS,
+) {
+  const safeMinutes = normalizeMinutes(minutes)
+  const safeMaxPrs = Math.min(MAX_PRS, Math.max(1, Number(maxPrs) || DEFAULT_MAX_PRS))
+  const startedAt = new Date(now)
+  const expiresAt = new Date(now + safeMinutes * 60 * 1000)
+  return {
+    session_id: sessionId,
+    started_at: startedAt.toISOString(),
+    expires_at: expiresAt.toISOString(),
+    updated_at: startedAt.toISOString(),
+    minutes: safeMinutes,
+    max_prs: safeMaxPrs,
+    prs: [],
+  }
+}
+
+export function parseBudgetState(raw, now = Date.now()) {
+  let state
+  try {
+    state = JSON.parse(raw)
+  } catch {
+    return { ok: false, reason: "session budget is not valid JSON" }
+  }
+  if (state === null || typeof state !== "object" || Array.isArray(state)) {
+    return { ok: false, reason: "session budget must be a JSON object" }
+  }
+  const sessionId = state.session_id
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
+    return { ok: false, reason: "session budget is missing its session id" }
+  }
+  const startedAt = Date.parse(state.started_at)
+  const expiresAt = Date.parse(state.expires_at)
+  if (!Number.isFinite(startedAt) || !Number.isFinite(expiresAt)) {
+    return { ok: false, reason: "session budget has invalid timestamps" }
+  }
+  if (expiresAt <= startedAt) {
+    return { ok: false, reason: "session budget expiry precedes its start" }
+  }
+  const rawMinutes = state.minutes
+  if (
+    rawMinutes !== undefined &&
+    (!Number.isInteger(rawMinutes) || rawMinutes < 1 || rawMinutes > MAX_MINUTES)
+  ) {
+    return { ok: false, reason: "session budget minutes are out of range" }
+  }
+  const minutes = rawMinutes === undefined ? DEFAULT_MINUTES : rawMinutes
+  const rawMaxPrs = state.max_prs
+  if (
+    rawMaxPrs !== undefined &&
+    (!Number.isInteger(rawMaxPrs) || rawMaxPrs < 1 || rawMaxPrs > MAX_PRS)
+  ) {
+    return { ok: false, reason: "session budget max_prs is out of range" }
+  }
+  const maxPrs = rawMaxPrs === undefined ? DEFAULT_MAX_PRS : rawMaxPrs
+  if (state.prs !== undefined && !Array.isArray(state.prs)) {
+    return { ok: false, reason: "session budget PR list is malformed" }
+  }
+  const rawPrs = state.prs ?? []
+  if (!rawPrs.every((number) => Number.isInteger(number) && number > 0)) {
+    return { ok: false, reason: "session budget PR list is malformed" }
+  }
+  let updatedAt = startedAt
+  if (state.updated_at !== undefined) {
+    updatedAt = Date.parse(state.updated_at)
+    if (!Number.isFinite(updatedAt)) {
+      return { ok: false, reason: "session budget updated_at is invalid" }
+    }
+    if (updatedAt < startedAt) {
+      return { ok: false, reason: "session budget updated_at precedes its start" }
+    }
+    if (updatedAt > now + CLOCK_SKEW_MS) {
+      return { ok: false, reason: "session budget updated_at is in the future" }
+    }
+  }
+  const prs = [...new Set(rawPrs)].sort((left, right) => left - right)
+  return {
+    ok: true,
+    sessionId,
+    startedAt,
+    expiresAt,
+    updatedAt,
+    idleMs: Math.max(0, now - updatedAt),
+    minutes,
+    maxPrs,
+    prs,
+    expired: now >= expiresAt,
+    prsExhausted: prs.length >= maxPrs,
+  }
+}
+
+export function decideLease(
+  state,
+  sessionId,
+  { ownerActive, now = Date.now(), handoffMs = DEFAULT_HANDOFF_MS } = {},
+) {
+  if (state === undefined || state === null || state.ok !== true) {
+    return {
+      action: "block",
+      reason: state?.reason ?? "the session budget is unavailable",
+    }
+  }
+  if (state.sessionId === sessionId) return { action: "reuse" }
+  if (state.expired) return { action: "rotate", reason: "expired" }
+  if (ownerActive === true) {
+    return { action: "block", reason: "another session is active" }
+  }
+  if (ownerActive === false) return { action: "rotate", reason: "idle" }
+  if (now - state.updatedAt >= handoffMs) {
+    return { action: "rotate", reason: "stale" }
+  }
+  return { action: "block", reason: "the owning session has recent activity" }
+}
+
+export function touchBudgetState(state, now = Date.now()) {
+  return {
+    session_id: state.sessionId,
+    started_at: new Date(state.startedAt).toISOString(),
+    expires_at: new Date(state.expiresAt).toISOString(),
+    updated_at: new Date(now).toISOString(),
+    minutes: state.minutes,
+    max_prs: state.maxPrs,
+    prs: [...state.prs],
+  }
+}
+
 export function normalizeMinutes(value) {
   const requested = Number(value)
   if (!Number.isFinite(requested)) return DEFAULT_MINUTES
-  return Math.min(MAX_MINUTES, Math.max(1, requested))
+  return Math.min(MAX_MINUTES, Math.max(1, Math.trunc(requested)))
 }
 
 export function createBudgetTracker({
@@ -89,4 +223,12 @@ export function createBudgetTracker({
   return { start, restore, startedAt, remainingMs, check, forget, budgetMs }
 }
 
-export { DEFAULT_MINUTES, MAX_MINUTES, READ_ONLY_TOOLS, WARNINGS }
+export {
+  DEFAULT_HANDOFF_MS,
+  DEFAULT_MAX_PRS,
+  DEFAULT_MINUTES,
+  MAX_MINUTES,
+  MAX_PRS,
+  READ_ONLY_TOOLS,
+  WARNINGS,
+}

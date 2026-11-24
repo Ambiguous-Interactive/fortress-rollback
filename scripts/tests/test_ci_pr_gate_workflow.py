@@ -57,7 +57,9 @@ def _run_kani_change_classifier(
     """Run the real classifier script against a scratch repo and base branch."""
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
-    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "init", "--bare", str(remote)], check=True, capture_output=True
+    )
     subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
     _git(repo, "config", "user.email", "kani-gate@example.invalid")
     _git(repo, "config", "user.name", "Kani Gate Test")
@@ -100,6 +102,12 @@ def test_pr_gate_runs_on_pull_requests_and_merge_groups() -> None:
     triggers = _triggers(_load(PR_GATE))
     assert "pull_request" in triggers
     assert "merge_group" in triggers
+    assert set(triggers["pull_request"]["types"]) == {
+        "opened",
+        "synchronize",
+        "reopened",
+        "edited",
+    }
 
 
 def test_pr_gate_has_one_aggregate_required_job() -> None:
@@ -115,14 +123,44 @@ def test_pr_gate_has_one_aggregate_required_job() -> None:
         "api-census",
         "wasm-check",
         "kani-compile",
+        "session-budget",
     }
 
     step = gate["steps"][0]
     assert step["env"]["NEEDS_JSON"] == "${{ toJSON(needs) }}"
-    assert 'all(.[];' in step["run"]
+    assert "all(.[];" in step["run"]
     assert '.result == "success"' in step["run"]
     assert '.result == "skipped"' in step["run"]
     assert '.result == "neutral"' in step["run"]
+
+
+def test_pr_gate_enforces_the_session_budget() -> None:
+    """The required gate must count PRs and reject a stale session marker."""
+    jobs = _load(PR_GATE)["jobs"]
+    job = jobs["session-budget"]
+
+    assert job["name"] == "Session Budget"
+    assert job["timeout-minutes"] == 5
+    step = job["steps"][-1]
+    assert "check-session-pr-budget.py" in step["run"]
+    assert "pull_request.number" in step["env"]["PR_NUMBER"]
+    assert "merge_group.head_ref" in step["env"]["MERGE_GROUP_HEAD_REF"]
+    assert "pull_request.base.sha" in step["env"]["BASE_SHA"]
+    assert "merge_group.base_sha" in step["env"]["BASE_SHA"]
+
+    checkouts = [
+        candidate for candidate in job["steps"] if candidate.get("uses") == "actions/checkout@v7"
+    ]
+    assert len(checkouts) == 2
+    assert checkouts[0]["with"]["path"] == "base"
+    assert "pull_request.base.sha" in checkouts[0]["with"]["ref"]
+    assert checkouts[1]["with"]["path"] == "pr"
+
+    run = step["run"]
+    assert "base/scripts/ci/check-session-pr-budget.py" in run
+    assert "pr/scripts/ci/check-session-pr-budget.py" in run
+    assert 'python3 "$TRUSTED_SCRIPT"' in run
+    assert "bootstrap uses the PR copy" in run
 
 
 def test_pr_gate_compiles_the_cfg_kani_tree_without_running_proofs() -> None:
@@ -188,7 +226,9 @@ def test_kani_change_classifier_matches_rust_and_build_inputs(
 
 def test_kani_change_classifier_fails_closed(tmp_path: Path) -> None:
     assert (
-        _run_kani_change_classifier(tmp_path / "empty-base", ("docs/x.md",), base_sha="")
+        _run_kani_change_classifier(
+            tmp_path / "empty-base", ("docs/x.md",), base_sha=""
+        )
         == "true"
     )
     assert (

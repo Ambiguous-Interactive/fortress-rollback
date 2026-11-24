@@ -43,8 +43,52 @@ If the OpenCode session-budget plugin is active, it emits the clock and interrup
 After the limit it allows only an explicit read-only tool allowlist; unknown and custom tools are
 blocked. If the tool guard cannot register, it removes mutating tools from the model request and
 refuses new prompts. In other harnesses, run `scripts/ci/session-budget.py start`, `check`, and
-`close` at the same boundaries. Do not rely on writing files after 180 minutes; write the handoff by
-165.
+`claim-pr` at the same boundaries; `start` takes over an idle or expired lease automatically. Run
+`close` during closeout, but a missed close does not block the next session. Do not rely on writing
+files after 180 minutes; write the handoff by 165.
+
+## Enforcement
+
+The budget is a **session lease** in `progress/.session-budget.json`, shared by the OpenCode plugin
+and `scripts/ci/session-budget.py`. The plugin starts it on the first prompt. The same chat never
+resets its clock. A new chat takes the lease over automatically when the previous owner is idle, the
+lease has expired, or the previous owner has been inactive for the handoff window. Child and
+subagent sessions inherit their parent's lease, so starting new work needs no manual command.
+
+```bash
+python3 scripts/ci/session-budget.py start --id session-<id> --minutes 180 --max-prs 2
+python3 scripts/ci/session-budget.py check
+python3 scripts/ci/session-budget.py claim-pr --id <session_id from check --json> --number <PR>
+python3 scripts/ci/session-budget.py touch --id <session_id from check --json>
+```
+
+Use the exact `session_id` that `check --json` prints. OpenCode IDs look like `ses_...`; do not
+add a `session-` prefix to them.
+
+The plugin blocks mutating tools at 180 minutes and leaves read-only inspection available. It warns
+after the second claimed PR but keeps the tools needed to finish that PR; the required CI check is
+the hard PR cap. The operator never has to run `close`: a new session hands itself off automatically.
+At closeout the agent runs `close` so the next session starts with a clean lease, but a missed close
+only delays the handoff until the lease is idle or expired.
+
+Every PR body must include:
+
+```text
+<!-- session: <id> started: <ISO8601 with Z or offset> -->
+```
+
+The marker belongs to the session that currently owns the PR. A PR carried over from an earlier
+session is re-marked with the new session's start; its original creation time still counts against
+the rolling limit.
+
+The required `Session Budget` check counts every same-author PR created in the three hours before
+the current PR, independent of the session ID. Three or more fail, and a PR created more than three
+hours after its current session start fails. A fresh marker cannot bypass the rolling count.
+
+RCA for the original gap: the clock was chat-scoped, the PR cap was prose only, and the first
+worktree lease needed an operator `close` before the next session could start. A continuation prompt
+could look like a new session, and no check counted opened PRs. The automatic handoff, the rolling
+required check, and the PR marker replace all three controls.
 
 ## Step 1: Sync and triage
 
@@ -88,7 +132,9 @@ A second PR may be opened only when all of these hold:
 - The session still has one open authored PR at a time.
 
 Maximum two opened PRs per session. Merging an already-open green PR from a previous session does
-not count. The exception is optional; closeout quality comes first.
+not count. The exception is optional; closeout quality comes first. The required `Session Budget`
+check is the backstop: a third PR in the rolling three-hour window fails even when the local claim is
+missing.
 
 ## Step 3: Deep analysis (only if no work)
 
@@ -163,7 +209,11 @@ Add the WASM or deep lane when the trigger table requires it. Do not open a PR w
 required check.
 
 The PR must state the goal, evidence, risks, rollback, and the item link, and fill
-`.github/PULL_REQUEST_TEMPLATE.md`. Do not check boxes for checks that were not run.
+`.github/PULL_REQUEST_TEMPLATE.md`. Include
+`<!-- session: <id> started: <ISO8601 with Z or offset> -->` in the body. A PR carried over from an earlier session
+is re-marked with the current session's start; the rolling count still uses the PR creation time. Do
+not check boxes for checks that were not run. After opening the PR, run
+`python3 scripts/ci/session-budget.py claim-pr --id <session_id from check --json> --number <PR>`.
 
 Review and CI budget:
 
@@ -250,7 +300,16 @@ git status --porcelain
 Expect `0 0` and an empty status. Delete local and remote feature branches after merge.
 4. If a PR remains open, push the branch, name the PR in the handoff, and leave the claim expiry
    visible. The next session finishes it first.
-5. Do not start new work after T+180.
+5. Release the lease for the next session:
+
+```bash
+python3 scripts/ci/session-budget.py close --id <session_id from check --json>
+```
+
+This is an agent closeout step, not an operator step. Use the session ID from
+`session-budget.py check --json`; `close` refuses a lease owned by another session. If it is
+missed, the next session takes over automatically once this lease is idle or expired.
+6. Do not start new work after T+180.
 
 ## Metrics
 

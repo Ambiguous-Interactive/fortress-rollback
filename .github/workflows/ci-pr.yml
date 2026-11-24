@@ -6,11 +6,13 @@ name: CI - PR Gate
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, edited]
   merge_group:
   workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: pr-gate-${{ github.ref }}
@@ -159,9 +161,55 @@ jobs:
       - name: Reject browser-only dependencies on Emscripten
         run: ./scripts/ci/check-emscripten-dependencies.sh
 
+  session-budget:
+    name: Session Budget
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out the trusted base branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          path: base
+          fetch-depth: 1
+
+      - name: Check out the pull request
+        uses: actions/checkout@v7
+        with:
+          path: pr
+          fetch-depth: 1
+
+      - name: Enforce the rolling three-hour, two-PR window
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR_NUMBER" ]; then
+            PR_NUMBER="$(printf '%s' "$MERGE_GROUP_HEAD_REF" | sed -n 's/.*pr-\([0-9][0-9]*\)-.*/\1/p')"
+          fi
+          if [ -z "$PR_NUMBER" ]; then
+            echo "cannot resolve the pull request number for the session budget" >&2
+            exit 1
+          fi
+          if [ -f base/scripts/ci/check-session-pr-budget.py ]; then
+            TRUSTED_SCRIPT=base/scripts/ci/check-session-pr-budget.py
+            echo "Running the base-branch session budget checker at $BASE_SHA"
+          else
+            TRUSTED_SCRIPT=pr/scripts/ci/check-session-pr-budget.py
+            echo "::warning::the base branch has no session budget checker; bootstrap uses the PR copy"
+          fi
+          python3 "$TRUSTED_SCRIPT" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pr "$PR_NUMBER"
+
   gate:
     name: CI Gate
-    needs: [changes, fast, api-census, wasm-check, kani-compile]
+    needs: [changes, fast, api-census, wasm-check, kani-compile, session-budget]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
