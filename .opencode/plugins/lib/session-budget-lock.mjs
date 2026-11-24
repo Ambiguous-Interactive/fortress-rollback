@@ -103,7 +103,9 @@ export async function withBudgetLock(
         await sleep(25)
         continue
       }
-      await rm(lockPath, { recursive: true, force: true }).catch(() => {})
+      // Do not remove lockPath here: a reaper may have moved our directory
+      // and a replacement owner may now occupy the path. An empty directory
+      // is recovered by the normal stale-lock path.
       throw error
     }
   }

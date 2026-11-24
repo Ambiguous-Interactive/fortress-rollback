@@ -184,7 +184,8 @@ def _state_lock(
             time.sleep(0.01)
             continue
         except OSError:
-            shutil.rmtree(lock_dir, ignore_errors=True)
+            # Do not remove lock_dir here: a reaper may have moved our
+            # directory and a replacement owner may now occupy the path.
             raise
         with os.fdopen(handle, "w", encoding="utf-8") as created:
             created.write(token)
