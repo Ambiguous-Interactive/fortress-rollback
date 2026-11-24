@@ -76,16 +76,45 @@ def test_pr_outside_the_window_is_ignored() -> None:
     assert summary["prs"] == [101, 102]
 
 
-def test_different_session_ids_are_ignored() -> None:
-    previous = pr(100, START + timedelta(minutes=5), session_id="session-0")
-    first = pr(101, START + timedelta(minutes=20))
-    second = pr(102, START + timedelta(minutes=30))
+def test_other_session_ids_still_count_toward_the_limit() -> None:
+    first = pr(100, START + timedelta(minutes=5), session_id="session-0")
+    second = pr(101, START + timedelta(minutes=20), session_id="session-1")
+    third = pr(102, START + timedelta(minutes=30), session_id="session-2")
 
-    summary = check_session_pr_budget.evaluate_session_budget(
-        second, [previous, first, second]
+    with pytest.raises(check_session_pr_budget.BudgetError, match="maximum is 2"):
+        check_session_pr_budget.evaluate_session_budget(
+            third, [first, second, third]
+        )
+
+
+def test_carried_over_pr_is_remarked_by_a_new_session() -> None:
+    created = START + timedelta(minutes=10)
+    current = pr(
+        101,
+        created,
+        started=START + timedelta(hours=2),
+        session_id="session-2",
     )
 
-    assert summary["prs"] == [101, 102]
+    summary = check_session_pr_budget.evaluate_session_budget(
+        current, [current], now=START + timedelta(hours=2)
+    )
+
+    assert summary["session_id"] == "session-2"
+    assert summary["prs"] == [101]
+
+
+def test_session_start_in_the_future_fails() -> None:
+    current = pr(
+        101,
+        START + timedelta(minutes=10),
+        started=START + timedelta(hours=2),
+    )
+
+    with pytest.raises(check_session_pr_budget.BudgetError, match="future"):
+        check_session_pr_budget.evaluate_session_budget(
+            current, [current], now=START
+        )
 
 
 def test_other_authors_are_ignored() -> None:
@@ -117,11 +146,22 @@ def test_missing_marker_fails() -> None:
         check_session_pr_budget.evaluate_session_budget(current, [current])
 
 
-def test_session_start_after_creation_fails() -> None:
-    current = pr(101, START, started=START + timedelta(minutes=10))
+def test_carried_over_pr_keeps_the_original_creation_time_in_the_rolling_count() -> None:
+    carried = pr(
+        100,
+        START + timedelta(minutes=10),
+        started=START + timedelta(hours=2),
+        session_id="session-2",
+    )
+    second = pr(101, START + timedelta(minutes=20))
+    third = pr(102, START + timedelta(minutes=30))
 
-    with pytest.raises(check_session_pr_budget.BudgetError, match="predates"):
-        check_session_pr_budget.evaluate_session_budget(current, [current])
+    with pytest.raises(check_session_pr_budget.BudgetError, match="maximum is 2"):
+        check_session_pr_budget.evaluate_session_budget(
+            third,
+            [carried, second, third],
+            now=START + timedelta(hours=2),
+        )
 
 
 def test_malformed_timestamp_fails() -> None:

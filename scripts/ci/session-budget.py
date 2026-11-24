@@ -34,6 +34,9 @@ MIN_MINUTES = 1
 DEFAULT_MAX_PRS = 2
 MAX_PRS_LIMIT = 2
 MIN_PR_NUMBER = 1
+DEFAULT_HANDOFF_MINUTES = 5
+MAX_HANDOFF_MINUTES = 60
+CLOCK_SKEW_SECONDS = 60
 
 
 class BudgetError(Exception):
@@ -142,6 +145,8 @@ def start(
     minutes: int = DEFAULT_MINUTES,
     max_prs: int = DEFAULT_MAX_PRS,
     *,
+    takeover: bool = False,
+    handoff: timedelta = timedelta(minutes=DEFAULT_HANDOFF_MINUTES),
     now: datetime | None = None,
     path: Path = DEFAULT_STATE_PATH,
 ) -> dict[str, Any]:
@@ -154,24 +159,39 @@ def start(
         )
     if max_prs < 1 or max_prs > MAX_PRS_LIMIT:
         raise BudgetError(f"max_prs must be between 1 and {MAX_PRS_LIMIT}: {max_prs}")
+    if handoff <= timedelta(0) or handoff > timedelta(minutes=MAX_HANDOFF_MINUTES):
+        raise BudgetError(
+            f"handoff must be between 0 and {MAX_HANDOFF_MINUTES} minutes"
+        )
     started = (now or utc_now()).astimezone(timezone.utc)
     session_key = session_id.strip()
     with _state_lock(path):
-        return _start_locked(session_key, started, minutes, max_prs, path)
+        return _start_locked(
+            session_key, started, minutes, max_prs, takeover, handoff, path
+        )
 
 
 def _start_locked(
-    session_key: str, started: datetime, minutes: int, max_prs: int, path: Path
+    session_key: str,
+    started: datetime,
+    minutes: int,
+    max_prs: int,
+    takeover: bool,
+    handoff: timedelta,
+    path: Path,
 ) -> dict[str, Any]:
     if path.exists():
-        existing = load(path)
+        existing = load(path, now=started)
         if existing["session_id"] == session_key:
             return existing
         existing_expires = _parse_time(existing["expires_at"], "expires_at")
-        if existing_expires > started:
+        existing_updated = _parse_time(existing["updated_at"], "updated_at")
+        idle_for = started - existing_updated
+        if existing_expires > started and not takeover and idle_for < handoff:
             raise BudgetError(
                 f"session {existing['session_id']} already has an active budget "
-                f"until {existing['expires_at']}"
+                f"until {existing['expires_at']} and was active {_format_time(existing_updated)}; "
+                "wait for it to go idle or pass --takeover"
             )
         state = _new_state(session_key, started, minutes, max_prs)
         _write_state(state, path)
@@ -205,13 +225,16 @@ def _new_state(
         "session_id": session_id,
         "started_at": _format_time(started),
         "expires_at": _format_time(expires),
+        "updated_at": _format_time(started),
         "minutes": minutes,
         "max_prs": max_prs,
         "prs": [],
     }
 
 
-def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
+def load(
+    path: Path = DEFAULT_STATE_PATH, *, now: datetime | None = None
+) -> dict[str, Any]:
     """Load and validate the stored budget."""
     try:
         raw = path.read_text(encoding="utf-8")
@@ -240,6 +263,13 @@ def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
         raise BudgetError(
             f"expires_at is more than the configured {minutes} minutes after started_at"
         )
+    current = (now or utc_now()).astimezone(timezone.utc)
+    updated_raw = state.get("updated_at")
+    updated = started if updated_raw is None else _parse_time(updated_raw, "updated_at")
+    if updated < started:
+        raise BudgetError("updated_at must not precede started_at")
+    if updated > current + timedelta(seconds=CLOCK_SKEW_SECONDS):
+        raise BudgetError("updated_at must not be in the future")
     max_prs = state.get("max_prs", DEFAULT_MAX_PRS)
     if not isinstance(max_prs, int) or not 1 <= max_prs <= MAX_PRS_LIMIT:
         raise BudgetError(f"max_prs must be between 1 and {MAX_PRS_LIMIT}")
@@ -250,6 +280,7 @@ def load(path: Path = DEFAULT_STATE_PATH) -> dict[str, Any]:
         raise BudgetError("prs must be a list of positive pull request numbers")
     return {
         **state,
+        "updated_at": _format_time(updated),
         "max_prs": max_prs,
         "prs": sorted(set(prs)),
     }
@@ -261,11 +292,34 @@ def check(
     path: Path = DEFAULT_STATE_PATH,
 ) -> tuple[dict[str, Any], float]:
     """Return the state and remaining minutes; negative means expired."""
-    state = load(path)
     current = (now or utc_now()).astimezone(timezone.utc)
+    state = load(path, now=current)
     expires = _parse_time(state["expires_at"], "expires_at")
     remaining_minutes = (expires - current).total_seconds() / 60.0
     return state, remaining_minutes
+
+
+def touch(
+    session_id: str,
+    *,
+    now: datetime | None = None,
+    path: Path = DEFAULT_STATE_PATH,
+) -> dict[str, Any]:
+    """Record owner activity without moving the deadline."""
+    current = (now or utc_now()).astimezone(timezone.utc)
+    with _state_lock(path):
+        state = load(path, now=current)
+        if state["session_id"] != session_id:
+            raise BudgetError(
+                f"session {state['session_id']} owns the budget; "
+                f"{session_id} cannot record activity"
+            )
+        expires = _parse_time(state["expires_at"], "expires_at")
+        if expires <= current:
+            raise BudgetError("session budget is expired; start a new session")
+        updated = {**state, "updated_at": _format_time(current)}
+        _write_state(updated, path)
+        return updated
 
 
 def claim_pr(
@@ -279,7 +333,7 @@ def claim_pr(
         raise BudgetError(f"pull request number must be positive: {number}")
     current = (now or utc_now()).astimezone(timezone.utc)
     with _state_lock(path):
-        state = load(path)
+        state = load(path, now=current)
         expires = _parse_time(state["expires_at"], "expires_at")
         if expires <= current:
             raise BudgetError("session budget is expired; start a new session")
@@ -336,11 +390,31 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_PRS,
         help=f"Maximum opened PRs, at most {MAX_PRS_LIMIT} (default: {DEFAULT_MAX_PRS})",
     )
+    start_parser.add_argument(
+        "--takeover",
+        action="store_true",
+        help="Take over another session's active lease",
+    )
+    start_parser.add_argument(
+        "--handoff-minutes",
+        type=int,
+        default=DEFAULT_HANDOFF_MINUTES,
+        help=(
+            "Minutes of inactivity after which another session may take over "
+            f"(default: {DEFAULT_HANDOFF_MINUTES})"
+        ),
+    )
     _add_state_argument(start_parser)
 
     check_parser = commands.add_parser("check", help="Print remaining budget")
     check_parser.add_argument("--json", action="store_true", help="Emit JSON")
     _add_state_argument(check_parser)
+
+    touch_parser = commands.add_parser(
+        "touch", help="Record activity for the owning session"
+    )
+    touch_parser.add_argument("--id", required=True, help="Session identifier")
+    _add_state_argument(touch_parser)
 
     claim_parser = commands.add_parser("claim-pr", help="Record an opened pull request")
     claim_parser.add_argument("--number", type=int, required=True)
@@ -356,7 +430,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "start":
-            state = start(args.id, args.minutes, args.max_prs, path=args.state)
+            state = start(
+                args.id,
+                args.minutes,
+                args.max_prs,
+                takeover=args.takeover,
+                handoff=timedelta(minutes=args.handoff_minutes),
+                path=args.state,
+            )
             print(
                 f"session {state['session_id']}: {state['minutes']} minutes, "
                 f"{state['max_prs']} PRs, expires {state['expires_at']}"
@@ -365,9 +446,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "check":
             state, remaining = check(path=args.state)
             prs_remaining = state["max_prs"] - len(state["prs"])
+            idle_minutes = (
+                utc_now() - _parse_time(state["updated_at"], "updated_at")
+            ).total_seconds() / 60.0
             payload = {
                 "session_id": state["session_id"],
                 "expires_at": state["expires_at"],
+                "updated_at": state["updated_at"],
+                "idle_minutes": round(max(0.0, idle_minutes), 1),
                 "remaining_minutes": round(remaining, 1),
                 "expired": remaining <= 0,
                 "prs": state["prs"],
@@ -386,6 +472,13 @@ def main(argv: list[str] | None = None) -> int:
                     f"(expires {payload['expires_at']})"
                 )
             return 2 if payload["expired"] or payload["pr_budget_exhausted"] else 0
+        if args.command == "touch":
+            state = touch(args.id, path=args.state)
+            print(
+                f"session {state['session_id']}: activity at {state['updated_at']}, "
+                f"expires {state['expires_at']}"
+            )
+            return 0
         if args.command == "claim-pr":
             state = claim_pr(args.number, path=args.state)
             print(

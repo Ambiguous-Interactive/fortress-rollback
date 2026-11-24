@@ -1,5 +1,5 @@
 <!-- session: replace-with-session-id started: 2026-01-01T00:00Z -->
-<!-- Replace both marker values before opening. The required Session Budget check rejects a missing or stale marker. -->
+<!-- Replace both marker values with the current session. A carried-over PR is re-marked with the new session's start; the required Session Budget check rejects a missing, future, or stale marker. -->
 
 ## Description
 

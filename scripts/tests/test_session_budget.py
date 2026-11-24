@@ -63,7 +63,7 @@ def test_start_does_not_reset_an_expired_same_session(tmp_path: Path) -> None:
     assert second["expires_at"] == "2026-11-23T15:00:00Z"
 
 
-def test_start_rejects_another_active_session(tmp_path: Path) -> None:
+def test_start_rejects_a_recently_active_session(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     session_budget.start("session-1", 180, now=START, path=path)
 
@@ -71,7 +71,45 @@ def test_start_rejects_another_active_session(tmp_path: Path) -> None:
         session_budget.BudgetError, match="already has an active budget"
     ):
         session_budget.start(
-            "session-2", 180, now=START + timedelta(minutes=5), path=path
+            "session-2", 180, now=START + timedelta(minutes=1), path=path
+        )
+
+
+def test_start_takes_over_after_the_handoff_window(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state = session_budget.start(
+        "session-2", 180, now=START + timedelta(minutes=6), path=path
+    )
+
+    assert state["session_id"] == "session-2"
+    assert state["started_at"] == "2026-11-23T12:06:00Z"
+
+
+def test_start_takeover_replaces_a_recent_active_session(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state = session_budget.start(
+        "session-2",
+        180,
+        now=START + timedelta(minutes=1),
+        takeover=True,
+        path=path,
+    )
+
+    assert state["session_id"] == "session-2"
+
+
+def test_start_rejects_an_invalid_handoff(tmp_path: Path) -> None:
+    with pytest.raises(session_budget.BudgetError, match="handoff"):
+        session_budget.start(
+            "session-1",
+            180,
+            now=START,
+            handoff=timedelta(minutes=61),
+            path=tmp_path / "budget.json",
         )
 
 
@@ -203,15 +241,22 @@ def test_claim_pr_rejects_an_expired_budget(tmp_path: Path) -> None:
         session_budget.claim_pr(101, now=START + timedelta(minutes=181), path=path)
 
 
-def test_check_reports_pr_budget_exhaustion(tmp_path: Path) -> None:
+def test_check_reports_pr_budget_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     path = tmp_path / "budget.json"
+    monkeypatch.setattr(session_budget, "utc_now", lambda: START)
     session_budget.start("session-1", 180, now=START, path=path)
     session_budget.claim_pr(101, now=START, path=path)
     session_budget.claim_pr(102, now=START, path=path)
 
     exit_code = session_budget.main(["check", "--state", str(path), "--json"])
 
+    payload = json.loads(capsys.readouterr().out)
     assert exit_code == 2
+    assert payload["expired"] is False
+    assert payload["pr_budget_exhausted"] is True
+    assert payload["prs"] == [101, 102]
 
 
 def test_load_defaults_pr_fields_for_legacy_state(tmp_path: Path) -> None:
@@ -232,6 +277,66 @@ def test_load_defaults_pr_fields_for_legacy_state(tmp_path: Path) -> None:
 
     assert state["max_prs"] == 2
     assert state["prs"] == []
+    assert state["updated_at"] == "2026-11-23T12:00:00Z"
+
+
+def test_load_rejects_updated_at_before_start(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-23T15:00:00Z",
+                "updated_at": "2026-11-23T11:00:00Z",
+                "minutes": 180,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(session_budget.BudgetError, match="updated_at"):
+        session_budget.load(path, now=START)
+
+
+def test_load_rejects_future_updated_at(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    path.write_text(
+        json.dumps(
+            {
+                "session_id": "session-1",
+                "started_at": "2026-11-23T12:00:00Z",
+                "expires_at": "2026-11-23T15:00:00Z",
+                "updated_at": "2026-11-23T13:00:00Z",
+                "minutes": 180,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(session_budget.BudgetError, match="future"):
+        session_budget.load(path, now=START)
+
+
+def test_touch_records_activity_without_moving_the_deadline(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    state = session_budget.touch(
+        "session-1", now=START + timedelta(minutes=30), path=path
+    )
+
+    assert state["updated_at"] == "2026-11-23T12:30:00Z"
+    assert state["started_at"] == "2026-11-23T12:00:00Z"
+    assert state["expires_at"] == "2026-11-23T15:00:00Z"
+
+
+def test_touch_rejects_another_session(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    session_budget.start("session-1", 180, now=START, path=path)
+
+    with pytest.raises(session_budget.BudgetError, match="owns the budget"):
+        session_budget.touch("session-2", now=START, path=path)
 
 
 def test_start_rejects_invalid_max_prs(tmp_path: Path) -> None:

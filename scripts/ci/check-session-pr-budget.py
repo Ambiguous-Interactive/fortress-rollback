@@ -75,22 +75,15 @@ def _pr_author(pr: dict[str, Any]) -> str:
     return login
 
 
-def _session_marker_or_none(pr: dict[str, Any]) -> tuple[str, datetime] | None:
-    """Return a related PR's session marker, or None when it is absent/invalid."""
-    try:
-        return parse_session_marker(pr.get("body"))
-    except BudgetError:
-        return None
-
-
 def evaluate_session_budget(
     pr: dict[str, Any],
     all_prs: list[dict[str, Any]],
     *,
     max_prs: int = DEFAULT_MAX_PRS,
     window: timedelta = timedelta(hours=DEFAULT_WINDOW_HOURS),
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Validate one PR and count same-session PRs by the same author."""
+    """Validate one PR and count every same-author PR in the rolling window."""
     if max_prs < 1:
         raise BudgetError("max_prs must be positive")
     if window <= timedelta(0) or window > timedelta(hours=MAX_WINDOW_HOURS):
@@ -98,8 +91,11 @@ def evaluate_session_budget(
 
     created = _pr_created(pr)
     session_id, started = parse_session_marker(pr.get("body"))
-    if created < started - timedelta(minutes=5):
-        raise BudgetError("PR creation predates the session start")
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    if started > current + timedelta(minutes=5):
+        raise BudgetError("session start is in the future")
+    # A PR carried over from an earlier session is re-marked with the new
+    # session start, so `started` may legitimately be after `created`.
     if created - started > window:
         raise BudgetError(
             f"PR was opened {(created - started).total_seconds() / 3600:.2f} hours "
@@ -107,22 +103,20 @@ def evaluate_session_budget(
         )
 
     author = _pr_author(pr)
-    window_end = started + window
+    window_start = created - window
     candidates: dict[int, dict[str, Any]] = {}
     for other in all_prs:
-        marker = _session_marker_or_none(other)
-        if marker is None or marker[0] != session_id:
-            continue
         if _pr_author(other) != author:
             continue
         other_created = _pr_created(other)
-        if started <= other_created <= window_end:
+        if window_start <= other_created <= created:
             candidates[_pr_number(other)] = other
     candidates[_pr_number(pr)] = pr
     numbers = sorted(candidates)
     if len(numbers) > max_prs:
         raise BudgetError(
-            f"{len(numbers)} PRs by {author} belong to session {session_id}: "
+            f"{len(numbers)} PRs by {author} were created in the "
+            f"{window.total_seconds() / 3600:.0f}-hour window ending at the current PR: "
             f"{numbers}; the maximum is {max_prs}"
         )
 
