@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795461984754,
+  "lastUpdate": 1795542105232,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "d8641b4fa0806d4d7d988d9bb2d95bdcce3a8fe8",
-          "message": "test: pin reset_prediction and P2P constructor outcomes (#446) (#453)\n\n## Description\n\nContinues the #446 vacuous-test sweep. Two tests that previously\nasserted nothing now pin observable behavior:\n\n- `SyncLayer::reset_prediction`: the old test called\n`synchronized_inputs` and `reset_prediction` and asserted nothing. It\nnow verifies both slots are `Predicted` at frame 1, delivers a\nconflicting real frame-1 input, asserts `first_incorrect_frame == 1`,\nthen resets and asserts every queue's `first_incorrect_frame` is NULL.\n- P2P builder tests: `test_add_more_players` and `test_start_session`\nonly returned `Ok(())`; they now assert the constructed session's\n`num_players` (spectators excluded) and `Synchronizing` state.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n## Testing\n\n**Tests added/modified:**\n- `sync_layer::sync_layer_tests::test_reset_prediction` now asserts the\nmisprediction record and reset behavior.\n- `sessions::p2p::test_add_more_players` / `test_start_session` assert\nplayer count and session state.\n\n**Validation:**\n- targeted nextest: 4 + 3 passed\n- `cargo clippy --workspace --all-targets --features tokio,json -D\nwarnings`: clean\n- `cargo tf`: 2776 passed / 492 skipped\n\n## Related Issues\n\nRelates to #446",
-          "timestamp": "2026-11-17T06:04:00Z",
-          "tree_id": "fb8a0ee605e023d9852147f173d965cc1f7b4aa6",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/d8641b4fa0806d4d7d988d9bb2d95bdcce3a8fe8"
-        },
-        "date": 1794896137053,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 42230,
-            "range": "± 564",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 26257,
-            "range": "± 226",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 682,
-            "range": "± 151",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 868,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 6895,
-            "range": "± 268",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 5109,
             "range": "± 151",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "63797c26a69b39d0efc4cbfb09f11725e5f30f3b",
+          "message": "fix: reject zero-sized replay count bombs from the header (#555)\n\n<!-- session: ses_df4d54357ffeURwt9tQDtWwNny started:\n2026-11-24T01:26:00Z -->\n\n# fix: reject zero-sized replay count bombs from the header\n\n## Description\n\n`Miri (macOS - misc)` was cancelled at its 30-minute job cap on `main`\nat `5cd54ec5` (run\n\n[45264276932](https://github.com/Ambiguous-Interactive/fortress-rollback/actions/runs/45264276932),\njob `138006923271`, 20:55:10Z -> 21:25:30Z). The hotspot was\n`replay_from_bytes_rejects_zero_sized_input_count_bomb`: for a\nzero-sized input type it builds 18\nframes of 65,535 inputs, and the decoder walked 16 frames (1,048,560\nzero-sized inputs) before the\ncumulative limit tripped. Measured alone under the pinned Miri flags:\n**577.7s**.\n\n`decode_replay` already knows `num_players` and `frames.len` from the\nheader, and every frame must\ncarry exactly `num_players` inputs. This change computes `frame_count *\nnum_players` with\n`checked_mul` and rejects it against `MAX_ZERO_SIZED_INPUTS` before\ndecoding any frame. The per-frame\naccumulator remains as defense in depth. Valid replays and wire bytes\nare unchanged.\n\nThis also reverts the earlier macOS lane split from the first commit on\nthis branch. The split only\nmoved ~3% of the lane's runtime (`input_queue` is 22.6s; the replay\nhotspot is 577.7s), so it did not\naddress the cause and added a macOS shard. With the header pre-check,\nthe full old `macOS - misc`\nselection runs in **90.46s** locally instead of **~708s**.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have followed the **zero-panic policy**: `checked_mul` plus\nstructured `replay_decode_error`;\n      no `unwrap`/`expect`/`panic` in production code.\n- [x] I have added tests that prove my fix is effective: a header-only\ncount bomb must fail with the\nlimit error (not truncation), and `usize::MAX * u16::MAX` must return\nthe overflow error.\n- [x] I have run `cargo fmt` and `cargo clippy --workspace --all-targets\n--features tokio,json` with\n      no warnings.\n- [x] I have run the test suite and all tests pass.\n\n### If Applicable\n\n- [x] I have added an entry to `CHANGELOG.md` (`**Pre-existing:**`\nFixed).\n- [x] My changes generate no new compiler warnings.\n\n## Testing\n\nCommands were run in `/workspaces/fortress-rollback`; Miri used the\nworkflow's pinned\n`nightly-2026-08-26` with\n`MIRIFLAGS=\"-Zmiri-disable-isolation -Zmiri-many-seeds=0..1\n-Zmiri-symbolic-alignment-check\"`.\n\n**Red / negative control**\n\n- With the header pre-check temporarily removed, both new header-only\ntests fail:\n- `replay_from_bytes_rejects_zero_sized_count_bomb_from_header` stops at\nthe missing frame bytes\n    instead of the limit error.\n- `replay_from_bytes_rejects_zero_sized_count_product_overflow` reaches\nthe frame-vector bound\n    instead of the overflow error.\n- The original 18-frame bomb test still passes without the pre-check,\nbut takes **647.39s** under\nMiri; with the pre-check it takes **0.042s**. The test was retained, not\nskipped or weakened.\n\n**Green**\n\n- `cargo fmt --all -- --check` - pass.\n- `cargo c` (clippy, workspace, all targets, `tokio,json`) - pass.\n- `cargo nextest run 'replay::tests'` - **43 passed**.\n- `cargo tfull` - **3,773 passed, 77 skipped** (+2 new tests).\n- `cargo test --doc` - **160 passed, 51 ignored**.\n- `RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features\nhot-join,tokio,json,sync-send\n  --document-private-items` - pass.\n- `cargo check --target wasm32-unknown-unknown --no-default-features` -\npass.\n- Big-endian replay fixture under s390x QEMU - **6 passed**.\n- `python3 scripts/hooks/check-changelog-unreleased.py` - pass.\n- `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix` -\nall checks pass.\n\n## Risks\n\n- A truncated zero-sized count bomb now reports the limit error instead\nof `truncated`. Invalid\ninput has no compatibility guarantee; valid replays and wire bytes are\nunchanged.\n- The runtime evidence is local Linux. The actual macOS lane still needs\none `CI - Rust` run; the\nobserved macOS/Linux ratio is roughly 2.2-2.5x, so the expected lane is\n~3-4 minutes against the\n  30-minute cap.\n\n## Rollback\n\nRevert `src/replay.rs` and the `CHANGELOG.md` entry. The change is a\npre-decode validation only; no\nwire, hash, or public API change.\n\n## Related\n\n- Main CI failure: run `45264276932`, job `138006923271`.\n- Supersedes the lane split in commit `06d00138` on this branch.\n\n---\n\n<!-- Thank you for contributing to Fortress Rollback! -->",
+          "timestamp": "2026-11-24T17:28:56Z",
+          "tree_id": "e5544733740d6e8f2025e5c42b644bc3f6970ad6",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/63797c26a69b39d0efc4cbfb09f11725e5f30f3b"
+        },
+        "date": 1795542104006,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 25919,
+            "range": "± 529",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 15797,
+            "range": "± 236",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 456,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 585,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 5175,
+            "range": "± 180",
             "unit": "ns/iter"
           }
         ]
