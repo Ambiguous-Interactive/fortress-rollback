@@ -9,6 +9,7 @@ ignore = ["E402"]
 
 [lint.per-file-ignores]
 "scripts/tests/**/*.py" = ["S101", "S603", "S607"]
+"scripts/tests/test_vscode_github_token.py" = ["S105", "S106"]
 "scripts/tests/test_install_cargo_tool_action.py" = ["S108"]
 "scripts/build/check-cargo-hack.py" = ["S607"]
 "scripts/build/run-cargo-clippy.py" = ["S607"]

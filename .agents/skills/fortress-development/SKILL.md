@@ -332,6 +332,37 @@ When spawning sub-agents or using Task tools: the sub-agent MUST run `cargo fmt`
 
 Use callable VS Code integrations first: the built-in Git extension for source control and GitHub Pull Requests and Issues (`GitHub.vscode-pull-request-github`) for GitHub operations; UI presence alone is not callable access. If they cannot perform the operation, use local `git` for repository work and the connected GitHub connector/app for platform work. `gh` is an absolute fallback, allowed only when the VS Code connector, local Git, and connected GitHub connector/app are unavailable or incapable. `gh auth status` is not a prerequisite when another supported path exists: probe Git reads with `git ls-remote origin HEAD` and writes with `git push --dry-run origin HEAD:<branch>`; SSH usually uses VS Code-forwarded `SSH_AUTH_SOCK` and HTTPS its credential helper. Never print or persist credentials.
 
+#### Supported credential path
+
+The VS Code GitHub authentication bridge (`fortress-local.fortress-github-auth`) is the supported
+connector. It registers **Fortress: Sign in to GitHub** (`fortress.githubSignIn`), calls
+`vscode.authentication.getSession` for `github` with the `repo`, `read:org`, `read:user`, and
+`workflow` scopes, and writes the session to
+`~/.local/state/opencode/vscode-github-token.json` with mode 0600. Launch the OpenCode GitHub MCP
+bridge or a CLI agent through the repository helper so both read that export instead of storing a
+second copy.
+
+Resolve a credential with the repository helper:
+
+```bash
+python3 scripts/ci/vscode-github-token.py check     # resolve + GET /user; prints login/scopes only
+python3 scripts/ci/vscode-github-token.py describe  # resolve without network
+python3 scripts/ci/vscode-github-token.py exec -- opencode  # child inherits the token env
+```
+
+Resolution order is the bridge export, then the Dev Containers git credential helper (`git credential
+fill` over `REMOTE_CONTAINERS_IPC`), then `GITHUB_PERSONAL_ACCESS_TOKEN` for CI or non-devcontainer
+runs. Git transport uses the same connector through the configured credential helper; probe reads
+with `git ls-remote origin HEAD` and writes with `git push --dry-run origin HEAD:<branch>`.
+
+If neither VS Code path yields a credential, no credential has been exported yet -- the client may
+still be signed in, or the sign-in command may not have run. Reconnect the VS Code window so an
+extension host starts, or ask the operator to run **Fortress: Sign in to GitHub** and confirm the
+export exists. Do not scan `/proc/<pid>/mem`, read
+VS Code secret storage, or copy tokens out of a credential cache without explicit operator approval;
+an approved recovery must delete the copy at closeout. Those paths bypass the connector's consent and
+audit boundary.
+
 ---
 
 *License: MIT OR Apache-2.0*
