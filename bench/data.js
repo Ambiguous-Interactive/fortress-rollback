@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795640342239,
+  "lastUpdate": 1795644545303,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "12da2457e66ccc28ee4221027746164bc9c4d5f5",
-          "message": "fix: permit strict-majority graceful-drop certificates (#445) (#458)\n\n## Description\n\nImplements the #445 strict-majority graceful-drop reconciliation without\nchanging the wire format.\n\n- **Deterministic coordinator cut:** the lowest participant handle owns\nthe cut. Only it originates a cut; others verify the same cut, so\nconcurrent nodes cannot lock different cuts.\n- **Pre-Ready cut announcement:** the coordinator announces the cut as\nan `Inventory`-shaped report (`cut` set, zero digest, no receipts)\nbefore it can emit Ready. This lets non-coordinators compute the same\nrequired backfill start and prevents the coordinator/donor deadlock\nfound by the staggered-removal tests.\n- **Strict-majority progression:** cut selection and commit require `n/2\n+ 1` of the shared participants. The coordinator omits only locally\nunresponsive participants (pruned or silence-timeout verdict); a\nreachable-but-slow peer is still awaited on the ordinary path.\n- **Omitted/live-target fail-closed:** commit fan-out reaches\nstill-running target endpoints before they are marked non-running. An\nalive target or omitted survivor with no matching certified attempt\nenters `Synchronizing`; a conflicting cut for an already committed\noperation is rejected.\n- **Asymmetric generation view:** a connected target may be one\ngeneration behind the coordinator's just-disconnected view; the commit's\ndisconnect application bumps the local epoch.\n\n## Regressions\n\n- **N=5 `3/1/1` permanent partition:**\n`strict_majority_partition_with_two_isolated_peers_continues` — majority\n`Running` and >200 confirms past the cut, both isolated peers\n`Synchronizing`, no divergence/fork classes, exact trace replay. Pre-fix\nevidence from #445: all five stalled at 74.\n- **Asymmetric A/B/C vs E:**\n`asymmetric_timeout_witness_omission_commits_majority_and_fails_omitted_closed`\n— A/B/C Ready quorum commits while E is connected-but-omitted; E fails\nclosed on the commit.\n- Timing-sensitive D14 expectations adjusted for the extra certificate\nround (automatic-disconnect +20 steps, PCT known-failure schedule +100\nsteps, split-brain negative control now a one-sided `SplitMatch`).\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n## Testing\n\n- `cargo tfull`: **3243 passed / 75 skipped**\n- hot-join suite: **3537 passed / 76 skipped**\n- strict release (`-D warnings`, `-C overflow-checks=on`, `-C\ndebug-assertions=on`): 1868/1868/1872 passed\n- D14/partition matrix: 257 passed\n- clippy, rustdoc, `agent-preflight --full --auto-fix`: clean\n- wasm32 feature union, i686, aarch64 all-target checks: pass\n\n## Related Issues\n\nCloses #445",
-          "timestamp": "2026-11-17T09:23:21Z",
-          "tree_id": "ac668506d5954de634e38ace86b202ccc12aa4f2",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/12da2457e66ccc28ee4221027746164bc9c4d5f5"
-        },
-        "date": 1794908138478,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 60684,
-            "range": "± 1809",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 32238,
-            "range": "± 1293",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1681,
-            "range": "± 106",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1555,
-            "range": "± 108",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3006,
-            "range": "± 190",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 7780,
             "range": "± 131",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "bc4d4442a9d2e5acc6f21abdae116f8e4633eeeb",
+          "message": "test: make simulation schedules and shrink artifacts host-independent (#565)\n\n<!-- session: ses_deb811df6ffe0kuyQt0IlreMbr started:\n2026-11-25T20:58:08Z -->\n\n## Description\n\nCloses #547.\n\n`main` had two host-dependent determinism residuals in the simulation\nharness:\n\n1. `Draw::range_f64` derived schedule rates with `f64::mul_add`. A fused\nmultiply-add is not\nguaranteed to lower identically on every target, and a one-ULP rate\nchange can flip a seeded\n`roll_unit() < drop_rate` threshold and change the materialized\nschedule.\n2. `shrink_failure` stopped exploring when `Instant::now().elapsed()`\nexceeded\n`ShrinkConfig::max_duration`, so a fast and a slow host minimized the\nsame failure to a\n   different schedule and run count.\n\nBoth are removed:\n\n- Rates are drawn as integer basis points (`Draw::range_basis_points`)\nfrom one 32-bit stream word\nand divided by 10,000. That division is correctly rounded IEEE-754, so\nthe same seed materializes\nthe same bytes everywhere, and generation contains no `mul_add` and no\nfused-contraction hazard.\n`burst_rate` draws from 1..50 bp so the validator's\nburst-rate/burst-length pairing holds for\n  every draw.\n- `ShrinkConfig` keeps only `max_runs`. `ShrinkResult::elapsed` remains\nas reporting-only\n  observability, and `has_budget` no longer reads a clock.\n\nTwo regressions pin the result:\n\n- `generated_rate_policies_are_exact_basis_points` fails on any\nnon-basis-point rate (red on\n  `main`: `drop_rate ... got 0.004696612735278905`, expected `0.0047`).\n- `generated_schedule_digest_is_pinned` pins FNV-1a over the serialized\nschedules for five\nrepresentative `(seed, SimConfig)` cases. The digest was independently\nrecomputed in Python from\n  the dumped JSON (`0x3ea312b56ddea442`).\n- `shrink_result_is_independent_of_runner_speed` runs the same failure\ntwice, once fast and once\nwith an 8 ms sleep per confirmation, and requires identical `runs` and\n`schedule` (red on `main`:\n  39 vs 23 runs).\n\n## Type of Change\n\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (test-harness and CI\nonly; no production code)\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (harness module docs)\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes\n(test/CI only, no `pub` or\n  user-observable behavior)\n- [ ] I have updated relevant examples in the `examples/` directory\n(N/A)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `generated_schedule_digest_is_pinned` (new)\n- `generated_rate_policies_are_exact_basis_points` (new)\n- `shrink_result_is_independent_of_runner_speed` (new)\n- `smoke_traces_match_checked_in_cross_architecture_digests`\n(regenerated the three x86_64\n  reference digests for the intentional generator change)\n- `scripts/tests/test_ci_rust_workflow.py` (the big-endian lane now has\n7 cargo test commands)\n- Removed the old `max_duration: Duration::ZERO` case from\n`invalid_inputs_and_bounds_do_not_overrun_the_runner_or_callback`; the\nbound it exercised no\nlonger exists, and the remaining `max_runs` boundary cases are\nunchanged.\n\n**Manual testing performed:**\n\n- `cargo nextest run --features tokio,json,hot-join,violation-census\n--test simulation` →\n  **498 passed, 28 skipped**.\n- `cargo tfull` → **3788 passed, 77 skipped** (64.5 s).\n- `cargo test --doc` → **160 passed, 51 ignored**.\n- `RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features\nhot-join,tokio,json,sync-send\n  --document-private-items` → pass.\n- `cargo clippy --workspace --all-targets --features\ntokio,json,hot-join,violation-census -- -D\n  warnings` → clean.\n- `.venv/bin/python3 scripts/ci/agent-preflight.py --full --auto-fix` →\nall checks pass.\n- `actionlint .github/workflows/ci-rust.yml` → clean; `pytest\nscripts/tests/test_ci_rust_workflow.py`\n  → 33 passed.\n- `cargo check --target wasm32-unknown-unknown --no-default-features` →\npass.\n`cargo check -p wasm-browser-smoke --features hot-join --target\nwasm32-unknown-unknown --lib\n--tests` → pass. The simulation harness target itself is not\nwasm-buildable (it uses\n  `std::thread`/`Instant`), so it is not part of a wasm lane.\n\n**Cross-architecture evidence (the same pinned values on every lane):**\n\n- x86_64 native: digest `4_513_471_821_997_057_090`.\n- s390x QEMU (`cargo test --target s390x-unknown-linux-gnu --test\nsimulation --features tokio,json\n  generated_schedule_digest_is_pinned`): pass.\n- aarch64 QEMU: the new digest, exact-basis-point, shrink, and\nsmoke-trace tests all pass; the\ncross-arch simulation subset (13 tests: trace digest, D14 lossy removal,\npartition CAP gate,\n  corpus replays) passes. The `cross-arch-runtime` filters now include\n`generated_schedule_digest_is_pinned` on both aarch64 and i686, asserted\nby\n  `scripts/tests/test_ci_rust_workflow.py`.\n- i686 native: same four new/changed tests pass; the same 13-test\ncross-arch subset passes.\n- aarch64 hot-join trace: pass.\n\n**Targeted mutations (oracle integrity):**\n\n- Replacing `range_basis_points` with a `mul_add`-based rate changes the\npinned digest\n(`7935885000697351495` vs `4513471821997057090`) and fails\n`generated_schedule_digest_is_pinned`.\n- Reintroducing a 300 ms wall-clock gate in `has_budget` fails\n  `shrink_result_is_independent_of_runner_speed` with 39 vs 20 runs.\n\n**Regenerated reference values:** the three `smoke_traces...` digests\nand seed 41's confirmed\nvector changed because the generator intentionally quantizes rates. The\nnew values were produced\nfrom the new generator on x86_64 and then matched under aarch64 and\ni686.\n\n## Risks\n\n- Any other consumer that pins an old generated schedule will need the\nsame one-time regeneration;\nthe only checked-in consumer was the smoke-trace table updated here.\nCorpus files store fully\n  materialized schedules, so their replays are unaffected.\n- A shrink that previously stopped at 5 minutes now runs to its\n`max_runs` budget (default 500, and\nevery call site passes an explicit budget). Runs are bounded and\ndeterministic; wall time is\n  reported but no longer gates.\n\n## Rollback\n\nRevert this PR with a squash-merge revert (`git revert <squash\ncommit>`). The revert restores the `mul_add` rates and the wall-clock\nbound; no wire,\nsession, or configuration state changes, so no migration is required.\n\n## Related Issues\n\nCloses #547.",
+          "timestamp": "2026-11-25T21:56:55Z",
+          "tree_id": "99d02e91110ecb339cff768c2a7b20dc798863e6",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/bc4d4442a9d2e5acc6f21abdae116f8e4633eeeb"
+        },
+        "date": 1795644544102,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 40159,
+            "range": "± 774",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 24530,
+            "range": "± 104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1091,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1243,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 2762,
+            "range": "± 172",
             "unit": "ns/iter"
           }
         ]
