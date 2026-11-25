@@ -4105,6 +4105,47 @@ mod hot_join_tests {
     }
 
     #[test]
+    fn state_snapshot_checksum_basis_slot_domain_is_exact() {
+        let snapshot = |slot: u32| StateSnapshot {
+            frame: Frame::new(10),
+            num_players: 2,
+            state_bytes: Vec::new(),
+            bridge_inputs: Vec::new(),
+            bridge_statuses: Vec::new(),
+            checksum: None,
+            certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(1), slot)],
+            },
+        };
+        let max_slot = u32::from(u16::MAX);
+
+        let message = Message {
+            header: MessageHeader::new(0xABCD),
+            body: MessageBody::StateSnapshot(snapshot(max_slot)),
+        };
+        let bytes = encode(&message).expect("encode a boundary slot");
+        assert_eq!(
+            decode_message(&bytes),
+            Ok((message, bytes.len())),
+            "u16::MAX is inside the u16 player domain and must decode"
+        );
+
+        let over = Message {
+            header: MessageHeader::new(0xABCD),
+            body: MessageBody::StateSnapshot(snapshot(max_slot + 1)),
+        };
+        let bytes = encode(&over).expect("encode an out-of-domain slot");
+        let error = decode_message(&bytes).expect_err("slot above u16::MAX must reject");
+        assert!(
+            error.to_string().contains("u16 player domain"),
+            "out-of-domain rejection names the player domain: {error}"
+        );
+    }
+
+    #[test]
     fn decode_message_roundtrips_state_snapshot_without_checksum() {
         roundtrip(Message {
             header: MessageHeader::new(0xABCD),
