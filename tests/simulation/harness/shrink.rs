@@ -3,6 +3,10 @@
 //! Shrinking is never invoked by [`super::RunReport::expect_pass`]. Callers opt
 //! in after a deterministic failure and choose where accepted candidates are
 //! emitted.
+//!
+//! The run budget is the only termination bound, so the minimized artifact is a
+//! pure function of the failure and the configuration. Wall-clock time appears
+//! only in [`ShrinkResult::elapsed`] for reporting.
 
 use super::schedule::{validate_schedule, Schedule, ScheduleEvent};
 use super::{RunOptions, RunReport};
@@ -15,26 +19,23 @@ use std::time::{Duration, Instant};
 
 /// Default hard cap on simulation executions performed by one shrink.
 pub const DEFAULT_MAX_RUNS: usize = 500;
-/// Default soft wall-clock admission bound for one shrink.
-///
-/// The shrinker checks this before starting each confirmation run. A run that
-/// starts within the bound is allowed to finish, so an individual slow
-/// simulation can make the final elapsed time exceed this value. The run-count
-/// bound remains exact.
-pub const DEFAULT_MAX_DURATION: Duration = Duration::from_secs(5 * 60);
 
 /// Resource limits for an explicit shrink operation.
+///
+/// Termination depends only on [`Self::max_runs`], so the same failure
+/// minimizes to the same artifact on every host regardless of processor speed.
+/// Wall-clock time is reported in [`ShrinkResult::elapsed`] but never bounds the
+/// search: a time-based stop would make the minimized schedule depend on host
+/// load instead of on the simulation itself.
 #[derive(Clone, Copy, Debug)]
 pub struct ShrinkConfig {
     pub max_runs: usize,
-    pub max_duration: Duration,
 }
 
 impl Default for ShrinkConfig {
     fn default() -> Self {
         Self {
             max_runs: DEFAULT_MAX_RUNS,
-            max_duration: DEFAULT_MAX_DURATION,
         }
     }
 }
@@ -45,6 +46,8 @@ pub struct ShrinkResult {
     pub schedule: Schedule,
     pub options: RunOptions,
     pub runs: usize,
+    /// Wall-clock time spent. Reported for observability; it never influences
+    /// which candidates are attempted.
     pub elapsed: Duration,
 }
 
@@ -525,7 +528,6 @@ struct Evaluator<'a, R, H> {
     accepted: &'a mut H,
     target_class: &'a str,
     config: ShrinkConfig,
-    started: Instant,
     runs: usize,
     required_classes: Option<std::collections::BTreeSet<String>>,
 }
@@ -537,7 +539,6 @@ where
 {
     fn has_budget(&self, additional_runs: usize) -> bool {
         self.runs.saturating_add(additional_runs) <= self.config.max_runs
-            && self.started.elapsed() < self.config.max_duration
     }
 
     fn confirm(&mut self, schedule: &Schedule, options: &RunOptions) -> Option<RunReport> {
@@ -601,14 +602,13 @@ where
 {
     let config = ShrinkConfig {
         max_runs: config.max_runs.min(DEFAULT_MAX_RUNS),
-        max_duration: config.max_duration.min(DEFAULT_MAX_DURATION),
     };
+    let started = Instant::now();
     let mut evaluator = Evaluator {
         runner: &mut runner,
         accepted: &mut on_accepted,
         target_class,
         config,
-        started: Instant::now(),
         runs: 0,
         required_classes: None,
     };
@@ -953,7 +953,7 @@ where
         schedule: current,
         options: current_options,
         runs: evaluator.runs,
-        elapsed: evaluator.started.elapsed(),
+        elapsed: started.elapsed(),
     })
 }
 
@@ -1097,6 +1097,10 @@ mod tests {
 
     /// Explicit operator entry point for reducing a captured nightly failure.
     /// It stays ignored so ordinary test runs never spend the shrink budget.
+    ///
+    /// `FORTRESS_SIM_SHRINK_MAX_RUNS` bounds the work (default 500). The budget
+    /// is run-count only; wrap an unusually long manual run in an external
+    /// `timeout` rather than reintroducing a wall clock into the shrinker.
     #[test]
     #[ignore = "manual failure-artifact shrink; requires FORTRESS_SIM_SHRINK_* paths"]
     fn shrink_failure_artifact_from_environment() {
@@ -1122,10 +1126,7 @@ mod tests {
             &artifact.schedule,
             &artifact.replay_options,
             target,
-            ShrinkConfig {
-                max_runs,
-                ..ShrinkConfig::default()
-            },
+            ShrinkConfig { max_runs },
             |schedule, options| match width {
                 4 => run(schedule, options),
                 32 => run_with_input::<WideStubInput>(schedule, options),
@@ -1160,10 +1161,7 @@ mod tests {
             &schedule,
             &options,
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 160,
-                max_duration: Duration::from_secs(60),
-            },
+            ShrinkConfig { max_runs: 160 },
             run,
             |_, _, _| accepted += 1,
         )
@@ -1180,6 +1178,49 @@ mod tests {
         assert_eq!(
             replay.verdict.failures.first().map(OracleFailure::class),
             Some("StateDivergence")
+        );
+    }
+
+    /// The minimized artifact and the number of runs must depend only on the
+    /// run budget, never on how much wall-clock time each confirmation takes.
+    #[test]
+    fn shrink_result_is_independent_of_runner_speed() {
+        let mut schedule = clean_schedule(4, 160);
+        schedule.config.desync_interval = 1_000;
+        let options = RunOptions {
+            corrupt_state_from: Some((3, 8)),
+            ..RunOptions::default()
+        };
+        let config = ShrinkConfig { max_runs: 40 };
+        let fast = shrink_failure(
+            &schedule,
+            &options,
+            "StateDivergence",
+            config,
+            run,
+            |_, _, _| {},
+        )
+        .expect("planted divergence shrinks");
+        let slow = shrink_failure(
+            &schedule,
+            &options,
+            "StateDivergence",
+            config,
+            |candidate, candidate_options| {
+                std::thread::sleep(Duration::from_millis(8));
+                run(candidate, candidate_options)
+            },
+            |_, _, _| {},
+        )
+        .expect("planted divergence shrinks");
+
+        assert_eq!(
+            fast.runs, slow.runs,
+            "the run budget must bound shrinking identically at any host speed"
+        );
+        assert_eq!(
+            fast.schedule, slow.schedule,
+            "a slow host must minimize the same failure to the same schedule"
         );
     }
 
@@ -1410,10 +1451,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 20,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 20 },
             |candidate, _| {
                 calls += 1;
                 synthetic_report(candidate, vec![state_failure(1)], calls as u64)
@@ -1436,10 +1474,7 @@ mod tests {
                 &schedule,
                 &RunOptions::default(),
                 "StateDivergence",
-                ShrinkConfig {
-                    max_runs: 20,
-                    max_duration: Duration::from_secs(10),
-                },
+                ShrinkConfig { max_runs: 20 },
                 |candidate, _| {
                     calls += 1;
                     let failures = if mismatch == "failure-sequence" && calls == 2 {
@@ -1472,10 +1507,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 20,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 20 },
             |candidate, _| {
                 calls += 1;
                 synthetic_report(
@@ -1499,10 +1531,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 20,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 20 },
             |candidate, _| {
                 assert_ne!(candidate.config.n_players, 2, "planted candidate panic");
                 synthetic_report(candidate, vec![state_failure(1)], 0xC0DE_CAFE)
@@ -1522,10 +1551,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 80,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 80 },
             |candidate, _| {
                 let failures = matches!(candidate.config.steps, 4 | 12)
                     .then(|| vec![state_failure(1)])
@@ -1551,10 +1577,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 80,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 80 },
             |candidate, _| {
                 let failures = if matches!(candidate.config.steps, 634 | 5_000) {
                     vec![state_failure(1), end_progress_failure(1)]
@@ -1602,10 +1625,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 60,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 60 },
             |candidate, _| {
                 let failures = if candidate
                     .events
@@ -1716,10 +1736,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 160,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 160 },
             |candidate, _| {
                 let required_delay = candidate
                     .initial_links
@@ -1856,10 +1873,7 @@ mod tests {
             &clock_schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 80,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 80 },
             |candidate, _| {
                 let failures = if candidate.config.clock_skew_ppm.first() == Some(&100) {
                     vec![state_failure(1)]
@@ -1882,10 +1896,7 @@ mod tests {
             &cadence_schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 80,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 80 },
             |candidate, _| {
                 let failures = if candidate.config.step_dt_ms == 25 {
                     vec![state_failure(1)]
@@ -1915,10 +1926,7 @@ mod tests {
             &collapsible,
             &phase_options,
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 40,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 40 },
             |candidate, _| synthetic_report(candidate, vec![state_failure(1)], 0xC011_A95E),
             |_, _, _| {},
         )
@@ -1930,10 +1938,7 @@ mod tests {
             &collapsible,
             &phase_options,
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 40,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 40 },
             |candidate, options| {
                 let failures = if candidate.config.frame_model == FrameModel::SkewGated60Hz
                     && options.phase_resolved_control_samples
@@ -1961,10 +1966,7 @@ mod tests {
             &required,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 60,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 60 },
             |candidate, _| {
                 let failures = if candidate.config.frame_model == FrameModel::SkewGated60Hz
                     && candidate.config.clock_skew_ppm.first() == Some(&1_000)
@@ -1999,10 +2001,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 40,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 40 },
             |candidate, _| {
                 let failures =
                     if candidate.config.wait_recommendation_policy.max_skip_frames == Some(9) {
@@ -2039,10 +2038,7 @@ mod tests {
                 &schedule,
                 &RunOptions::default(),
                 "StateDivergence",
-                ShrinkConfig {
-                    max_runs: 80,
-                    max_duration: Duration::from_secs(10),
-                },
+                ShrinkConfig { max_runs: 80 },
                 |candidate, _| {
                     let present = candidate.config.cpu_feedback_policy;
                     let failures = if match required_axis {
@@ -2094,10 +2090,7 @@ mod tests {
             &long_schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 80,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 80 },
             |candidate, _| synthetic_report(candidate, vec![state_failure(1)], 0xC0FE),
             |_, _, _| {},
         )
@@ -2124,10 +2117,7 @@ mod tests {
             &schedule,
             &options,
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 40,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 40 },
             |candidate, _| {
                 let retains_increase = candidate.events.iter().any(|(_, event)| {
                     matches!(
@@ -2177,10 +2167,7 @@ mod tests {
             &schedule,
             &RunOptions::default(),
             "StateDivergence",
-            ShrinkConfig {
-                max_runs: 40,
-                max_duration: Duration::from_secs(10),
-            },
+            ShrinkConfig { max_runs: 40 },
             |candidate, _| {
                 let retains_case = candidate.config.input_delay
                     == fortress_rollback::__internal::MAX_FRAME_DELAY
@@ -2214,32 +2201,28 @@ mod tests {
     fn invalid_inputs_and_bounds_do_not_overrun_the_runner_or_callback() {
         struct Case {
             max_runs: usize,
-            max_duration: Duration,
             expected_runs: usize,
             expected_callbacks: usize,
             succeeds: bool,
         }
         let cases = [
             Case {
+                max_runs: 0,
+                expected_runs: 0,
+                expected_callbacks: 0,
+                succeeds: false,
+            },
+            Case {
                 max_runs: 1,
-                max_duration: Duration::from_secs(10),
                 expected_runs: 0,
                 expected_callbacks: 0,
                 succeeds: false,
             },
             Case {
                 max_runs: 2,
-                max_duration: Duration::from_secs(10),
                 expected_runs: 2,
                 expected_callbacks: 1,
                 succeeds: true,
-            },
-            Case {
-                max_runs: 20,
-                max_duration: Duration::ZERO,
-                expected_runs: 0,
-                expected_callbacks: 0,
-                succeeds: false,
             },
         ];
         for case in cases {
@@ -2252,7 +2235,6 @@ mod tests {
                 "StateDivergence",
                 ShrinkConfig {
                     max_runs: case.max_runs,
-                    max_duration: case.max_duration,
                 },
                 |candidate, _| {
                     runs += 1;

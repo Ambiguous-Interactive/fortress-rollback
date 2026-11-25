@@ -956,6 +956,7 @@ jobs:
             filter: >-
               (not test(simulation::) or
               test(smoke_traces_match_checked_in_cross_architecture_digests) or
+              test(generated_schedule_digest_is_pinned) or
               test(lossy_graceful_remove_preserves_confirmed_history_d14) or
               test(simulation::partition_sweep::partition_sweep_pr_gate) or
               (test(simulation::corpus_replay::) and
@@ -968,6 +969,7 @@ jobs:
             filter: >-
               (not test(simulation::) or
               test(smoke_traces_match_checked_in_cross_architecture_digests) or
+              test(generated_schedule_digest_is_pinned) or
               test(lossy_graceful_remove_preserves_confirmed_history_d14) or
               test(simulation::partition_sweep::partition_sweep_pr_gate) or
               (test(simulation::corpus_replay::) and
@@ -1051,9 +1053,10 @@ jobs:
 
   # Every other runtime lane is little-endian. This narrow lane executes the
   # pinned wire-codec and hot-join digests, exact all-variant and serialization
-  # goldens, and the replay/machine-width fixture on a big-endian CPU under
-  # QEMU. It stays outside Miri (apt cost) and outside the 35-minute cross-arch
-  # matrix; the package-scoped, non-simulation tests keep it under budget.
+  # goldens, the generated-schedule digest, and the replay/machine-width fixture
+  # on a big-endian CPU under QEMU. It stays outside Miri (apt cost) and outside
+  # the 35-minute cross-arch matrix; the package-scoped rows and the single-row
+  # simulation probe keep it under budget.
   big-endian-runtime:
     name: Big-Endian Runtime (s390x QEMU)
     runs-on: ubuntu-latest
@@ -1112,6 +1115,16 @@ jobs:
           cargo test -p fortress-rollback --locked
           --target s390x-unknown-linux-gnu --lib
           integer_writers_match_fixed_width_little_endian_bytes
+
+      # Schedule generation must be a pure integer/`f64`-division function of
+      # `(seed, SimConfig)`, so the materialized bytes must be identical on a
+      # big-endian target. This pins the whole generated schedule, not only its
+      # wire encoding.
+      - name: Run generated-schedule digest
+        run: >-
+          cargo test -p fortress-rollback --locked
+          --target s390x-unknown-linux-gnu --test simulation
+          --features tokio,json generated_schedule_digest_is_pinned
 
       - name: Run replay fixture and portable machine-width checks
         run: >-
