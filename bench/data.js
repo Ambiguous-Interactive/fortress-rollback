@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795592664932,
+  "lastUpdate": 1795640342239,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "ed08d253d849567c4b3a63ac236534535cdffa97",
-          "message": "test: pin both debug_check_invariants! contracts (#457)\n\n## Description\n\nFixes the main `CI - Safety & Correctness` failure introduced by the\n#446 sweep. The strict release jobs (`cargo test --release --lib`) build\nwith debug assertions disabled, where `debug_check_invariants!` is a\ndocumented no-op. The fail-path test now pins both contracts:\n\n- debug / `paranoid`: two Critical/Invariant violations with the\ninvariant text and the context suffix;\n- release no-op: no violations reported.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n## Testing\n\nReproduced both strict modes locally:\n- `RUSTFLAGS=\"-D warnings\" cargo test --release --lib\ntelemetry::tests::test_debug_check_invariants` → 2 passed (no-op\nbranch).\n- `RUSTFLAGS=\"-C debug-assertions=on\" cargo test --release --lib\ntelemetry::tests::test_debug_check_invariants` → 2 passed (reporting\nbranch).\n\n## Related Issues\n\nFixes the main safety-gate regression from #446.",
-          "timestamp": "2026-11-17T07:40:56Z",
-          "tree_id": "87d275a283cac81cecfdaabb19ee6afb878c07ff",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/ed08d253d849567c4b3a63ac236534535cdffa97"
-        },
-        "date": 1794901909150,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 40108,
-            "range": "± 948",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 25117,
-            "range": "± 534",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1091,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1246,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 2798,
-            "range": "± 166",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 7711,
             "range": "± 97",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "45a6e77b5d4aa58d72046050c925cb2eeabc8825",
+          "message": "test: close the #563 checksum-basis mutation survivors (#564)\n\n<!-- session: ses_debadf769ffeD7yGjLSzSYbNAj started:\n2026-11-25T20:09:25Z -->\n\n## Description\n\n`main` is red: `CI - Mutation Testing` run 45569442792 on `690aec33`\nfailed the\ndiff-scope policy with `error: diff scope has 9 missed mutants` (job\n139068848707). The `#563` merge changed the checksum-basis derivation\nbut left\nfour boundary decisions unpinned. This PR closes that coverage gap with\nfour\ntests and no production changes.\n\nThe nine survivors were:\n\n- `src/sessions/p2p_session.rs:17135:34` — `&&` → `||` in\n`record_checksum_freeze`\n- `src/sessions/p2p_session.rs:17179:12` — delete `!` in\n`checksum_basis_token_for`\n- `src/sessions/p2p_session.rs:17179:54` — `&&` → `||` in\n`checksum_basis_token_for`\n- `src/sessions/p2p_session.rs:17179:63` — `<` → `==`, `<=`, `>` in\n`checksum_basis_token_for`\n- `src/sessions/p2p_session.rs:17400:38` — `<` → `<=` in\n`check_checksum_send_interval`\n- `src/network/codec.rs:1194:17` — `>` → `==`, `>=` in\n`decode_state_snapshot`\n\nEach was a genuine untested boundary, not dead code:\n\n1. A freeze boundary **above** an adopted fold floor must stay an\nexplicit\n   event; only boundaries at or below the floor fold into the base.\n2. A frame **at** the fold floor is representable; a frame strictly\nbelow it is\n   not.\n3. A scheduled checksum **at** the release floor must still be reported;\nonly\n   strictly older schedule slots are suppressed.\n4. `u16::MAX` is inside the codec's player domain; `u16::MAX + 1` is\nnot.\n\n## Type of Change\n\n- [x] 🧪 Test (adding or updating tests)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (test-only change; no\nnew\n  `unwrap`/`expect`/`panic!` in production code)\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [ ] I have updated the documentation accordingly\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes\n- [ ] I have updated relevant examples in the `examples/` directory\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `adopted_fold_floor_keeps_events_above_it_explicit`\n- `checksum_basis_token_rejects_only_frames_below_the_fold_floor`\n- `checksum_send_at_the_release_floor_is_not_suppressed`\n- `state_snapshot_checksum_basis_slot_domain_is_exact`\n\n**Manual testing performed:**\n\n- `cargo nextest run --features tokio,json,hot-join,violation-census -E\n'<the four tests>'`\n  → 4 passed.\n- `cargo tfull` → 3785 passed, 77 skipped (48.4s).\n- `cargo nextest run --workspace --features\ntokio,json,hot-join,violation-census`\n  → 3790 passed, 77 skipped (60.4s).\n- `cargo test --doc` → 160 passed, 51 ignored.\n- `RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features\nhot-join,tokio,json,sync-send --document-private-items` → pass.\n- `.venv/bin/python3 scripts/ci/agent-preflight.py --full --auto-fix` →\nall checks pass.\n- `cargo fmt --all -- --check` and `cargo c` → pass.\n\n**Mutation evidence (cargo-mutants 27.1.0, the CI-pinned version):**\n\nBefore (HEAD `690aec33`):\n\n```text\n7 mutants tested in 3m: 7 missed      # p2p_session survivors\n4 mutants tested in 2m: 2 missed, 2 caught  # codec survivors\n```\n\nAfter (this branch):\n\n```text\n7 mutants tested in 3m: 7 caught\n4 mutants tested in 2m: 4 caught\n```\n\nThe PR's own diff-scope mutation run plans 0 mutants because the change\nis\ntest-only (`cargo mutants --list --in-diff <branch diff>` prints `No\nmutants to\nfilter`); the runs above are the oracle for the nine survivors.\n\n**Five-day review audit:** both unresolved review threads on merged PR\n#538 are\nobsolete on current main and were resolved with evidence\n\n(https://github.com/Ambiguous-Interactive/fortress-rollback/pull/538#issuecomment-7173861581).\n\n## Risks\n\n- The mutation policy only re-tests each push's diff, so these nine\nsurvivors\n  are not automatically re-run by this merge. A future full-scope\n`workflow_dispatch` run is the confirmation path; the local logs are\nattached\n  in the progress record.\n- No production behavior changes, so runtime, wire, and cross-platform\nrisk is\n  limited to the existing code paths under test.\n\n## Rollback\n\nRevert commit `fe9ec49a` (or squash-merge revert). The revert removes\nfour test\nfunctions only; no runtime, wire, or configuration state changes, so no\nmigration is required.\n\n## Related Issues\n\nRelates to #563 (the merge that introduced the survivors) and #538\n(closed\nreview threads verified as fixed).",
+          "timestamp": "2026-11-25T20:46:53Z",
+          "tree_id": "f78cf8f81ff2af6898401ed6d98917ca4df6cbd1",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/45a6e77b5d4aa58d72046050c925cb2eeabc8825"
+        },
+        "date": 1795640341251,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 41713,
+            "range": "± 1259",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 27302,
+            "range": "± 313",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 768,
+            "range": "± 84",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 986,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 7780,
+            "range": "± 131",
             "unit": "ns/iter"
           }
         ]
