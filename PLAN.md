@@ -8,7 +8,7 @@
 
 ## In progress
 
-_None._
+- [ ] #559 Retry Python lease owner publication when a reaper moves the lock directory. Claimed: ses_deb2f847effe7tPlN9eLdOcovn 2026-11-25T22:27:15Z. Expires: 2026-11-26T01:27:15Z. Exit: deterministic pytest reproduces the reaper window, the lock retries within its deadline, and the Python and JS lock suites pass.
 
 ## Future
 
