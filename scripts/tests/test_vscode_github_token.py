@@ -344,6 +344,18 @@ def test_find_ipc_sockets_rejects_a_writable_socket(tmp_path: Path) -> None:
     assert writable not in sockets
 
 
+def test_resolve_from_git_credential_ignores_undecodable_helper_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket_path, _helper = _write_helper(tmp_path)
+    monkeypatch.setattr(vscode_github_token.shutil, "which", lambda *_a, **_k: "/usr/bin/node")
+
+    def runner(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
+
+    assert resolve_from_git_credential(socket_path, runner=runner) is None
+
+
 def test_resolve_from_git_credential_returns_none_without_node(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -252,7 +252,7 @@ def resolve_from_git_credential(
             env=child_env,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, subprocess.TimeoutExpired, UnicodeError):
         return None
     if completed.returncode != 0:
         return None
