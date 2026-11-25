@@ -347,6 +347,17 @@ def test_resolve_from_git_credential_rejects_a_symlinked_helper(
     assert calls == []
 
 
+def test_trusted_path_rejects_a_writable_non_sticky_parent(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    helper = shared / "helper.js"
+    helper.write_text("// fixture\n", encoding="utf-8")
+    helper.chmod(0o644)
+
+    assert not vscode_github_token._trusted_path(helper)
+
+
 def test_find_ipc_sockets_rejects_a_symlinked_socket(tmp_path: Path) -> None:
     target = tmp_path / "vscode-remote-containers-ipc-target.sock"
     link = tmp_path / "vscode-remote-containers-ipc-link.sock"
