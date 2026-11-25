@@ -94,12 +94,17 @@ export async function withBudgetLock(
       }
       if (now() >= deadline) throw new Error("timed out waiting for the worktree budget")
       await sleep(25)
+      continue
     }
     try {
       await writeFile(ownerPath, token, { encoding: "utf8", mode: 0o600, flag: "wx" })
       break
     } catch (error) {
-      if (error?.code === "EEXIST") {
+      // A reaper can move a directory it observed as stale after we created
+      // it, and a contender can publish an owner between our mkdir and write.
+      // Retry the acquisition instead of failing the request or entering
+      // without ownership.
+      if (error?.code === "EEXIST" || error?.code === "ENOENT") {
         await sleep(25)
         continue
       }
