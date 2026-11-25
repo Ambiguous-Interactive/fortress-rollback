@@ -143,10 +143,16 @@ def _mtime(path: Path) -> float:
 
 
 def _trusted_path(path: Path) -> bool:
-    """Return True for a path owned by this user and not group/world writable."""
+    """Return True for a non-symlink path owned by this user and not writable.
+
+    ``lstat`` is deliberate: a symlink can pass a followed-mode check, then be
+    replaced between validation and execution.
+    """
     try:
-        info = path.stat()
+        info = path.lstat()
     except OSError:
+        return False
+    if stat.S_ISLNK(info.st_mode):
         return False
     return info.st_uid in (os.geteuid(), 0) and (info.st_mode & 0o022) == 0
 

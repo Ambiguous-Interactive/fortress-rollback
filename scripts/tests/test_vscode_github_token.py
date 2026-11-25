@@ -326,6 +326,39 @@ def test_resolve_from_git_credential_rejects_a_writable_helper(
     assert calls == []
 
 
+def test_resolve_from_git_credential_rejects_a_symlinked_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket_path, helper = _write_helper(tmp_path)
+    target = tmp_path / "trusted.js"
+    target.write_text("// trusted fixture\n", encoding="utf-8")
+    helper.unlink()
+    helper.symlink_to(target)
+    monkeypatch.setattr(vscode_github_token.shutil, "which", lambda *_a, **_k: "/usr/bin/node")
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    credential = resolve_from_git_credential(socket_path, runner=runner)
+
+    assert credential is None
+    assert calls == []
+
+
+def test_find_ipc_sockets_rejects_a_symlinked_socket(tmp_path: Path) -> None:
+    target = tmp_path / "vscode-remote-containers-ipc-target.sock"
+    link = tmp_path / "vscode-remote-containers-ipc-link.sock"
+    _bind_socket(target)
+    link.symlink_to(target)
+
+    sockets = vscode_github_token.find_ipc_sockets({}, tmp_root=tmp_path)
+
+    assert target in sockets
+    assert link not in sockets
+
+
 def test_find_ipc_sockets_rejects_a_writable_socket(tmp_path: Path) -> None:
     trusted = tmp_path / "vscode-remote-containers-ipc-trusted.sock"
     writable = tmp_path / "vscode-remote-containers-ipc-writable.sock"
