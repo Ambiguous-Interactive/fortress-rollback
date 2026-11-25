@@ -32342,6 +32342,74 @@ mod tests {
         );
     }
 
+    /// Lowering an active boundary below the fold floor moves its term into the
+    /// cumulative base and removes the old event, so the snapshot basis stays
+    /// canonical and current tokens change with the rewritten history.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn lowering_an_active_boundary_below_the_fold_floor_goes_to_base() {
+        let mut session = create_three_player_desync_session();
+        let handle = PlayerHandle::new(1);
+        session.checksum_basis_base = 0x1234;
+        session.checksum_rewrite_fold_floor = Frame::new(20);
+        session
+            .checksum_freeze_floors
+            .insert(handle, Frame::new(30));
+
+        session.record_checksum_freeze(handle, Frame::new(15));
+
+        assert!(
+            session.checksum_freeze_floors.is_empty(),
+            "the old event must be removed when the boundary folds"
+        );
+        assert_eq!(
+            session.checksum_basis_base,
+            0x1234_u64.wrapping_add(checksum_freeze_floor_term(Frame::new(15), handle)),
+            "the lowered term belongs in the folded base"
+        );
+        let basis = session.checksum_basis_for_snapshot();
+        assert!(basis.is_valid());
+        assert_eq!(basis.floor, Frame::new(20));
+        assert_eq!(basis.events.len(), 0);
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(19)),
+            None,
+            "frames below the fold floor stay unrepresentable"
+        );
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(25)),
+            Some(0x1234_u64.wrapping_add(checksum_freeze_floor_term(Frame::new(15), handle))),
+            "frames above the fold floor use the lowered boundary"
+        );
+    }
+
+    /// Reactivation removes a slot's boundary, so post-activation tokens no
+    /// longer carry a term for its frozen era.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn reactivation_releases_the_slot_boundary() {
+        let mut session = create_three_player_desync_session();
+        let handle = PlayerHandle::new(2);
+        session.record_checksum_freeze(handle, Frame::new(6));
+        assert_ne!(
+            session.checksum_basis_token_for(Frame::new(10)),
+            Some(0),
+            "precondition: the frozen slot contributes a term"
+        );
+
+        session.release_checksum_freeze(handle);
+
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(10)),
+            Some(0),
+            "a reactivated slot no longer contributes to current tokens"
+        );
+        assert!(
+            session.checksum_basis_for_snapshot().events.is_empty(),
+            "a reactivated slot must not be advertised in the snapshot basis"
+        );
+    }
+
     /// Compaction must fold every slot that shares the lowest floor. Leaving a
     /// sibling at the fold floor makes `events` non-canonical (an event must be
     /// strictly above `floor`) and every later hot-join snapshot is rejected.
