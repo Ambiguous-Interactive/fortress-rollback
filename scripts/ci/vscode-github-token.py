@@ -142,6 +142,15 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
+def _trusted_path(path: Path) -> bool:
+    """Return True for a path owned by this user and not group/world writable."""
+    try:
+        info = path.stat()
+    except OSError:
+        return False
+    return info.st_uid in (os.geteuid(), 0) and (info.st_mode & 0o022) == 0
+
+
 def find_ipc_sockets(
     env: Mapping[str, str] | None = None, tmp_root: Path | None = None
 ) -> list[Path]:
@@ -164,7 +173,11 @@ def find_ipc_sockets(
         key=_mtime,
         reverse=True,
     ):
-        if candidate.is_socket() and candidate not in candidates:
+        if (
+            candidate.is_socket()
+            and _trusted_path(candidate)
+            and candidate not in candidates
+        ):
             candidates.append(candidate)
     return candidates
 
@@ -185,7 +198,7 @@ def _devcontainers_helper(socket_path: Path) -> Path | None:
         return None
     identifier = name[len(HELPER_PREFIX) : -len(HELPER_SOCKET_SUFFIX)]
     helper = socket_path.with_name(f"{HELPER_JS_PREFIX}{identifier}.js")
-    return helper if helper.is_file() else None
+    return helper if helper.is_file() and _trusted_path(helper) else None
 
 
 def _find_node(env: Mapping[str, str]) -> str | None:
@@ -217,6 +230,8 @@ def resolve_from_git_credential(
     consulted.
     """
     child_env = dict(os.environ if env is None else env)
+    if not _trusted_path(socket_path):
+        return None
     helper = _devcontainers_helper(socket_path)
     node = _find_node(child_env)
     if helper is None or node is None:

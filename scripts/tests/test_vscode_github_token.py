@@ -238,11 +238,20 @@ def test_find_ipc_sockets_returns_real_sockets_newest_first(tmp_path: Path) -> N
     assert regular not in sockets
 
 
+def _bind_socket(path: Path) -> None:
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        server.bind(str(path))
+    finally:
+        server.close()
+
+
 def _write_helper(tmp_path: Path) -> tuple[Path, Path]:
-    socket = tmp_path / "vscode-remote-containers-ipc-example.sock"
+    socket_path = tmp_path / "vscode-remote-containers-ipc-example.sock"
+    _bind_socket(socket_path)
     helper = tmp_path / "vscode-remote-containers-example.js"
     helper.write_text("// Dev Containers helper fixture\n", encoding="utf-8")
-    return socket, helper
+    return socket_path, helper
 
 
 def test_resolve_from_git_credential_invokes_the_socket_helper_directly(
@@ -284,7 +293,26 @@ def test_resolve_from_git_credential_invokes_the_socket_helper_directly(
 def test_resolve_from_git_credential_returns_none_without_the_helper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    socket = tmp_path / "vscode-remote-containers-ipc-example.sock"
+    socket_path = tmp_path / "vscode-remote-containers-ipc-example.sock"
+    _bind_socket(socket_path)
+    monkeypatch.setattr(vscode_github_token.shutil, "which", lambda *_a, **_k: "/usr/bin/node")
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    credential = resolve_from_git_credential(socket_path, runner=runner)
+
+    assert credential is None
+    assert calls == []
+
+
+def test_resolve_from_git_credential_rejects_a_writable_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket, helper = _write_helper(tmp_path)
+    helper.chmod(0o666)
     monkeypatch.setattr(vscode_github_token.shutil, "which", lambda *_a, **_k: "/usr/bin/node")
     calls: list[list[str]] = []
 
@@ -296,6 +324,24 @@ def test_resolve_from_git_credential_returns_none_without_the_helper(
 
     assert credential is None
     assert calls == []
+
+
+def test_find_ipc_sockets_rejects_a_writable_socket(tmp_path: Path) -> None:
+    trusted = tmp_path / "vscode-remote-containers-ipc-trusted.sock"
+    writable = tmp_path / "vscode-remote-containers-ipc-writable.sock"
+    servers = [socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) for _ in range(2)]
+    try:
+        servers[0].bind(str(trusted))
+        servers[1].bind(str(writable))
+        writable.chmod(0o666)
+
+        sockets = vscode_github_token.find_ipc_sockets({}, tmp_root=tmp_path)
+    finally:
+        for server in servers:
+            server.close()
+
+    assert trusted in sockets
+    assert writable not in sockets
 
 
 def test_resolve_from_git_credential_returns_none_without_node(
