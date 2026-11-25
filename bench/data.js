@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795542105232,
+  "lastUpdate": 1795592664932,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "e48e758d1a50e8b3a2ab0903d22738b1d9b3af90",
-          "message": "test: finish the vacuous-test sweep (#446) (#456)\n\n## Description\n\nCompletes the #446 vacuous-test sweep. A call-aware scanner over `src/`,\n`tests/`, and `loom-tests/` found the remaining no-assert tests after\nsessions 228–229; this PR makes the genuine survivors assert their\nintended behavior:\n\n- **RNG:** recursion counts the custom `RandomValue` implementation and\nproves the nested thread-local `random()` re-entry does not deadlock the\n`RefCell`; entropy seeding asserts a non-constant stream.\n- **Telemetry:** `debug_check_invariants!` ok/fail now assert the\ncollected violations, severity/kind, invariant text, and context suffix;\n`report_violation_to!` with an explicit `None` asserts it does not fall\nback to the thread-scoped collector.\n- **Config:** each Debug rendering must name its type.\n\nThe remaining no-literal-assert tests are classified and not vacuous:\n`?`-propagating constructors, `#[should_panic]` contracts, compile-time\nmacro/API contract tests, helper-driven orchestration whose helpers\nassert, and explicit z3 proof summaries.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n## Testing\n\n**Tests added/modified:**\n- `rng::tests::test_random_value_can_call_random_recursively`,\n`test_seedable_from_entropy`\n- `telemetry::tests::test_debug_check_invariants_macro_ok/_fail`,\n`test_report_violation_to_macro_with_none`\n- `test_all_configs_are_debug`\n\n**Validation:**\n- targeted nextest: 6 passed\n- `cargo clippy --workspace --all-targets --features tokio,json -D\nwarnings`: clean\n- `cargo tf`: 2776 passed / 492 skipped\n\n## Related Issues\n\nCloses #446\nRelates to #445",
-          "timestamp": "2026-11-17T07:12:51Z",
-          "tree_id": "5526a88feb308949c20152383a326b2f20534faa",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/e48e758d1a50e8b3a2ab0903d22738b1d9b3af90"
-        },
-        "date": 1794900213365,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 39837,
-            "range": "± 812",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 25443,
-            "range": "± 517",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1091,
-            "range": "± 8",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1243,
-            "range": "± 14",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 2812,
-            "range": "± 300",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 5175,
             "range": "± 180",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "690aec33d2b8b0890c8e37cd1747099d59bed896",
+          "message": "fix: derive checksum basis tokens from converged freeze history (#563)\n\n<!-- session: ses_def1a7ebaffeigHqlyiQdhcUIL started:\n2026-11-25T05:04:58Z -->\n\n## Description\n\nFixes #562 and #561. The checksum-report basis token was an additive\nmultiset of every\nconfirmed-history rewrite floor a survivor ever applied. Two survivors\nthat converge to the same\nfrozen history through different intermediate detections (for example\none freezes a slot at frame\n9 and then converges to 5, the other freezes at 5 directly) therefore\nkept different tokens\nforever, and `compare_local_checksums_against_peers` ignored every\nreport at or above the extra\nfloor: a permanent false negative in desync detection.\n\nThe token is now a pure function of each slot's converged freeze\nboundary (`last_frame + 1`): one\nterm per frozen slot at or below the report frame. A lower convergence\nreplaces the term, a higher\nre-detection is idempotent, and reactivation removes it. Folded\nboundaries keep per-slot identity\nso lowering/release subtracts the old base term exactly once. The\nhot-join basis carries\n`(freeze_floor, slot_handle)` pairs so a joiner can keep canonicalizing\nlater rewrites, and the\nadoption gates reject negative event floors (#561), non-canonical\nordering, duplicate slots, and\nslots outside the player count.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [ ] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (no\n`unwrap`/`expect`/`panic!`/`todo!` in\n      production; all fallible operations return `Result`)\n- [x] I have added tests that prove my fix is effective\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with\n      no warnings (also checked with `hot-join`)\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly (CHANGELOG, protocol\nspec revision history,\n      network design-decision log)\n- [x] I have added an entry to `CHANGELOG.md` for user-facing changes\n(folded into the existing\n      unreleased v6 entries per the unreleased-code rule)\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `converged_freeze_histories_share_one_basis_token`: drives two\nsessions through the production\n`disconnect_player_at_frame*` paths (late freeze at 9 then converge to 5\nvs direct freeze at 5),\nasserts equal tokens for every retained frame, `Some(0)` below the\nboundary, a pre-convergence\nreport ignored, and a same-basis mismatch still latches\n`DesyncDetected`.\n- `reserved_slot_convergence_ahead_of_simulation_records_the_basis`:\nconvergence learned before\n  the local simulation reaches the boundary still records the basis.\n- `lowering_a_folded_boundary_replaces_its_base_term` and\n`releasing_a_folded_boundary_subtracts_its_term`: folded boundaries are\nreplaceable/releasable\n  without double counting.\n- `freeze_event_order_does_not_change_the_converged_token`,\n  `same_floor_on_different_slots_yields_distinct_tokens`,\n  `compacting_shared_lowest_floors_keeps_the_basis_canonical`,\n  `checksum_freeze_map_is_bounded_without_changing_current_tokens`,\n  `freeze_below_fold_floor_with_spare_capacity_goes_to_base`,\n  `freeze_at_or_below_the_fold_floor_keeps_the_snapshot_basis_valid`,\n  `adopting_a_snapshot_basis_preserves_tokens_above_the_snapshot_frame`,\n\n`apply_snapshot_rejects_a_basis_slot_outside_the_player_count_without_mutation`,\n`apply_snapshot_rejects_a_negative_basis_floor_without_mutation`, plus\nthe updated\n  `ChecksumBasis`/codec canonicality cases.\n- Red evidence: the new convergence regression failed pre-fix with\n`left: Some(11153826283903158796)` vs `right: Some(956228935199076460)`.\n- Mutation evidence: accumulate-instead-of-replace fails at `Frame(0)`;\na floor-only term fails\n`same_floor_on_different_slots_yields_distinct_tokens`; leaking a folded\nterm fails the folded\n  lowering/release regressions.\n\n**Manual testing performed:**\n\n- `cargo tfull --no-fail-fast`: 3785 passed, 77 skipped.\n- `cargo nextest run --lib` / `--features hot-join`: 2080 / 2333 passed.\n- `cargo test --doc`: 160 passed, 51 ignored.\n- `cargo clippy --workspace --all-targets --features tokio,json,hot-join\n-- -D warnings`: pass.\n- `RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features\nhot-join,tokio,json,sync-send\n  --document-private-items`: pass.\n- `wasm32-unknown-unknown` checks (base, `sync-send`, `hot-join`,\n`json`): pass; wasip1 replay\nprobe and the 12-test browser WASM hot-join suite pass\n(Chrome/ChromeDriver 158).\n- s390x big-endian under QEMU: `wire_golden_v6` exact-byte variants plus\n  `wire_codec_digest_is_pinned`: 3 passed.\n- `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix`:\nall checks passed.\n- Godot native/Emscripten lane was not run (this devcontainer has no\nGodot 4.7.1 or Emscripten\n4.0.20); the browser WASM lane covers the same hot-join session surface.\n\n## Evidence\n\n- Independent fresh-context review: no Blockers; two Major findings\nfixed in `bb521287`\n(ahead-of-simulation convergence not recorded; folded boundaries not\nreplaceable/releasable).\n- Diff size: ~720 net lines, above the 500 guidance and below the 1,000\nstop. Production is\n~194 net lines across four files; ~526 net lines are regressions/oracles\nin the existing test\nmodules. Splitting tests from the fix would leave it unverified, so the\noverflow is recorded.\n\n## Risks\n\n- Protocol v6 is unreleased; `ChecksumBasis.events` changes meaning from\n`(floor, count)` to\n`(floor, slot)` with identical bytes. No released peer can interoperate\nwith the old semantics,\nso this folds into the existing v6 entry rather than bumping the version\nagain.\n- A joiner cannot subtract a boundary folded before its snapshot (the\nwire carries only the\naggregate base); that corner (only reachable with >64 simultaneously\nfrozen slots) stays\nincomparable, never a false mismatch. Survivor-vs-survivor tokens are\nexact.\n- Basis tokens are opaque and not pinned cross-target; the term writes\nfixed-width LE bytes and\n  the slot handle as u32, so native/s390x/wasm derive identical values.\n\n## Rollback\n\nRevert the squash commit. No migration or state format is involved;\nprotocol v6 is unreleased and\nthe previous additive derivation can be restored with the same test\nfiles reverted.\n\n## Related Issues\n\nFixes #562\nFixes #561",
+          "timestamp": "2026-11-25T07:31:24Z",
+          "tree_id": "43a9356e3df102d13d27cdcf7865af7fab865b1b",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/690aec33d2b8b0890c8e37cd1747099d59bed896"
+        },
+        "date": 1795592663936,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 42761,
+            "range": "± 1217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 27236,
+            "range": "± 301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 767,
+            "range": "± 104",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 982,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 7711,
+            "range": "± 97",
             "unit": "ns/iter"
           }
         ]
