@@ -355,9 +355,10 @@ fill` over `REMOTE_CONTAINERS_IPC`), then `GITHUB_PERSONAL_ACCESS_TOKEN` for CI 
 runs. Git transport uses the same connector through the configured credential helper; probe reads
 with `git ls-remote origin HEAD` and writes with `git push --dry-run origin HEAD:<branch>`.
 
-If neither VS Code path yields a credential, the bridge extension has not run -- the client may still
-be signed in. Reconnect the VS Code window so an extension host starts, or ask the operator to run
-**Fortress: Sign in to GitHub** and confirm the export exists. Do not scan `/proc/<pid>/mem`, read
+If neither VS Code path yields a credential, no credential has been exported yet -- the client may
+still be signed in, or the sign-in command may not have run. Reconnect the VS Code window so an
+extension host starts, or ask the operator to run **Fortress: Sign in to GitHub** and confirm the
+export exists. Do not scan `/proc/<pid>/mem`, read
 VS Code secret storage, or copy tokens out of a credential cache without explicit operator approval;
 an approved recovery must delete the copy at closeout. Those paths bypass the connector's consent and
 audit boundary.

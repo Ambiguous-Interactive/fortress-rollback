@@ -28,7 +28,7 @@ connector path. Its `fortress.githubSignIn` command obtains the session through
 `~/.local/state/opencode/vscode-github-token.json` (mode 0600); the Dev Containers git credential
 helper over `REMOTE_CONTAINERS_IPC` is the fallback. Resolve and validate either with
 `python3 scripts/ci/vscode-github-token.py check`, which reports the source, account, and scopes
-without printing the token. An absent export means the bridge extension has not run, not that the
+without printing the token. An absent export means no credential has been exported yet, not that the
 client is signed out: reconnect the VS Code window so an extension host starts, or ask the operator to
 run **Fortress: Sign in to GitHub**. Never extract tokens from process memory, secret storage, or
 credential caches without explicit operator approval, and delete any approved copy at closeout.
