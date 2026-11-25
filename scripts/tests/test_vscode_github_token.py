@@ -405,6 +405,22 @@ def test_main_askpass_rejects_plain_http(
     assert captured.out == ""
 
 
+def test_main_askpass_rejects_trailing_prompt_content(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+
+    exit_code = main(["askpass", "Password for 'https://github.com': trailing"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+
+
 def test_main_askpass_rejects_a_nonstandard_port(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -470,6 +486,23 @@ def test_main_exec_reports_a_missing_command_without_a_traceback(
     assert exit_code == 1
     assert "cannot run missing-command" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_main_exec_maps_a_signal_exit_to_128_plus_signal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+    monkeypatch.setattr(
+        vscode_github_token.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=-15),
+    )
+
+    assert main(["exec", "--", "signalled-command"]) == 143
 
 
 def test_main_check_reports_a_missing_session_with_exit_code_one(

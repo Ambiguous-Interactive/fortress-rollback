@@ -40,7 +40,7 @@ SIGN_IN_COMMAND = "fortress.githubSignIn"
 SIGN_IN_TITLE = "Fortress: Sign in to GitHub"
 EXPORT_FILE_NAME = "vscode-github-token.json"
 TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]+$")
-ASKPASS_PROMPT = re.compile(r"^(Username|Password) for '(?P<url>[^']+)':")
+ASKPASS_PROMPT = re.compile(r"^(Username|Password) for '(?P<url>[^']+)':$")
 
 
 class CredentialError(RuntimeError):
@@ -431,6 +431,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             except OSError as exc:
                 raise CredentialError(f"cannot run {command[0]}: {exc}") from exc
+            if completed.returncode < 0:
+                return 128 + abs(completed.returncode)
             return completed.returncode
         else:  # pragma: no cover - argparse restricts the choices
             raise CredentialError(f"unknown command: {args.command}")
