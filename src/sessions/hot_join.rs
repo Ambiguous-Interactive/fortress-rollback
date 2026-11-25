@@ -602,6 +602,14 @@ pub(crate) fn apply_snapshot<T: Config>(
             "hot-join snapshot carries a non-canonical checksum basis",
         ));
     }
+    if !snapshot
+        .checksum_basis
+        .slots_are_valid_for(expected_num_players)
+    {
+        return Err(hot_join_serialization_error(
+            "hot-join snapshot checksum basis names a slot outside the player count",
+        ));
+    }
 
     // Deserialize BEFORE mutating the layer so a corrupt snapshot leaves the
     // joiner untouched (no partial seek/inject on a rejected snapshot).
