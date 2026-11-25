@@ -121,23 +121,31 @@ def _mtime(path: Path) -> float:
         return 0.0
 
 
-def find_ipc_socket(
+def find_ipc_sockets(
     env: Mapping[str, str] | None = None, tmp_root: Path | None = None
-) -> Path | None:
-    """Return the live VS Code Dev Containers IPC socket, if one is configured."""
+) -> list[Path]:
+    """Return candidate VS Code Dev Containers IPC sockets, newest first.
+
+    The configured socket is tried first, then every matching socket in
+    modification-time order. Callers must probe each candidate because a socket
+    file can outlive the client that served it.
+    """
     environment = os.environ if env is None else env
+    root = Path(tempfile.gettempdir()) if tmp_root is None else tmp_root
+    candidates: list[Path] = []
     configured = environment.get("REMOTE_CONTAINERS_IPC", "").strip()
     if configured:
         candidate = Path(configured)
         if candidate.is_socket():
-            return candidate
-    root = Path(tempfile.gettempdir()) if tmp_root is None else tmp_root
-    candidates = sorted(
+            candidates.append(candidate)
+    for candidate in sorted(
         root.glob("vscode-remote-containers-ipc-*.sock"),
         key=_mtime,
         reverse=True,
-    )
-    return next((candidate for candidate in candidates if candidate.is_socket()), None)
+    ):
+        if candidate.is_socket() and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 def parse_git_credential(output: str) -> str | None:
@@ -207,10 +215,10 @@ def resolve(
     if credential is not None:
         return credential
 
-    socket = find_ipc_socket(environment) if socket_path is None else socket_path
+    socket = find_ipc_sockets(environment) if socket_path is None else [socket_path]
     resolver = resolve_from_git_credential if git_resolver is None else git_resolver
-    if socket is not None:
-        credential = resolver(socket)
+    for candidate in socket:
+        credential = resolver(candidate)
         if credential is not None:
             return credential
 
@@ -354,11 +362,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise CredentialError("exec needs a command after '--'")
             child_env = dict(os.environ)
             child_env["GITHUB_PERSONAL_ACCESS_TOKEN"] = credential.token
-            completed = subprocess.run(  # noqa: S603 - caller-provided command, no shell
-                command,
-                env=child_env,
-                check=False,
-            )
+            try:
+                completed = subprocess.run(  # noqa: S603 - caller-provided command, no shell
+                    command,
+                    env=child_env,
+                    check=False,
+                )
+            except OSError as exc:
+                raise CredentialError(f"cannot run {command[0]}: {exc}") from exc
             return completed.returncode
         else:  # pragma: no cover - argparse restricts the choices
             raise CredentialError(f"unknown command: {args.command}")

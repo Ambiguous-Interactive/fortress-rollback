@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import socket
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -176,6 +178,53 @@ def test_resolve_without_any_source_reports_the_sign_in_command(
     assert "vscode-github-token.py check" in message
 
 
+def test_resolve_probes_each_discovered_socket_until_one_answers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stale = tmp_path / "stale.sock"
+    live = tmp_path / "live.sock"
+    monkeypatch.setattr(
+        vscode_github_token, "find_ipc_sockets", lambda _env: [stale, live]
+    )
+    probed: list[Path] = []
+
+    def git_resolver(candidate: Path) -> Credential | None:
+        probed.append(candidate)
+        if candidate == live:
+            return Credential(token="git-token", source="vscode-git-credential")
+        return None
+
+    credential = resolve(
+        env={},
+        export_path=tmp_path / "missing.json",
+        git_resolver=git_resolver,
+    )
+
+    assert probed == [stale, live]
+    assert credential.source == "vscode-git-credential"
+
+
+def test_find_ipc_sockets_returns_real_sockets_newest_first(tmp_path: Path) -> None:
+    stale = tmp_path / "vscode-remote-containers-ipc-old.sock"
+    live = tmp_path / "vscode-remote-containers-ipc-new.sock"
+    regular = tmp_path / "vscode-remote-containers-ipc-file.sock"
+    regular.write_text("not a socket", encoding="utf-8")
+    servers = [socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) for _ in range(2)]
+    try:
+        servers[0].bind(str(stale))
+        servers[1].bind(str(live))
+        os.utime(stale, (1000, 1000))
+        os.utime(live, (2000, 2000))
+
+        sockets = vscode_github_token.find_ipc_sockets({}, tmp_root=tmp_path)
+    finally:
+        for server in servers:
+            server.close()
+
+    assert sockets == [live, stale]
+    assert regular not in sockets
+
+
 def test_resolve_from_environment_ignores_an_empty_token() -> None:
     assert resolve_from_environment({"GITHUB_PERSONAL_ACCESS_TOKEN": "  "}) is None
 
@@ -276,6 +325,28 @@ def test_main_exec_injects_the_token_into_the_child_environment(
     env = captured["env"]
     assert isinstance(env, dict)
     assert env["GITHUB_PERSONAL_ACCESS_TOKEN"] == "super-secret"
+
+
+def test_main_exec_reports_a_missing_command_without_a_traceback(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+
+    def missing(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        raise FileNotFoundError(2, "No such file or directory", command[0])
+
+    monkeypatch.setattr(vscode_github_token.subprocess, "run", missing)
+
+    exit_code = main(["exec", "--", "missing-command"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "cannot run missing-command" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_main_check_reports_a_missing_session_with_exit_code_one(
