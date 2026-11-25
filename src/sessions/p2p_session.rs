@@ -17261,11 +17261,14 @@ impl<T: Config> P2PSession<T> {
     /// live from the activation frame, so that entry describes only the frozen
     /// pre-activation history (stored per-frame tokens already reflect it).
     ///
-    /// Folded slot identities are not carried on the wire. The adopted `base`
-    /// stays immutable in this session; a post-snapshot lowering of a slot that
-    /// the host had folded adds its new term without being able to subtract the
-    /// folded one, so that corner stays incomparable (skipped comparisons, never
-    /// a false mismatch).
+    /// Folded slot identities are not carried on the wire. Terms already in the
+    /// adopted `base` are therefore unknown to this session: a post-snapshot
+    /// lowering or reactivation of such a slot cannot subtract the inherited
+    /// term, so its token differs from pre-existing survivors at and above the
+    /// fold floor and those reports stay incomparable (skipped comparisons,
+    /// never a false mismatch). Terms this session folds or releases after the
+    /// adoption are tracked normally. Only reachable when the host had more
+    /// simultaneously frozen slots than the wire event cap before the snapshot.
     #[cfg(feature = "hot-join")]
     fn adopt_checksum_basis(&mut self, basis: &ChecksumBasis) {
         self.checksum_basis_base = basis.base;
