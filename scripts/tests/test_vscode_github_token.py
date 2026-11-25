@@ -238,75 +238,81 @@ def test_find_ipc_sockets_returns_real_sockets_newest_first(tmp_path: Path) -> N
     assert regular not in sockets
 
 
-def test_resolve_from_git_credential_disables_askpass_routes(
-    tmp_path: Path,
+def _write_helper(tmp_path: Path) -> tuple[Path, Path]:
+    socket = tmp_path / "vscode-remote-containers-ipc-example.sock"
+    helper = tmp_path / "vscode-remote-containers-example.js"
+    helper.write_text("// Dev Containers helper fixture\n", encoding="utf-8")
+    return socket, helper
+
+
+def test_resolve_from_git_credential_invokes_the_socket_helper_directly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    socket, helper = _write_helper(tmp_path)
+    monkeypatch.setattr(vscode_github_token.shutil, "which", lambda *_a, **_k: "/usr/bin/node")
     captured: dict[str, object] = {}
 
     def runner(command: list[str], **kwargs: object) -> SimpleNamespace:
         captured["command"] = command
         captured["env"] = kwargs["env"]
-        return SimpleNamespace(returncode=1, stdout="")
-
-    trusted = "!f() { node /tmp/vscode-remote-containers-x.js git-credential-helper $*; }; f"
-    credential = resolve_from_git_credential(
-        tmp_path / "example.sock",
-        env={"GIT_ASKPASS": "wrapper", "SSH_ASKPASS": "helper"},
-        runner=runner,
-        helpers=[trusted],
-    )
-
-    assert credential is None
-    assert captured["command"][:4] == ["git", "-c", "core.askPass=", "-c"]
-    assert f"credential.helper={trusted}" in captured["command"]
-    env = captured["env"]
-    assert isinstance(env, dict)
-    assert "GIT_ASKPASS" not in env
-    assert "SSH_ASKPASS" not in env
-    assert env["GIT_TERMINAL_PROMPT"] == "0"
-
-
-def test_resolve_from_git_credential_uses_only_the_vscode_helper(
-    tmp_path: Path,
-) -> None:
-    trusted = "!f() { node /tmp/vscode-remote-containers-x.js git-credential-helper $*; }; f"
-    store = "!f() { git credential-store $*; }; f"
-    calls: list[list[str]] = []
-
-    def runner(command: list[str], **_kwargs: object) -> SimpleNamespace:
-        calls.append(command)
-        if command[:3] == ["git", "config", "--get-all"]:
-            return SimpleNamespace(returncode=0, stdout=f"{trusted}\n{store}\n")
         return SimpleNamespace(
             returncode=0,
             stdout="protocol=https\nhost=github.com\nusername=x\npassword=secret\n",
         )
 
-    credential = resolve_from_git_credential(tmp_path / "example.sock", runner=runner)
+    credential = resolve_from_git_credential(
+        socket,
+        env={"GIT_ASKPASS": "wrapper", "SSH_ASKPASS": "helper", "PATH": "/usr/bin"},
+        runner=runner,
+    )
 
     assert credential is not None
     assert credential.token == "secret"
-    fill = calls[-1]
-    assert f"credential.helper={trusted}" in fill
-    assert store not in fill
-    assert "credential.helper=" in fill
+    assert captured["command"] == [
+        "/usr/bin/node",
+        str(helper),
+        "git-credential-helper",
+        "get",
+    ]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert env["REMOTE_CONTAINERS_IPC"] == str(socket)
+    assert "GIT_ASKPASS" not in env
+    assert "SSH_ASKPASS" not in env
 
 
-def test_resolve_from_git_credential_returns_none_without_a_trusted_helper(
-    tmp_path: Path,
+def test_resolve_from_git_credential_returns_none_without_the_helper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    socket = tmp_path / "vscode-remote-containers-ipc-example.sock"
+    monkeypatch.setattr(vscode_github_token.shutil, "which", lambda *_a, **_k: "/usr/bin/node")
     calls: list[list[str]] = []
 
     def runner(command: list[str], **_kwargs: object) -> SimpleNamespace:
         calls.append(command)
-        return SimpleNamespace(
-            returncode=0, stdout="!f() { git credential-store $*; }; f\n"
-        )
+        return SimpleNamespace(returncode=0, stdout="")
 
-    credential = resolve_from_git_credential(tmp_path / "example.sock", runner=runner)
+    credential = resolve_from_git_credential(socket, runner=runner)
 
     assert credential is None
-    assert len(calls) == 1
+    assert calls == []
+
+
+def test_resolve_from_git_credential_returns_none_without_node(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    socket, _helper = _write_helper(tmp_path)
+    monkeypatch.setattr(vscode_github_token, "_find_node", lambda _env: None)
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    credential = resolve_from_git_credential(socket, runner=runner)
+
+    assert credential is None
+    assert calls == []
 
 
 def test_resolve_from_environment_ignores_an_empty_token() -> None:
@@ -484,6 +490,23 @@ def test_main_askpass_rejects_a_nonstandard_port(
         captured = capsys.readouterr()
         assert exit_code == 1
         assert captured.out == ""
+
+
+def test_main_askpass_rejects_a_malformed_url(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+
+    exit_code = main(["askpass", "Password for 'https://[bad':"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "https://github.com" in captured.err
 
 
 def test_main_exec_injects_the_token_into_the_child_environment(

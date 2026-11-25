@@ -21,6 +21,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -41,7 +42,9 @@ SIGN_IN_TITLE = "Fortress: Sign in to GitHub"
 EXPORT_FILE_NAME = "vscode-github-token.json"
 TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]+$")
 ASKPASS_PROMPT = re.compile(r"^(Username|Password) for '(?P<url>[^']+)':$")
-VSCODE_HELPER_MARKERS = ("vscode-remote-containers-", "git-credential-helper")
+HELPER_PREFIX = "vscode-remote-containers-ipc-"
+HELPER_SOCKET_SUFFIX = ".sock"
+HELPER_JS_PREFIX = "vscode-remote-containers-"
 
 
 class CredentialError(RuntimeError):
@@ -175,30 +178,29 @@ def parse_git_credential(output: str) -> str | None:
     return None
 
 
-def _trusted_git_helpers(
-    env: Mapping[str, str],
-    runner: Callable[..., Any],
-    timeout: float,
-) -> list[str]:
-    """Return only the configured Dev Containers git credential helpers."""
-    try:
-        completed = runner(  # noqa: S603 - fixed git subcommand, no shell
-            ["git", "config", "--get-all", "credential.helper"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            env=dict(env),
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return []
-    if completed.returncode != 0:
-        return []
-    return [
-        helper
-        for helper in completed.stdout.splitlines()
-        if all(marker in helper for marker in VSCODE_HELPER_MARKERS)
-    ]
+def _devcontainers_helper(socket_path: Path) -> Path | None:
+    """Return the Dev Containers helper JS paired with an IPC socket."""
+    name = socket_path.name
+    if not (name.startswith(HELPER_PREFIX) and name.endswith(HELPER_SOCKET_SUFFIX)):
+        return None
+    identifier = name[len(HELPER_PREFIX) : -len(HELPER_SOCKET_SUFFIX)]
+    helper = socket_path.with_name(f"{HELPER_JS_PREFIX}{identifier}.js")
+    return helper if helper.is_file() else None
+
+
+def _find_node(env: Mapping[str, str]) -> str | None:
+    """Return a Node executable for the Dev Containers helper."""
+    node = shutil.which("node", path=env.get("PATH"))
+    if node is not None:
+        return node
+    for root in (
+        Path.home() / ".vscode-server" / "bin",
+        Path("/vscode/vscode-server/bin"),
+    ):
+        for candidate in sorted(root.glob("*/node"), reverse=True):
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+    return None
 
 
 def resolve_from_git_credential(
@@ -206,31 +208,28 @@ def resolve_from_git_credential(
     *,
     env: Mapping[str, str] | None = None,
     runner: Callable[..., Any] = subprocess.run,
-    helpers: Sequence[str] | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> Credential | None:
-    """Ask only the trusted VS Code git credential helper for a credential."""
+    """Ask the Dev Containers helper paired with this IPC socket.
+
+    The helper JS is derived from the socket name and invoked directly, so no
+    configured git helper (store, cache, askpass, or a spoofed entry) is
+    consulted.
+    """
     child_env = dict(os.environ if env is None else env)
+    helper = _devcontainers_helper(socket_path)
+    node = _find_node(child_env)
+    if helper is None or node is None:
+        return None
     child_env["REMOTE_CONTAINERS_IPC"] = str(socket_path)
     child_env["GIT_TERMINAL_PROMPT"] = "0"
-    # An inherited askpass wrapper may be this resolver; asking git for a
+    # An inherited askpass wrapper may be this resolver; asking the helper for a
     # credential must not recurse through it.
     for variable in ("GIT_ASKPASS", "SSH_ASKPASS"):
         child_env.pop(variable, None)
-    trusted = (
-        list(helpers)
-        if helpers is not None
-        else _trusted_git_helpers(child_env, runner, timeout)
-    )
-    if not trusted:
-        return None
-    command = ["git", "-c", "core.askPass=", "-c", "credential.helper="]
-    for helper in trusted:
-        command.extend(["-c", f"credential.helper={helper}"])
-    command.extend(["credential", "fill"])
     try:
-        completed = runner(  # noqa: S603 - fixed git subcommand, no shell
-            command,  # noqa: S607 - git is resolved from PATH
+        completed = runner(  # noqa: S603 - fixed helper path, no shell
+            [node, str(helper), "git-credential-helper", "get"],
             input=f"protocol=https\nhost={GIT_CREDENTIAL_HOST}\n\n",
             capture_output=True,
             text=True,
@@ -372,7 +371,10 @@ def _askpass_request(prompt: str) -> str | None:
     match = ASKPASS_PROMPT.match(prompt.strip())
     if match is None:
         return None
-    parsed = urllib.parse.urlsplit(match.group("url"))
+    try:
+        parsed = urllib.parse.urlsplit(match.group("url"))
+    except ValueError:
+        return None
     if parsed.scheme != "https" or parsed.hostname != GIT_CREDENTIAL_HOST:
         return None
     try:
