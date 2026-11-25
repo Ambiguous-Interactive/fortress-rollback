@@ -110,6 +110,14 @@ CHECK_INPUT_PREFIXES: dict[str, tuple[str, ...]] = {
         "scripts/ci/check-advisory-dispositions.py",
     ),
     "validate-agent-skills": (".agents/skills/", "scripts/hooks/validate-agent-skills.py"),
+    "vscode-github-credential": (
+        "scripts/ci/vscode-github-token.py",
+        "scripts/tests/test_vscode_github_token.py",
+        "AGENTS.md",
+        "CLAUDE.md",
+        ".github/copilot-instructions.md",
+        ".cursorrules",
+    ),
     "agent-skills-quality": (
         ".agents/skills/",
         "scripts/docs/check-agent-skills.sh",
@@ -427,6 +435,19 @@ def is_plan_hygiene_surface_file(path: str) -> bool:
     }
 
 
+def is_vscode_github_credential_surface_file(path: str) -> bool:
+    """Return True for the VS Code GitHub connector contract and its resolver."""
+    return path in {
+        ".agents/skills/fortress-development/SKILL.md",
+        ".cursorrules",
+        ".github/copilot-instructions.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "scripts/ci/vscode-github-token.py",
+        "scripts/tests/test_vscode_github_token.py",
+    }
+
+
 def git_output_lines(repo_root: Path, args: list[str]) -> set[str]:
     """Run git and return non-empty output lines.
 
@@ -520,6 +541,9 @@ def plan_checks(
     )
     plan_hygiene_changed = any(
         is_plan_hygiene_surface_file(path) for path in changed_files
+    )
+    vscode_github_credential_changed = any(
+        is_vscode_github_credential_surface_file(path) for path in changed_files
     )
 
     if run_all or plan_hygiene_changed:
@@ -631,6 +655,30 @@ def plan_checks(
                 fix_hint=(
                     "Update or remove the documented exception before its review date; "
                     "keep the dependency, source, checksum, and Cargo.lock resolution exact."
+                ),
+            )
+        )
+
+    if run_all or vscode_github_credential_changed:
+        checks.append(
+            PlannedCheck(
+                check_id="vscode-github-credential",
+                description=(
+                    "exercise the VS Code GitHub connector credential resolver "
+                    "and its secret-handling contract"
+                ),
+                command=[
+                    PYTHON_EXECUTABLE,
+                    "-m",
+                    "pytest",
+                    "scripts/tests/test_vscode_github_token.py",
+                    "--no-header",
+                    "-q",
+                ],
+                fix_hint=(
+                    "Keep resolution ordered bridge export, Dev Containers git credential, "
+                    "then environment; never print or persist the token outside the "
+                    "explicit askpass/exec modes."
                 ),
             )
         )

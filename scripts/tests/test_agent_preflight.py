@@ -51,6 +51,8 @@ CHECK_TRIGGER_CASES: list[tuple[str, str]] = [
     ("advisory-dispositions", "deny.toml"),
     ("advisory-dispositions", "scripts/ci/check-advisory-dispositions.py"),
     ("advisory-dispositions", "fuzz/Cargo.lock"),
+    ("vscode-github-credential", "scripts/ci/vscode-github-token.py"),
+    ("vscode-github-credential", "AGENTS.md"),
     ("validate-agent-skills", ".agents/skills/fortress-development/SKILL.md"),
     ("agent-skills-quality", ".agents/skills/dev-pipeline/SKILL.md"),
     ("actionlint", ".github/workflows/ci.yml"),
