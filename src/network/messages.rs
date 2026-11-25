@@ -330,7 +330,7 @@ pub(crate) struct ChecksumBasis {
 }
 
 /// Wire cap on distinct frozen slots in [`ChecksumBasis::events`].
-pub(crate) const MAX_CHECKSUM_REWRITE_EVENTS: usize = 64;
+pub(crate) const MAX_CHECKSUM_BASIS_EVENTS: usize = 64;
 
 impl ChecksumBasis {
     /// Empty basis: no frozen history has affected any frame.
@@ -346,7 +346,7 @@ impl ChecksumBasis {
     /// Whether this basis is canonical and bounded enough to adopt.
     #[cfg(any(feature = "hot-join", test))]
     pub(crate) fn is_valid(&self) -> bool {
-        if self.events.len() > MAX_CHECKSUM_REWRITE_EVENTS {
+        if self.events.len() > MAX_CHECKSUM_BASIS_EVENTS {
             return false;
         }
         if !self.floor.is_null() && !self.floor.is_valid() {
@@ -906,7 +906,7 @@ impl Message {
 
 #[cfg(test)]
 mod checksum_basis_tests {
-    use super::{ChecksumBasis, MAX_CHECKSUM_REWRITE_EVENTS};
+    use super::{ChecksumBasis, MAX_CHECKSUM_BASIS_EVENTS};
     use crate::Frame;
 
     #[test]
@@ -993,7 +993,7 @@ mod checksum_basis_tests {
             .is_valid(),
             "the null frame is not a freeze floor"
         );
-        let oversized: Vec<(Frame, u32)> = (0..=MAX_CHECKSUM_REWRITE_EVENTS)
+        let oversized: Vec<(Frame, u32)> = (0..=MAX_CHECKSUM_BASIS_EVENTS)
             .map(|floor| {
                 (
                     Frame::new(i32::try_from(floor).expect("fits")),

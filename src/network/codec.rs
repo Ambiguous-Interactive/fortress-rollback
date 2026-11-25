@@ -46,7 +46,7 @@ use std::io::{self, Write};
 #[cfg(feature = "hot-join")]
 use crate::network::messages::{
     ChecksumBasis, JoinAborted, JoinCommitted, JoinRequest, ReactivateSlot, ReactivateSlotAck,
-    StateSnapshot, StateSnapshotAck, MAX_CHECKSUM_REWRITE_EVENTS,
+    StateSnapshot, StateSnapshotAck, MAX_CHECKSUM_BASIS_EVENTS,
 };
 use crate::network::messages::{
     ChecksumReport, ConnectionStatus, DropAbort, DropAbortReason, DropBackfill, DropCommit,
@@ -1165,9 +1165,9 @@ fn decode_state_snapshot(bytes: &[u8], cursor: &mut usize) -> CodecResult<StateS
     let basis_base = read_u64(bytes, cursor, "state_snapshot.checksum_basis.base")?;
     let basis_floor = read_frame(bytes, cursor, "state_snapshot.checksum_basis.floor", true)?;
     let events_len = read_usize(bytes, cursor, "state_snapshot.checksum_basis.events.len")?;
-    if events_len > MAX_CHECKSUM_REWRITE_EVENTS {
+    if events_len > MAX_CHECKSUM_BASIS_EVENTS {
         return Err(decode_message_error(format!(
-            "state_snapshot.checksum_basis has {events_len} events, above the {MAX_CHECKSUM_REWRITE_EVENTS} cap"
+            "state_snapshot.checksum_basis has {events_len} events, above the {MAX_CHECKSUM_BASIS_EVENTS} cap"
         )));
     }
     ensure_length_within_remaining(
@@ -4083,8 +4083,8 @@ mod hot_join_tests {
         };
 
         for count in [
-            crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS,
-            crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS + 1,
+            crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS,
+            crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS + 1,
         ] {
             let message = Message {
                 header: MessageHeader::new(0xABCD),
@@ -4092,7 +4092,7 @@ mod hot_join_tests {
             };
             let bytes = encode(&message).unwrap();
             let result = decode_message(&bytes);
-            if count == crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS {
+            if count == crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS {
                 assert_eq!(result, Ok((message, bytes.len())));
             } else {
                 let error = result.expect_err("over-cap basis must reject");

@@ -122,11 +122,10 @@ fn checksum_history_oldest_frame(frame_to_send: Frame, max_history: usize, inter
     Frame::new(oldest)
 }
 
-/// Hard bound on distinct rewrite floors retained in the basis map. Older
-/// terms are folded into the session's cumulative base; the map only grows with
-/// distinct floors, not with repeated rewrites at one floor.
-const MAX_CHECKSUM_REWRITE_EVENT_FLOORS: usize =
-    crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS;
+/// Hard bound on frozen slots retained in the per-slot basis map. The lowest
+/// boundaries are folded into the session's cumulative base; the map grows with
+/// distinct slots, not with repeated detections of one slot.
+const MAX_CHECKSUM_FREEZE_SLOTS: usize = crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS;
 
 /// Domain-separated additive term for one slot's converged freeze boundary.
 ///
@@ -17172,7 +17171,7 @@ impl<T: Config> P2PSession<T> {
     /// `floor`) and every later snapshot would be rejected.
     fn compact_checksum_freeze_floors(&mut self) {
         while let Some((handle, floor)) = self.lowest_freeze_boundary() {
-            let over_cap = self.checksum_freeze_floors.len() > MAX_CHECKSUM_REWRITE_EVENT_FLOORS;
+            let over_cap = self.checksum_freeze_floors.len() > MAX_CHECKSUM_FREEZE_SLOTS;
             let at_or_below_fold = !self.checksum_rewrite_fold_floor.is_null()
                 && floor <= self.checksum_rewrite_fold_floor;
             if !over_cap && !at_or_below_fold {
@@ -17206,7 +17205,7 @@ impl<T: Config> P2PSession<T> {
     #[cfg(feature = "hot-join")]
     fn checksum_basis_for_snapshot(&self) -> ChecksumBasis {
         // alloc-bound: the per-slot freeze map is capped at
-        // `MAX_CHECKSUM_REWRITE_EVENT_FLOORS`.
+        // `MAX_CHECKSUM_FREEZE_SLOTS`.
         let mut events: Vec<(Frame, u32)> = self
             .checksum_freeze_floors
             .iter()
@@ -32300,7 +32299,7 @@ mod tests {
     #[test]
     fn checksum_freeze_map_is_bounded_without_changing_current_tokens() {
         let mut session = create_three_player_desync_session();
-        let total = MAX_CHECKSUM_REWRITE_EVENT_FLOORS + 7;
+        let total = MAX_CHECKSUM_FREEZE_SLOTS + 7;
         let mut expected = 0_u64;
         for floor in 0..total {
             let handle = PlayerHandle::new(floor);
@@ -32312,7 +32311,7 @@ mod tests {
 
         assert_eq!(
             session.checksum_freeze_floors.len(),
-            MAX_CHECKSUM_REWRITE_EVENT_FLOORS,
+            MAX_CHECKSUM_FREEZE_SLOTS,
             "the per-slot freeze map must stay within its hard bound"
         );
         let fold_floor = session.checksum_rewrite_fold_floor;
@@ -32417,7 +32416,7 @@ mod tests {
     #[test]
     fn compacting_shared_lowest_floors_keeps_the_basis_canonical() {
         let mut session = create_three_player_desync_session();
-        let total = MAX_CHECKSUM_REWRITE_EVENT_FLOORS + 2;
+        let total = MAX_CHECKSUM_FREEZE_SLOTS + 2;
         for slot in 0..total {
             let floor = if slot < 2 {
                 0
@@ -32671,7 +32670,7 @@ mod tests {
     #[test]
     fn freeze_at_or_below_the_fold_floor_keeps_the_snapshot_basis_valid() {
         let mut session = create_three_player_desync_session();
-        for floor in 0..(MAX_CHECKSUM_REWRITE_EVENT_FLOORS as i32 + 3) {
+        for floor in 0..(MAX_CHECKSUM_FREEZE_SLOTS as i32 + 3) {
             session.record_checksum_freeze(
                 PlayerHandle::new(usize::try_from(floor).expect("fits")),
                 Frame::new(floor),
