@@ -32579,6 +32579,58 @@ mod tests {
         );
     }
 
+    /// Order-independence, including higher re-detections: the converged token
+    /// must depend only on the final per-slot boundaries, not on the sequence in
+    /// which detections arrived.
+    #[test]
+    fn freeze_event_order_does_not_change_the_converged_token() {
+        let handle_b = PlayerHandle::new(1);
+        let handle_d = PlayerHandle::new(2);
+        let orders = [
+            [(handle_d, 9), (handle_b, 12), (handle_d, 5), (handle_b, 12)],
+            [(handle_b, 12), (handle_d, 9), (handle_b, 12), (handle_d, 5)],
+            [(handle_d, 9), (handle_d, 5), (handle_b, 12), (handle_b, 12)],
+            [(handle_b, 12), (handle_d, 5), (handle_b, 12), (handle_d, 9)],
+        ];
+        let mut sessions: Vec<P2PSession<TestConfig>> = Vec::new();
+        for order in orders {
+            let mut session = create_three_player_desync_session();
+            for (handle, floor) in order {
+                session.record_checksum_freeze(handle, Frame::new(floor));
+            }
+            sessions.push(session);
+        }
+        let first = sessions.remove(0);
+        for frame in [0, 4, 5, 6, 9, 10, 12, 15] {
+            let frame = Frame::new(frame);
+            let expected = first.basis_token_for_checksum(frame);
+            for session in &sessions {
+                assert_eq!(
+                    session.basis_token_for_checksum(frame),
+                    expected,
+                    "every convergence order must derive one token at {frame:?}"
+                );
+            }
+        }
+    }
+
+    /// Two peers that froze different slots at the same floor have different
+    /// histories; the term must include the slot so their checksums are never
+    /// compared as if they shared a basis.
+    #[test]
+    fn same_floor_on_different_slots_yields_distinct_tokens() {
+        let mut one = create_three_player_desync_session();
+        let mut two = create_three_player_desync_session();
+        one.record_checksum_freeze(PlayerHandle::new(1), Frame::new(6));
+        two.record_checksum_freeze(PlayerHandle::new(2), Frame::new(6));
+
+        assert_ne!(
+            one.basis_token_for_checksum(Frame::new(8)),
+            two.basis_token_for_checksum(Frame::new(8)),
+            "the basis term must be keyed by the frozen slot, not only its floor"
+        );
+    }
+
     /// A hot-join basis can retain a fold floor while holding fewer than the
     /// cap in active events. A freeze boundary at or below that floor must then
     /// go to the base directly; inserting an event would leave a non-canonical

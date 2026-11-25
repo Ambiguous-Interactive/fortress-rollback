@@ -820,6 +820,7 @@ implementation/test obligations.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.4     | 2026-11-25 | Checksum basis tokens derive from converged per-slot freeze boundaries, so survivors with the same frozen history share a token (and still change it on a lower boundary); negative event floors are rejected |
 | 1.3     | 2026-11-22 | Documented the protocol-v6 checksum basis token, which keeps delayed pre-rewrite reports incomparable with a recomputed basis |
 | 1.2     | 2026-11-21 | Documented the protocol-v5 terminal-attempt epoch admission guard and why it preserves `AtMostOneCommittedCut` |
 | 1.1     | 2026-07-12 | Added the coordinated graceful-drop safety model and D14 mutation gate |
