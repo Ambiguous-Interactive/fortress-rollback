@@ -347,10 +347,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one term at the first frame whose confirmed input repeats its frozen value), so a delayed
   pre-rewrite report is incomparable with a recomputed basis and cannot relatch a false checksum
   mismatch, while survivors with the same final frozen history share one token. The hot-join
-  `StateSnapshot` carries the full bounded basis (base, fold floor, and active per-slot boundary
-  events) so a fresh joiner's post-snapshot reports remain comparable with a host that rewrote
-  history before serving, including boundaries above the snapshot frame. Upgrade every peer in a
-  session to v6; v5 headers are rejected at the handshake.
+  `StateSnapshot` carries every frozen slot's boundary event so a fresh joiner's post-snapshot
+  reports remain comparable with a host that rewrote history before serving, including boundaries
+  above the snapshot frame; a session with more simultaneously frozen slots than the bounded basis
+  event cap refuses the hot-join serve instead of folding identities a joiner could not update.
+  Upgrade every peer in a session to v6; v5 headers are rejected at the handshake.
 - **Breaking:** the wire protocol version is now `5`. `DropOperationId` carries a monotone
   terminal-attempt epoch and `DropAbort` carries the sender's next acceptable epoch plus the
   operation's canonical target list. Every coordinated-drop control message's operation grows by

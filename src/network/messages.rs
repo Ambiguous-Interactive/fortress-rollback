@@ -314,11 +314,13 @@ pub(crate) struct JoinRequest {
 /// value (`last_frame + 1`). Frames below that boundary are unchanged; a later
 /// lower boundary replaces the earlier one, so survivors that reach the same
 /// frozen history through different intermediate detections derive one token.
-/// A reactivated slot stops contributing. `events` holds the non-folded
-/// `(freeze_floor, slot_handle)` pairs, sorted by `(floor, handle)`. `floor` is
-/// the highest freeze floor already folded into `base`; frames below it have no
-/// reconstructible basis. A joiner copies this structure verbatim (and can keep
-/// canonicalizing later per-slot rewrites because each event names its slot).
+/// A reactivated slot stops contributing. `events` holds every frozen slot's
+/// `(freeze_floor, slot_handle)` pair, sorted by `(floor, handle)`. Conforming
+/// hosts carry all of them and send `base = 0`, `floor = NULL`; the fields let a
+/// receiver interpret a basis from a peer that folded (older or non-conforming)
+/// and frames below its fold floor have no reconstructible basis. A session with
+/// more simultaneously frozen slots than [`MAX_CHECKSUM_BASIS_EVENTS`] refuses
+/// the hot-join serve instead of folding identities a joiner could not update.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ChecksumBasis {
     /// Folded per-slot term sum.
@@ -330,6 +332,7 @@ pub(crate) struct ChecksumBasis {
 }
 
 /// Wire cap on distinct frozen slots in [`ChecksumBasis::events`].
+#[cfg(any(feature = "hot-join", test))]
 pub(crate) const MAX_CHECKSUM_BASIS_EVENTS: usize = 64;
 
 impl ChecksumBasis {

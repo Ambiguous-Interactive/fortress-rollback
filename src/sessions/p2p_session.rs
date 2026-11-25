@@ -122,9 +122,10 @@ fn checksum_history_oldest_frame(frame_to_send: Frame, max_history: usize, inter
     Frame::new(oldest)
 }
 
-/// Hard bound on frozen slots retained in the per-slot basis map. The lowest
-/// boundaries are folded into the session's cumulative base; the map grows with
-/// distinct slots, not with repeated detections of one slot.
+/// Hard bound on frozen slots representable in a hot-join snapshot basis.
+/// A session with more simultaneously frozen slots refuses the serve rather
+/// than fold per-slot terms into an identity a joiner could not update.
+#[cfg(feature = "hot-join")]
 const MAX_CHECKSUM_FREEZE_SLOTS: usize = crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS;
 
 /// Domain-separated additive term for one slot's converged freeze boundary.
@@ -699,18 +700,15 @@ where
     /// converge to the same frozen history derive one token regardless of
     /// their intermediate detection floors. Reactivation removes the slot.
     checksum_freeze_floors: BTreeMap<PlayerHandle, Frame>,
-    /// Boundaries compacted out of [`Self::checksum_freeze_floors`], keyed by
-    /// slot. Their terms live in [`Self::checksum_basis_base`]; keeping the
-    /// per-slot identity lets a later lowering or reactivation subtract exactly
-    /// that term instead of double-counting or leaking it.
-    checksum_folded_floors: BTreeMap<PlayerHandle, Frame>,
-    /// Folded freeze terms plus any adopted hot-join token. Folding keeps the
-    /// event map bounded without changing tokens for frames at or above the
-    /// highest folded floor.
+    /// Adopted fold token (conforming hosts always send `0`; kept so a
+    /// snapshot from a peer that folded can still be interpreted).
     checksum_basis_base: u64,
-    /// Highest freeze boundary folded into [`Self::checksum_basis_base`], or
-    /// [`Frame::NULL`] before any fold.
+    /// Adopted fold floor (conforming hosts always send [`Frame::NULL`]).
     checksum_basis_fold_floor: Frame,
+    /// Highest reactivation frame whose freeze term was released. Checksums for
+    /// earlier frames are not sent after the release, so a retained frame keeps
+    /// the token it was reported with.
+    checksum_release_floor: Frame,
     /// The last frame we sent a checksum for
     last_sent_checksum_frame: Frame,
     /// Optional observer for specification violations.
@@ -1751,11 +1749,11 @@ impl<T: Config> P2PSession<T> {
     }
 
     #[cfg(feature = "hot-join")]
-    fn record_committed_reactivation(&mut self, handle: PlayerHandle) {
+    fn record_committed_reactivation(&mut self, handle: PlayerHandle, activation_frame: Frame) {
         // A reactivated slot is live again: its real inputs from the activation
         // frame onward are a new history generation, so it no longer
         // contributes a converged freeze term to the checksum basis.
-        self.release_checksum_freeze(handle);
+        self.release_checksum_freeze(handle, activation_frame);
         // A reactivated slot is live again: discard any stale automatic-timeout
         // intent queued for its previous generation.
         self.coordinated_drop.queued.remove(&handle);
@@ -6516,9 +6514,9 @@ impl<T: Config> P2PSession<T> {
             local_checksum_history: BTreeMap::new(),
             checksum_history_basis_tokens: BTreeMap::new(),
             checksum_freeze_floors: BTreeMap::new(),
-            checksum_folded_floors: BTreeMap::new(),
             checksum_basis_base: 0,
             checksum_basis_fold_floor: Frame::NULL,
+            checksum_release_floor: Frame::NULL,
             last_sent_checksum_frame: Frame::NULL,
             violation_observer,
             telemetry,
@@ -7385,6 +7383,13 @@ impl<T: Config> P2PSession<T> {
                 continue;
             }
 
+            if !self.checksum_basis_is_representable() {
+                // More simultaneously frozen slots than the bounded basis can
+                // name: refuse the serve instead of sending a snapshot whose
+                // tokens the joiner could never keep canonical.
+                continue;
+            }
+
             let snapshot = match crate::sessions::hot_join::capture_snapshot_with_exclusions(
                 &self.sync_layer,
                 activation_frame,
@@ -7527,7 +7532,7 @@ impl<T: Config> P2PSession<T> {
                 );
                 continue;
             }
-            self.record_committed_reactivation(handle);
+            self.record_committed_reactivation(handle, activation_frame);
             // Force the host to re-simulate from the activation frame F so its
             // prediction for the reactivated handle anchors at F.
             //
@@ -7936,6 +7941,11 @@ impl<T: Config> P2PSession<T> {
         &self,
         snapshot_frame: Frame,
     ) -> Result<Option<StateSnapshot>, FortressError> {
+        if !self.checksum_basis_is_representable() {
+            // See the 2-peer serve gate: an over-cap basis cannot be carried
+            // without losing per-slot identity, so the serve stays closed.
+            return Ok(None);
+        }
         let bridge = self
             .sync_layer
             .confirmed_inputs(snapshot_frame, &self.local_connect_status)?;
@@ -8252,7 +8262,7 @@ impl<T: Config> P2PSession<T> {
                 handle
             );
         }
-        self.record_committed_reactivation(handle);
+        self.record_committed_reactivation(handle, activation_frame);
         self.coordinated_drop.certified_dropped.remove(&handle);
         // Anchor the reactivated slot's prediction at F, mirroring the 2-peer
         // Phase 3. Here `F == current_frame` (the pause pinned
@@ -9050,7 +9060,7 @@ impl<T: Config> P2PSession<T> {
         };
         self.record_closed_npeer_attempt(pending.handle, pending.frame);
         if committed {
-            self.record_committed_reactivation(pending.handle);
+            self.record_committed_reactivation(pending.handle, pending.frame);
             self.coordinated_drop
                 .certified_dropped
                 .remove(&pending.handle);
@@ -10001,7 +10011,7 @@ impl<T: Config> P2PSession<T> {
         // reactivation floor arms here (and not at the reopen above).
         let handle = pending_handle;
         let frame = pending_frame;
-        self.record_committed_reactivation(handle);
+        self.record_committed_reactivation(handle, frame);
         self.coordinated_drop.certified_dropped.remove(&handle);
         self.reset_reactivated_slot_gossip(
             handle,
@@ -10269,7 +10279,7 @@ impl<T: Config> P2PSession<T> {
             self.coordinated_drop
                 .certified_dropped
                 .remove(&local_handle);
-            self.release_checksum_freeze(local_handle);
+            self.release_checksum_freeze(local_handle, snapshot.frame);
         }
 
         // Ack the loaded frame so the host reactivates + emits PeerJoined, and
@@ -11192,7 +11202,7 @@ impl<T: Config> P2PSession<T> {
         {
             // The joining slot is live from its activation frame; its own
             // pre-activation freeze term must not gate post-join comparisons.
-            self.release_checksum_freeze(local_handle);
+            self.release_checksum_freeze(local_handle, buffered.activation_frame);
         }
 
         // Un-defer ALL remote endpoints (see the rustdoc argument above),
@@ -17106,56 +17116,43 @@ impl<T: Config> P2PSession<T> {
     /// frame is idempotent because the slot is already frozen at or below that
     /// frame; retaining it as an additional term would leave two survivors that
     /// reached the same frozen history permanently incomparable, which is the
-    /// #562 false negative. The old term is removed from wherever it lives (the
-    /// active map or the folded base) before the new one is recorded, so fold
-    /// timing never changes the token. A reactivated slot's boundary is removed
-    /// by [`Self::release_checksum_freeze`].
+    /// #562 false negative. The slot's single term is replaced, so the basis is
+    /// a pure function of the converged per-slot boundaries.
     fn record_checksum_freeze(&mut self, player_handle: PlayerHandle, floor: Frame) {
         if !floor.is_valid() {
             // A null or negative boundary cannot order any confirmed frame.
             return;
         }
-        let active = self.checksum_freeze_floors.get(&player_handle).copied();
-        let folded = self.checksum_folded_floors.get(&player_handle).copied();
-        if active.or(folded).is_some_and(|existing| existing <= floor) {
+        if self
+            .checksum_freeze_floors
+            .get(&player_handle)
+            .is_some_and(|&existing| existing <= floor)
+        {
             return;
         }
-        if active.is_some() {
-            self.checksum_freeze_floors.remove(&player_handle);
-        }
-        if let Some(existing) = folded {
-            // The old term is part of the cumulative base; subtract it so a
-            // folded boundary is replaceable exactly like an active one.
-            self.checksum_folded_floors.remove(&player_handle);
-            self.checksum_basis_base = self
-                .checksum_basis_base
-                .wrapping_sub(checksum_freeze_floor_term(existing, player_handle));
-        }
+        self.checksum_freeze_floors.remove(&player_handle);
         let fold_floor = self.checksum_basis_fold_floor;
         if !fold_floor.is_null() && floor <= fold_floor {
-            // The boundary sits in the folded era; its term belongs in the
-            // cumulative base so the derived event map only carries floors
-            // above the fold floor (the canonical snapshot invariant).
+            // Only an adopted, non-conforming fold reaches this branch: the
+            // event list must stay strictly above the fold floor. Conforming v6
+            // hosts never fold, so no per-slot identity is retained here.
             self.checksum_basis_base = self
                 .checksum_basis_base
                 .wrapping_add(checksum_freeze_floor_term(floor, player_handle));
-            self.checksum_folded_floors.insert(player_handle, floor);
             return;
         }
         self.checksum_freeze_floors.insert(player_handle, floor);
-        self.compact_checksum_freeze_floors();
     }
 
     /// Removes a reactivated slot's freeze boundary: its real inputs from the
-    /// activation frame onward describe a new history generation. A folded
-    /// boundary's term is subtracted from the cumulative base.
+    /// activation frame onward describe a new history generation. Checksums for
+    /// frames below the activation frame are suppressed afterwards by
+    /// [`Self::checksum_release_floor`], so their retained tokens do not change.
     #[cfg(feature = "hot-join")]
-    fn release_checksum_freeze(&mut self, player_handle: PlayerHandle) {
-        self.checksum_freeze_floors.remove(&player_handle);
-        if let Some(floor) = self.checksum_folded_floors.remove(&player_handle) {
-            self.checksum_basis_base = self
-                .checksum_basis_base
-                .wrapping_sub(checksum_freeze_floor_term(floor, player_handle));
+    fn release_checksum_freeze(&mut self, player_handle: PlayerHandle, activation_frame: Frame) {
+        if self.checksum_freeze_floors.remove(&player_handle).is_some() {
+            self.checksum_release_floor =
+                std::cmp::max(self.checksum_release_floor, activation_frame);
         }
     }
 
@@ -17191,39 +17188,14 @@ impl<T: Config> P2PSession<T> {
         Some(token)
     }
 
-    /// Folds the lowest freeze boundaries into the cumulative base until the
-    /// per-slot map is bounded and every remaining boundary is above the fold
-    /// floor. Tokens at or above the fold floor are unchanged; frames below it
-    /// have no retained basis and are reported as unknown by
-    /// [`Self::checksum_basis_token_for`].
+    /// Whether every frozen slot boundary fits the bounded snapshot basis.
     ///
-    /// Folding is by *floor*: when several slots share the lowest floor, every
-    /// one of them is folded. Leaving a sibling at the fold floor would make the
-    /// derived event map non-canonical (`events` must be strictly above
-    /// `floor`) and every later snapshot would be rejected.
-    fn compact_checksum_freeze_floors(&mut self) {
-        while let Some((handle, floor)) = self.lowest_freeze_boundary() {
-            let over_cap = self.checksum_freeze_floors.len() > MAX_CHECKSUM_FREEZE_SLOTS;
-            let at_or_below_fold = !self.checksum_basis_fold_floor.is_null()
-                && floor <= self.checksum_basis_fold_floor;
-            if !over_cap && !at_or_below_fold {
-                break;
-            }
-            self.checksum_freeze_floors.remove(&handle);
-            self.checksum_folded_floors.insert(handle, floor);
-            self.checksum_basis_base = self
-                .checksum_basis_base
-                .wrapping_add(checksum_freeze_floor_term(floor, handle));
-            self.checksum_basis_fold_floor = std::cmp::max(self.checksum_basis_fold_floor, floor);
-        }
-    }
-
-    /// Lowest `(handle, freeze floor)` pair, used by fold compaction.
-    fn lowest_freeze_boundary(&self) -> Option<(PlayerHandle, Frame)> {
-        self.checksum_freeze_floors
-            .iter()
-            .min_by_key(|(&handle, &floor)| (floor, handle))
-            .map(|(&handle, &floor)| (handle, floor))
+    /// Conforming sessions with more simultaneously frozen slots than the wire
+    /// event cap refuse the hot-join serve instead of folding identities into a
+    /// token a joiner could never update (review finding on #562).
+    #[cfg(feature = "hot-join")]
+    fn checksum_basis_is_representable(&self) -> bool {
+        self.checksum_freeze_floors.len() <= MAX_CHECKSUM_FREEZE_SLOTS
     }
 
     /// Basis token to attach to a newly collected checksum at `frame`, or
@@ -17273,7 +17245,8 @@ impl<T: Config> P2PSession<T> {
     fn adopt_checksum_basis(&mut self, basis: &ChecksumBasis) {
         self.checksum_basis_base = basis.base;
         self.checksum_basis_fold_floor = basis.floor;
-        self.checksum_folded_floors.clear();
+        // alloc-bound: `is_valid` caps `events` at MAX_CHECKSUM_BASIS_EVENTS and
+        // the adoption gate validates every slot against the player count.
         self.checksum_freeze_floors = basis
             .events
             .iter()
@@ -17422,6 +17395,19 @@ impl<T: Config> P2PSession<T> {
                         "P2PSession::check_checksum_send_interval"
                     )
                 };
+
+                if !self.checksum_release_floor.is_null()
+                    && frame_to_send < self.checksum_release_floor
+                {
+                    // A reactivated slot's freeze term was released at the
+                    // activation frame. Sending this older schedule slot now
+                    // would label it without the term while a peer that sent it
+                    // before the release labeled it with the term, so the same
+                    // retained frame would have two tokens. Skip it; every
+                    // post-release report is at or above the activation frame.
+                    self.last_sent_checksum_frame = frame_to_send;
+                    return;
+                }
 
                 if frame_to_send <= self.sync_layer.last_confirmed_frame()
                     && frame_to_send <= self.sync_layer.last_saved_frame()
@@ -32336,106 +32322,61 @@ mod tests {
         );
     }
 
-    /// The per-slot freeze map is hard-bounded: excess boundaries fold into
-    /// the cumulative base without changing any token at or above the fold.
+    /// Every frozen slot's boundary is carried in the snapshot basis up to the
+    /// wire cap; a session with more frozen slots refuses the serve instead of
+    /// folding identities into a token a joiner could never update.
+    #[cfg(feature = "hot-join")]
     #[test]
-    fn checksum_freeze_map_is_bounded_without_changing_current_tokens() {
+    fn checksum_basis_represents_every_frozen_slot_up_to_the_cap() {
         let mut session = create_three_player_desync_session();
-        let total = MAX_CHECKSUM_FREEZE_SLOTS + 7;
-        let mut expected = 0_u64;
-        for floor in 0..total {
-            let handle = PlayerHandle::new(floor);
-            let frame = Frame::new(i32::try_from(floor).expect("test floor fits"));
-            expected = expected.wrapping_add(checksum_freeze_floor_term(frame, handle));
-            session.checksum_freeze_floors.insert(handle, frame);
+        for slot in 0..MAX_CHECKSUM_FREEZE_SLOTS {
+            session.checksum_freeze_floors.insert(
+                PlayerHandle::new(slot),
+                Frame::new(i32::try_from(slot).expect("fits")),
+            );
         }
-        session.compact_checksum_freeze_floors();
+        assert!(session.checksum_basis_is_representable());
+        let basis = session.checksum_basis_for_snapshot();
+        assert!(basis.is_valid());
+        assert_eq!(basis.events.len(), MAX_CHECKSUM_FREEZE_SLOTS);
+        assert_eq!(basis.base, 0);
+        assert!(basis.floor.is_null());
 
-        assert_eq!(
-            session.checksum_freeze_floors.len(),
-            MAX_CHECKSUM_FREEZE_SLOTS,
-            "the per-slot freeze map must stay within its hard bound"
+        session.checksum_freeze_floors.insert(
+            PlayerHandle::new(MAX_CHECKSUM_FREEZE_SLOTS + 1),
+            Frame::new(0),
         );
-        assert_eq!(
-            session.checksum_folded_floors.len(),
-            total - MAX_CHECKSUM_FREEZE_SLOTS,
-            "every compacted boundary must keep its per-slot identity"
-        );
-        let fold_floor = session.checksum_basis_fold_floor;
-        assert!(!fold_floor.is_null(), "excess boundaries must be folded");
-        let at_fold = (0..=fold_floor.as_i32()).fold(0_u64, |token, floor| {
-            token.wrapping_add(checksum_freeze_floor_term(
-                Frame::new(floor),
-                PlayerHandle::new(usize::try_from(floor).expect("fits")),
-            ))
-        });
-        assert_eq!(
-            session.checksum_basis_token_for(fold_floor),
-            Some(at_fold),
-            "folding must preserve the token for the fold floor"
-        );
-        assert_eq!(
-            session.checksum_basis_token_for(Frame::new(
-                i32::try_from(total - 1).expect("test floor fits"),
-            )),
-            Some(expected),
-            "folding must preserve the token for frames above the fold floor"
-        );
-        assert_eq!(
-            session.checksum_basis_token_for(Frame::new(fold_floor.as_i32() - 1)),
-            None,
-            "a frame below the folded floor has no reconstructible basis"
+        assert!(
+            !session.checksum_basis_is_representable(),
+            "an over-cap basis must refuse the hot-join serve"
         );
     }
 
-    /// Lowering an active boundary below the fold floor moves its term into the
-    /// cumulative base and removes the old event, so the snapshot basis stays
-    /// canonical and current tokens change with the rewritten history.
-    #[cfg(feature = "hot-join")]
+    /// A lower convergence replaces the slot's single event; nothing is folded
+    /// and no per-slot term accumulates.
     #[test]
-    fn lowering_an_active_boundary_below_the_fold_floor_goes_to_base() {
+    fn lowering_a_boundary_replaces_its_event() {
         let mut session = create_three_player_desync_session();
         let handle = PlayerHandle::new(1);
-        session.checksum_basis_base = 0x1234;
-        session.checksum_basis_fold_floor = Frame::new(20);
-        session
-            .checksum_freeze_floors
-            .insert(handle, Frame::new(30));
+        session.record_checksum_freeze(handle, Frame::new(30));
 
         session.record_checksum_freeze(handle, Frame::new(15));
 
-        assert!(
-            session.checksum_freeze_floors.is_empty(),
-            "the old event must be removed when the boundary folds"
-        );
         assert_eq!(
-            session.checksum_folded_floors.get(&handle),
-            Some(&Frame::new(15)),
-            "the folded boundary must keep its per-slot identity"
+            session.checksum_freeze_floors.get(&handle),
+            Some(&Frame::new(15))
         );
+        assert!(session.checksum_basis_fold_floor.is_null());
+        assert_eq!(session.checksum_basis_base, 0);
         assert_eq!(
-            session.checksum_basis_base,
-            0x1234_u64.wrapping_add(checksum_freeze_floor_term(Frame::new(15), handle)),
-            "the lowered term belongs in the folded base"
-        );
-        let basis = session.checksum_basis_for_snapshot();
-        assert!(basis.is_valid());
-        assert_eq!(basis.floor, Frame::new(20));
-        assert_eq!(basis.events.len(), 0);
-        assert_eq!(
-            session.checksum_basis_token_for(Frame::new(19)),
-            None,
-            "frames below the fold floor stay unrepresentable"
-        );
-        assert_eq!(
-            session.checksum_basis_token_for(Frame::new(25)),
-            Some(0x1234_u64.wrapping_add(checksum_freeze_floor_term(Frame::new(15), handle))),
-            "frames above the fold floor use the lowered boundary"
+            session.checksum_basis_token_for(Frame::new(20)),
+            Some(checksum_freeze_floor_term(Frame::new(15), handle))
         );
     }
 
-    /// Reactivation removes a slot's boundary, so post-activation tokens no
-    /// longer carry a term for its frozen era.
+    /// Reactivation removes a slot's boundary and arms the release floor, so
+    /// post-activation tokens no longer carry a term for its frozen era and no
+    /// older schedule slot is reported after the release.
     #[cfg(feature = "hot-join")]
     #[test]
     fn reactivation_releases_the_slot_boundary() {
@@ -32448,75 +32389,21 @@ mod tests {
             "precondition: the frozen slot contributes a term"
         );
 
-        session.release_checksum_freeze(handle);
+        session.release_checksum_freeze(handle, Frame::new(20));
 
         assert_eq!(
-            session.checksum_basis_token_for(Frame::new(10)),
+            session.checksum_release_floor,
+            Frame::new(20),
+            "the release must suppress later sends below the activation frame"
+        );
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(20)),
             Some(0),
-            "a reactivated slot no longer contributes to current tokens"
+            "a reactivated slot no longer contributes at or above its activation"
         );
         assert!(
             session.checksum_basis_for_snapshot().events.is_empty(),
             "a reactivated slot must not be advertised in the snapshot basis"
-        );
-    }
-
-    /// A *folded* boundary must be replaceable too: a later lower convergence
-    /// subtracts the folded term from the base and records the new one, so fold
-    /// timing cannot change the converged token (review finding on #562).
-    #[cfg(feature = "hot-join")]
-    #[test]
-    fn lowering_a_folded_boundary_replaces_its_base_term() {
-        let mut session = create_three_player_desync_session();
-        let handle = PlayerHandle::new(1);
-        session.checksum_basis_fold_floor = Frame::new(6);
-        session.checksum_folded_floors.insert(handle, Frame::new(6));
-        session.checksum_basis_base = checksum_freeze_floor_term(Frame::new(6), handle);
-
-        session.record_checksum_freeze(handle, Frame::new(4));
-
-        assert_eq!(
-            session.checksum_folded_floors.get(&handle),
-            Some(&Frame::new(4)),
-            "the lowered boundary stays folded below the fold floor"
-        );
-        assert_eq!(
-            session.checksum_basis_base,
-            checksum_freeze_floor_term(Frame::new(4), handle),
-            "the old folded term must be subtracted before the new one is added"
-        );
-        assert_eq!(
-            session.checksum_basis_token_for(Frame::new(10)),
-            Some(checksum_freeze_floor_term(Frame::new(4), handle)),
-            "frames above the fold floor see exactly one term per slot"
-        );
-    }
-
-    /// Releasing a folded boundary subtracts its term from the base; otherwise a
-    /// reactivated slot that had been compacted would gate comparisons forever.
-    #[cfg(feature = "hot-join")]
-    #[test]
-    fn releasing_a_folded_boundary_subtracts_its_term() {
-        let mut session = create_three_player_desync_session();
-        let handle = PlayerHandle::new(1);
-        session.checksum_basis_fold_floor = Frame::new(6);
-        session.checksum_folded_floors.insert(handle, Frame::new(6));
-        session.checksum_basis_base = checksum_freeze_floor_term(Frame::new(6), handle);
-
-        session.release_checksum_freeze(handle);
-
-        assert!(
-            session.checksum_folded_floors.is_empty(),
-            "the folded identity must be removed on reactivation"
-        );
-        assert_eq!(
-            session.checksum_basis_base, 0,
-            "the folded term must be subtracted from the base"
-        );
-        assert_eq!(
-            session.checksum_basis_token_for(Frame::new(10)),
-            Some(0),
-            "a reactivated folded slot no longer contributes"
         );
     }
 
@@ -32557,52 +32444,6 @@ mod tests {
                 "a peer that recorded the same converged boundary must share the token at {frame:?}"
             );
         }
-    }
-
-    /// Compaction must fold every slot that shares the lowest floor. Leaving a
-    /// sibling at the fold floor makes `events` non-canonical (an event must be
-    /// strictly above `floor`) and every later hot-join snapshot is rejected.
-    #[cfg(feature = "hot-join")]
-    #[test]
-    fn compacting_shared_lowest_floors_keeps_the_basis_canonical() {
-        let mut session = create_three_player_desync_session();
-        let total = MAX_CHECKSUM_FREEZE_SLOTS + 2;
-        for slot in 0..total {
-            let floor = if slot < 2 {
-                0
-            } else {
-                i32::try_from(slot).expect("fits")
-            };
-            session
-                .checksum_freeze_floors
-                .insert(PlayerHandle::new(slot), Frame::new(floor));
-        }
-
-        session.compact_checksum_freeze_floors();
-
-        let basis = session.checksum_basis_for_snapshot();
-        assert!(
-            basis.is_valid(),
-            "shared lowest floors must all be folded into the base"
-        );
-        assert_eq!(basis.floor, Frame::new(0));
-        assert_eq!(
-            session.checksum_freeze_floors.len(),
-            total - 2,
-            "both slots at the lowest floor must leave the event map"
-        );
-        assert_eq!(
-            session.checksum_folded_floors.len(),
-            2,
-            "both folded slots must keep their identity for later updates"
-        );
-        assert_eq!(
-            session.checksum_basis_base,
-            checksum_freeze_floor_term(Frame::new(0), PlayerHandle::new(0)).wrapping_add(
-                checksum_freeze_floor_term(Frame::new(0), PlayerHandle::new(1))
-            ),
-            "the shared-floor terms belong in the base"
-        );
     }
 
     /// A snapshot carries the full bounded basis, not a single frame token, so
@@ -32792,78 +32633,27 @@ mod tests {
         );
     }
 
-    /// A hot-join basis can retain a fold floor while holding fewer than the
-    /// cap in active events. A freeze boundary at or below that floor must then
-    /// go to the base directly; inserting an event would leave a non-canonical
-    /// basis because compaction has no spare-cap pressure to fold it.
+    /// An adopted, non-conforming fold floor keeps the derived event list
+    /// canonical: a boundary at or below it stays in the base.
     #[cfg(feature = "hot-join")]
     #[test]
-    fn freeze_below_fold_floor_with_spare_capacity_goes_to_base() {
+    fn adopted_fold_floor_keeps_the_event_basis_canonical() {
         let mut session = create_three_player_desync_session();
         session.checksum_basis_base = 123;
         session.checksum_basis_fold_floor = Frame::new(4);
         session.checksum_freeze_floors.clear();
-        session.checksum_folded_floors.clear();
         let handle = PlayerHandle::new(1);
 
         for floor in [Frame::new(4), Frame::new(3)] {
             session.record_checksum_freeze(handle, floor);
             assert!(
                 session.checksum_freeze_floors.is_empty(),
-                "a boundary at or below the fold floor must not enter the event map"
-            );
-            assert_eq!(
-                session.checksum_folded_floors.get(&handle),
-                Some(&floor),
-                "the folded boundary must keep its per-slot identity"
-            );
-            assert_eq!(
-                session.checksum_basis_base,
-                123_u64.wrapping_add(checksum_freeze_floor_term(floor, handle)),
-                "a lower boundary must replace, not accumulate, the folded term"
+                "a boundary at or below an adopted fold floor must not enter the event map"
             );
         }
         assert!(
             session.checksum_basis_for_snapshot().is_valid(),
             "the resulting snapshot basis must remain canonical"
-        );
-    }
-
-    /// Once boundaries are folded, a later freeze at or below the fold floor
-    /// must go into the cumulative base. Inserting it as an event would make
-    /// every subsequent snapshot basis non-canonical and reject hot join.
-    #[cfg(feature = "hot-join")]
-    #[test]
-    fn freeze_at_or_below_the_fold_floor_keeps_the_snapshot_basis_valid() {
-        let mut session = create_three_player_desync_session();
-        for floor in 0..(MAX_CHECKSUM_FREEZE_SLOTS as i32 + 3) {
-            session.record_checksum_freeze(
-                PlayerHandle::new(usize::try_from(floor).expect("fits")),
-                Frame::new(floor),
-            );
-        }
-        let fold_floor = session.checksum_basis_fold_floor;
-        assert!(!fold_floor.is_null());
-        let token_before = session.checksum_basis_token_for(Frame::new(500));
-        let base_before = session.checksum_basis_base;
-        let spare_handle = PlayerHandle::new(1_000);
-
-        session.record_checksum_freeze(spare_handle, fold_floor);
-
-        let basis = session.checksum_basis_for_snapshot();
-        assert!(
-            basis.is_valid(),
-            "a freeze at the fold floor must keep the basis canonical"
-        );
-        assert_eq!(
-            session.checksum_basis_base,
-            base_before.wrapping_add(checksum_freeze_floor_term(fold_floor, spare_handle)),
-            "the term must be folded directly into the base"
-        );
-        assert_ne!(
-            session.checksum_basis_token_for(Frame::new(500)),
-            token_before,
-            "the freeze must still change current-basis tokens"
         );
     }
 

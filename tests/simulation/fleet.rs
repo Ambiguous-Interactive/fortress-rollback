@@ -1315,7 +1315,7 @@ fn smoke_traces_match_checked_in_cross_architecture_digests() {
 #[cfg(feature = "hot-join")]
 #[test]
 fn hot_join_trace_matches_checked_in_cross_architecture_digest() {
-    const EXPECTED_HASH: u64 = 0xe493_827c_d108_44b0;
+    const EXPECTED_HASH: u64 = 0x5032_9e65_34ec_cab7;
     const EXPECTED_CONFIRMED: [i32; 4] = [859, 860, 860, 860];
 
     let schedule = super::census::clean_npeer_hot_join_schedule(4);
