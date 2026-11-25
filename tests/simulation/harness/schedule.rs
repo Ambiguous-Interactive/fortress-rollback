@@ -8,6 +8,10 @@
 //! reproduces exactly from its seed, and a serialized schedule (the corpus
 //! format) reproduces even after the generator itself evolves.
 //!
+//! Rates are drawn as integer basis points and divided by 10,000, so generation
+//! contains no target-dependent floating-point instruction (no `mul_add`) and
+//! the materialized bytes are identical on every architecture.
+//!
 //! Link-level *noise* (per-send drop/dup/jitter rolls) is separately seeded
 //! via [`Schedule::link_seed`], so editing a schedule's event list during
 //! shrinking does not perturb the background noise stream.
@@ -1356,9 +1360,19 @@ fn basis_points_to_rate(basis_points: u64) -> f64 {
 }
 
 impl Draw<'_> {
-    /// Uniform `f64` in `[0, 1)`.
-    fn unit(&mut self) -> f64 {
-        f64::from(self.rng.next_u32()) / (f64::from(u32::MAX) + 1.0)
+    /// Basis points in `[lo_bp, hi_bp)`, scaled from one 32-bit stream word.
+    ///
+    /// Schedule rates are stored as exact basis-point counts so generation
+    /// never depends on target-specific floating-point instructions. The
+    /// 32-bit draw is scaled with integer flooring, and
+    /// [`basis_points_to_rate`] divides by 10,000 with one correctly rounded
+    /// IEEE-754 division, so the count maps to the same rate bits on every
+    /// target regardless of whether it has a fused multiply-add.
+    fn range_basis_points(&mut self, lo_bp: u32, hi_bp: u32) -> u64 {
+        debug_assert!(hi_bp > lo_bp);
+        let span = u64::from(hi_bp - lo_bp);
+        let offset = (u64::from(self.rng.next_u32()) * span) >> 32;
+        u64::from(lo_bp) + offset
     }
 
     /// Uniform integer in `[lo, hi]` (inclusive). `hi >= lo` required.
@@ -1366,11 +1380,6 @@ impl Draw<'_> {
         debug_assert!(hi >= lo);
         let span = hi - lo + 1;
         lo + (self.rng.next_u64() % span)
-    }
-
-    /// Uniform `f64` in `[lo, hi)`.
-    fn range_f64(&mut self, lo: f64, hi: f64) -> f64 {
-        self.unit().mul_add(hi - lo, lo)
     }
 }
 
@@ -1387,8 +1396,8 @@ fn roll_background_policy(
             ..LinkPolicy::clean()
         },
         BackgroundNoise::Mild => LinkPolicy {
-            drop_rate: draw.range_f64(0.0, 0.02),
-            dup_rate: draw.range_f64(0.0, 0.01),
+            drop_rate: basis_points_to_rate(draw.range_basis_points(0, 200)),
+            dup_rate: basis_points_to_rate(draw.range_basis_points(0, 100)),
             base_delay: Duration::from_millis(draw.range_u64(5, 30)),
             jitter: Duration::from_millis(draw.range_u64(0, 10)),
             burst_rate: 0.0,
@@ -1399,11 +1408,13 @@ fn roll_background_policy(
             bandwidth: None,
         },
         BackgroundNoise::Rough => LinkPolicy {
-            drop_rate: draw.range_f64(0.02, 0.10),
-            dup_rate: draw.range_f64(0.0, 0.03),
+            drop_rate: basis_points_to_rate(draw.range_basis_points(200, 1_000)),
+            dup_rate: basis_points_to_rate(draw.range_basis_points(0, 300)),
             base_delay: Duration::from_millis(draw.range_u64(20, 80)),
             jitter: Duration::from_millis(draw.range_u64(0, 30)),
-            burst_rate: draw.range_f64(0.0, 0.005),
+            // A non-zero rate keeps the validator's burst-rate/burst-length
+            // pairing valid for every draw.
+            burst_rate: basis_points_to_rate(draw.range_basis_points(1, 50)),
             burst_len: u32::try_from(draw.range_u64(2, 5)).unwrap_or(3),
             retransmit_delay: Duration::ZERO,
             gilbert_elliott: None,
@@ -1618,7 +1629,7 @@ pub fn generate(seed: u64, mut config: SimConfig) -> Schedule {
         match kind {
             StorylineKind::HeavyLossWindow => {
                 let heavy = LinkPolicy {
-                    drop_rate: draw.range_f64(0.25, 0.45),
+                    drop_rate: basis_points_to_rate(draw.range_basis_points(2_500, 4_500)),
                     ..roll_background_policy(&mut draw, config.noise, swarm_profile)
                 };
                 let restore = roll_background_policy(&mut draw, config.noise, swarm_profile);
@@ -2091,6 +2102,112 @@ mod tests {
                 generate(seed, default_config),
                 generate(seed, defaulted),
                 "an old/defaulted config must preserve seed {seed} n={n_players} exactly"
+            );
+        }
+    }
+
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    /// Pins the exact bit pattern of materialized schedules.
+    ///
+    /// Schedule generation must be a pure function of `(seed, SimConfig)` with
+    /// no target-dependent floating-point steps, so the same seeds produce the
+    /// same bytes on every architecture. A change here is a deliberate schema or
+    /// generator change: update the constant and record why in the PR.
+    #[test]
+    fn generated_schedule_digest_is_pinned() {
+        let cases = [
+            (1, SimConfig::smoke(2)),
+            (7, SimConfig::smoke(4)),
+            (
+                34,
+                SimConfig {
+                    noise: BackgroundNoise::Rough,
+                    ..SimConfig::smoke(8)
+                },
+            ),
+            (
+                99,
+                SimConfig {
+                    noise: BackgroundNoise::Swarm,
+                    ..SimConfig::smoke(16)
+                },
+            ),
+            (
+                123,
+                SimConfig {
+                    noise: BackgroundNoise::Mild,
+                    scenario_mix: ScenarioMix::Lifecycle,
+                    ..SimConfig::smoke(5)
+                },
+            ),
+        ];
+        let mut digest = FNV_OFFSET_BASIS;
+        for (seed, config) in cases {
+            let schedule = generate(seed, config);
+            let json = serde_json::to_vec(&schedule).expect("generated schedule serializes");
+            digest = fnv1a64_extend(digest, &json);
+        }
+        assert_eq!(
+            digest, 4_513_471_821_997_057_090,
+            "pinned generated-schedule digest drifted; the materialized bytes must be \
+             identical on x86_64, aarch64, i686, and s390x"
+        );
+    }
+
+    /// Rate policies must land on exact basis-point values so the same seed
+    /// materializes bit-identical rates on every target, including targets
+    /// where `mul_add` is not a hardware instruction.
+    #[test]
+    fn generated_rate_policies_are_exact_basis_points() {
+        for seed in 0..100 {
+            for noise in [
+                BackgroundNoise::Mild,
+                BackgroundNoise::Rough,
+                BackgroundNoise::Swarm,
+            ] {
+                let schedule = generate(
+                    seed,
+                    SimConfig {
+                        noise,
+                        scenario_mix: ScenarioMix::Lifecycle,
+                        ..SimConfig::smoke(4)
+                    },
+                );
+                for (_, _, policy) in &schedule.initial_links {
+                    assert_exact_basis_points(policy, seed, noise);
+                }
+                for (_, event) in &schedule.events {
+                    if let ScheduleEvent::SetLink { policy, .. } = event {
+                        assert_exact_basis_points(policy, seed, noise);
+                    }
+                }
+            }
+        }
+    }
+
+    #[track_caller]
+    fn assert_exact_basis_points(policy: &LinkPolicy, seed: u64, noise: BackgroundNoise) {
+        for (name, rate) in [
+            ("drop_rate", policy.drop_rate),
+            ("dup_rate", policy.dup_rate),
+            ("burst_rate", policy.burst_rate),
+        ] {
+            let scaled = (rate * 10_000.0).round();
+            assert_eq!(
+                rate,
+                scaled / 10_000.0,
+                "{name} for seed {seed} ({noise:?}) must be an exact basis-point multiple \
+                 so every target derives the same threshold, got {rate}"
             );
         }
     }

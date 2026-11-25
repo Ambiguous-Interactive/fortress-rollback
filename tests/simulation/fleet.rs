@@ -1284,9 +1284,9 @@ fn same_schedule_produces_identical_trace() {
 #[test]
 fn smoke_traces_match_checked_in_cross_architecture_digests() {
     const EXPECTED: [(u64, u64, [i32; 3]); 3] = [
-        (7, 0x04bf_5f66_ede9_cbfd, [578, 579, 579]),
-        (0x5EED_CAFE, 0xa4a1_7ae9_7683_cb78, [515, 516, 515]),
-        (41, 0x44f4_0316_7976_508a, [556, 555, 556]),
+        (7, 0xe71b_5734_40a3_3bae, [578, 579, 579]),
+        (0x5EED_CAFE, 0x7faf_1612_a229_3fcc, [515, 516, 515]),
+        (41, 0xdc42_8dc9_815b_c098, [532, 531, 532]),
     ];
 
     for (seed, expected_hash, expected_confirmed) in EXPECTED {

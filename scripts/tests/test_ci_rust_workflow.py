@@ -405,7 +405,7 @@ def test_windows_miri_misc_lane_is_split_without_coverage_gaps() -> None:
 
 
 def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
-    """The big-endian lane must run only the pinned codec and fixture probes."""
+    """The big-endian lane must run only the pinned codec, schedule, and fixture probes."""
     workflow = _load_ci_rust_workflow()
     job = workflow["jobs"]["big-endian-runtime"]
 
@@ -420,7 +420,7 @@ def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
     assert rust_step["with"]["targets"] == "s390x-unknown-linux-gnu"
 
     commands = _cargo_commands(job["steps"], "test")
-    assert len(commands) == 6
+    assert len(commands) == 7
     for command in commands:
         assert _option_values(command, "--target") == ["s390x-unknown-linux-gnu"]
         assert "--workspace" not in command
@@ -433,7 +433,7 @@ def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
         command[command.index("-p") + 1] for command in commands
     ) == Counter(
         {
-            "fortress-rollback": 5,
+            "fortress-rollback": 6,
             "fortress-replay-fixture": 1,
         }
     )
@@ -443,6 +443,7 @@ def test_big_endian_runtime_lane_is_narrow_and_uses_s390x_qemu() -> None:
         "wire_codec_hot_join_digest_is_pinned",
         "serialization_golden_",
         "integer_writers_match_fixed_width_little_endian_bytes",
+        "generated_schedule_digest_is_pinned",
     ):
         assert any(expected in command for command in commands), expected
 
@@ -904,6 +905,10 @@ def test_cross_arch_runtime_executes_arm_and_32_bit_usize_targets() -> None:
             "test(smoke_traces_match_checked_in_cross_architecture_digests)"
             in filter_text
         ), f"{lane} must execute the pinned cross-architecture trace digest"
+        assert "test(generated_schedule_digest_is_pinned)" in filter_text, (
+            f"{lane} must execute the pinned generated-schedule digest: the "
+            "materialized schedule bytes are part of the cross-target contract"
+        )
         assert (
             "test(simulation::partition_sweep::partition_sweep_pr_gate)"
             in filter_text

@@ -134,7 +134,7 @@ fn spawn_enemy(state: &mut GameState, rng: &mut SeededRng) {
 - ✅ The bincode-compatible codec is configured with `standard().with_little_endian().with_fixed_int_encoding()` (fixed-size integers are an explicit override of the format's variable-int default, ensuring identical serialized bytes across platforms)
 - ✅ The native fixture and the browser, Godot/Emscripten, and wasip1 probes pin both the coordinated-drop wire-codec digest and a separate hot-join snapshot/lifecycle wire-codec digest
 - ✅ `hash::DeterministicHasher` writes scalar integers and collection length prefixes as fixed-width little-endian bytes (`usize`/`isize` canonicalize to 64 bits), so derived `Hash` values match on 32-bit browser WASM and 64-bit little-endian native targets. Std hashes primitive slice *elements* as native memory bytes, so collections of `usize`/`isize` are outside this guarantee; use `compute_checksum` for state checksums
-- ✅ The dedicated `big-endian-runtime` CI lane executes the pinned wire-codec digest and the replay/machine-width fixture on `s390x` under QEMU, so byte order is runtime-executed rather than only source-guarded. The primitive `u32`-slice hash expectation is target-endian, matching std's documented native-memory hashing
+- ✅ The dedicated `big-endian-runtime` CI lane executes the pinned wire-codec digest, the generated-schedule digest, and the replay/machine-width fixture on `s390x` under QEMU, so byte order is runtime-executed rather than only source-guarded. The primitive `u32`-slice hash expectation is target-endian, matching std's documented native-memory hashing
 - ✅ Input types require `Serialize + Deserialize`
 - ✅ No platform-specific serialization
 
@@ -477,6 +477,10 @@ The repository keeps this comparison running in CI rather than relying on manual
   trace (confirmed inputs, session states, game-state checksums, event streams, and simulated wire
   statistics) into a digest pinned to the x86_64 reference, and executes natively on i686 and under
   qemu-aarch64 in the `cross-arch-runtime` CI matrix.
+- `generated_schedule_digest_is_pinned` hashes the serialized schedules for five representative
+  `(seed, SimConfig)` cases. Schedule rates are drawn as integer basis points and divided by 10,000
+  instead of using `mul_add`, so the materialized bytes are target-independent; the digest executes
+  natively, on i686, under qemu-aarch64, and on `s390x` in the `big-endian-runtime` lane.
 - `machine_width_state` pins fixed-width serialization and hashing of `usize`/`isize` fields and
   collection length prefixes on 32-bit and 64-bit targets.
 - The checked-in simulation corpus replays (mixed reliable/unreliable transports and the extended

@@ -3317,10 +3317,7 @@ fn differential_shrinking_canonicalizes_save_mode_and_drive_order() {
         &schedule,
         &options,
         "ReferenceInput",
-        ShrinkConfig {
-            max_runs: 120,
-            max_duration: Duration::from_secs(60),
-        },
+        ShrinkConfig { max_runs: 120 },
         run,
         |_, _, _| {},
     )
