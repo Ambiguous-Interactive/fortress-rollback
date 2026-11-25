@@ -41,6 +41,7 @@ SIGN_IN_TITLE = "Fortress: Sign in to GitHub"
 EXPORT_FILE_NAME = "vscode-github-token.json"
 TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]+$")
 ASKPASS_PROMPT = re.compile(r"^(Username|Password) for '(?P<url>[^']+)':$")
+VSCODE_HELPER_MARKERS = ("vscode-remote-containers-", "git-credential-helper")
 
 
 class CredentialError(RuntimeError):
@@ -174,14 +175,41 @@ def parse_git_credential(output: str) -> str | None:
     return None
 
 
+def _trusted_git_helpers(
+    env: Mapping[str, str],
+    runner: Callable[..., Any],
+    timeout: float,
+) -> list[str]:
+    """Return only the configured Dev Containers git credential helpers."""
+    try:
+        completed = runner(  # noqa: S603 - fixed git subcommand, no shell
+            ["git", "config", "--get-all", "credential.helper"],  # noqa: S607
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=dict(env),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if completed.returncode != 0:
+        return []
+    return [
+        helper
+        for helper in completed.stdout.splitlines()
+        if all(marker in helper for marker in VSCODE_HELPER_MARKERS)
+    ]
+
+
 def resolve_from_git_credential(
     socket_path: Path,
     *,
     env: Mapping[str, str] | None = None,
     runner: Callable[..., Any] = subprocess.run,
+    helpers: Sequence[str] | None = None,
     timeout: float = DEFAULT_TIMEOUT_SECONDS,
 ) -> Credential | None:
-    """Ask the VS Code git credential helper for a GitHub credential."""
+    """Ask only the trusted VS Code git credential helper for a credential."""
     child_env = dict(os.environ if env is None else env)
     child_env["REMOTE_CONTAINERS_IPC"] = str(socket_path)
     child_env["GIT_TERMINAL_PROMPT"] = "0"
@@ -189,15 +217,20 @@ def resolve_from_git_credential(
     # credential must not recurse through it.
     for variable in ("GIT_ASKPASS", "SSH_ASKPASS"):
         child_env.pop(variable, None)
+    trusted = (
+        list(helpers)
+        if helpers is not None
+        else _trusted_git_helpers(child_env, runner, timeout)
+    )
+    if not trusted:
+        return None
+    command = ["git", "-c", "core.askPass=", "-c", "credential.helper="]
+    for helper in trusted:
+        command.extend(["-c", f"credential.helper={helper}"])
+    command.extend(["credential", "fill"])
     try:
         completed = runner(  # noqa: S603 - fixed git subcommand, no shell
-            [  # noqa: S607 - git is resolved from PATH
-                "git",
-                "-c",
-                "core.askPass=",
-                "credential",
-                "fill",
-            ],
+            command,  # noqa: S607 - git is resolved from PATH
             input=f"protocol=https\nhost={GIT_CREDENTIAL_HOST}\n\n",
             capture_output=True,
             text=True,

@@ -248,19 +248,65 @@ def test_resolve_from_git_credential_disables_askpass_routes(
         captured["env"] = kwargs["env"]
         return SimpleNamespace(returncode=1, stdout="")
 
+    trusted = "!f() { node /tmp/vscode-remote-containers-x.js git-credential-helper $*; }; f"
     credential = resolve_from_git_credential(
         tmp_path / "example.sock",
         env={"GIT_ASKPASS": "wrapper", "SSH_ASKPASS": "helper"},
         runner=runner,
+        helpers=[trusted],
     )
 
     assert credential is None
-    assert captured["command"][:4] == ["git", "-c", "core.askPass=", "credential"]
+    assert captured["command"][:4] == ["git", "-c", "core.askPass=", "-c"]
+    assert f"credential.helper={trusted}" in captured["command"]
     env = captured["env"]
     assert isinstance(env, dict)
     assert "GIT_ASKPASS" not in env
     assert "SSH_ASKPASS" not in env
     assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_resolve_from_git_credential_uses_only_the_vscode_helper(
+    tmp_path: Path,
+) -> None:
+    trusted = "!f() { node /tmp/vscode-remote-containers-x.js git-credential-helper $*; }; f"
+    store = "!f() { git credential-store $*; }; f"
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        if command[:3] == ["git", "config", "--get-all"]:
+            return SimpleNamespace(returncode=0, stdout=f"{trusted}\n{store}\n")
+        return SimpleNamespace(
+            returncode=0,
+            stdout="protocol=https\nhost=github.com\nusername=x\npassword=secret\n",
+        )
+
+    credential = resolve_from_git_credential(tmp_path / "example.sock", runner=runner)
+
+    assert credential is not None
+    assert credential.token == "secret"
+    fill = calls[-1]
+    assert f"credential.helper={trusted}" in fill
+    assert store not in fill
+    assert "credential.helper=" in fill
+
+
+def test_resolve_from_git_credential_returns_none_without_a_trusted_helper(
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    def runner(command: list[str], **_kwargs: object) -> SimpleNamespace:
+        calls.append(command)
+        return SimpleNamespace(
+            returncode=0, stdout="!f() { git credential-store $*; }; f\n"
+        )
+
+    credential = resolve_from_git_credential(tmp_path / "example.sock", runner=runner)
+
+    assert credential is None
+    assert len(calls) == 1
 
 
 def test_resolve_from_environment_ignores_an_empty_token() -> None:
