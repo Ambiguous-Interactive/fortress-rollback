@@ -17161,19 +17161,23 @@ impl<T: Config> P2PSession<T> {
     }
 
     /// Folds the lowest freeze boundaries into the cumulative base until the
-    /// per-slot map is bounded. Tokens at or above the fold floor are
-    /// unchanged; frames below it have no retained basis and are reported as
-    /// unknown by [`Self::checksum_basis_token_for`].
+    /// per-slot map is bounded and every remaining boundary is above the fold
+    /// floor. Tokens at or above the fold floor are unchanged; frames below it
+    /// have no retained basis and are reported as unknown by
+    /// [`Self::checksum_basis_token_for`].
+    ///
+    /// Folding is by *floor*: when several slots share the lowest floor, every
+    /// one of them is folded. Leaving a sibling at the fold floor would make the
+    /// derived event map non-canonical (`events` must be strictly above
+    /// `floor`) and every later snapshot would be rejected.
     fn compact_checksum_freeze_floors(&mut self) {
-        while self.checksum_freeze_floors.len() > MAX_CHECKSUM_REWRITE_EVENT_FLOORS {
-            let Some((handle, floor)) = self
-                .checksum_freeze_floors
-                .iter()
-                .min_by_key(|(&handle, &floor)| (floor, handle))
-                .map(|(&handle, &floor)| (handle, floor))
-            else {
+        while let Some((handle, floor)) = self.lowest_freeze_boundary() {
+            let over_cap = self.checksum_freeze_floors.len() > MAX_CHECKSUM_REWRITE_EVENT_FLOORS;
+            let at_or_below_fold = !self.checksum_rewrite_fold_floor.is_null()
+                && floor <= self.checksum_rewrite_fold_floor;
+            if !over_cap && !at_or_below_fold {
                 break;
-            };
+            }
             self.checksum_freeze_floors.remove(&handle);
             self.checksum_basis_base = self
                 .checksum_basis_base
@@ -17181,6 +17185,14 @@ impl<T: Config> P2PSession<T> {
             self.checksum_rewrite_fold_floor =
                 std::cmp::max(self.checksum_rewrite_fold_floor, floor);
         }
+    }
+
+    /// Lowest `(handle, freeze floor)` pair, used by fold compaction.
+    fn lowest_freeze_boundary(&self) -> Option<(PlayerHandle, Frame)> {
+        self.checksum_freeze_floors
+            .iter()
+            .min_by_key(|(&handle, &floor)| (floor, handle))
+            .map(|(&handle, &floor)| (handle, floor))
     }
 
     /// Basis token to attach to a newly collected checksum at `frame`, or
@@ -32327,6 +32339,40 @@ mod tests {
             session.checksum_basis_token_for(Frame::new(fold_floor.as_i32() - 1)),
             None,
             "a frame below the folded floor has no reconstructible basis"
+        );
+    }
+
+    /// Compaction must fold every slot that shares the lowest floor. Leaving a
+    /// sibling at the fold floor makes `events` non-canonical (an event must be
+    /// strictly above `floor`) and every later hot-join snapshot is rejected.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn compacting_shared_lowest_floors_keeps_the_basis_canonical() {
+        let mut session = create_three_player_desync_session();
+        let total = MAX_CHECKSUM_REWRITE_EVENT_FLOORS + 2;
+        for slot in 0..total {
+            let floor = if slot < 2 {
+                0
+            } else {
+                i32::try_from(slot).expect("fits")
+            };
+            session
+                .checksum_freeze_floors
+                .insert(PlayerHandle::new(slot), Frame::new(floor));
+        }
+
+        session.compact_checksum_freeze_floors();
+
+        let basis = session.checksum_basis_for_snapshot();
+        assert!(
+            basis.is_valid(),
+            "shared lowest floors must all be folded into the base"
+        );
+        assert_eq!(basis.floor, Frame::new(0));
+        assert_eq!(
+            session.checksum_freeze_floors.len(),
+            total - 2,
+            "both slots at the lowest floor must leave the event map"
         );
     }
 
