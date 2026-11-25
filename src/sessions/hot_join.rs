@@ -602,6 +602,14 @@ pub(crate) fn apply_snapshot<T: Config>(
             "hot-join snapshot carries a non-canonical checksum basis",
         ));
     }
+    if !snapshot
+        .checksum_basis
+        .slots_are_valid_for(expected_num_players)
+    {
+        return Err(hot_join_serialization_error(
+            "hot-join snapshot checksum basis names a slot outside the player count",
+        ));
+    }
 
     // Deserialize BEFORE mutating the layer so a corrupt snapshot leaves the
     // joiner untouched (no partial seek/inject on a rejected snapshot).
@@ -1416,6 +1424,69 @@ mod tests {
         // Critically, the joiner is still at its fresh-layer values: `seek_to_frame`
         // would have set `current_frame` to the snapshot frame (4) had deserialize
         // run after the seek, so these assertions fail if the ordering regresses.
+        assert_eq!(joiner.current_frame(), Frame::new(0));
+        assert_eq!(joiner.last_saved_frame(), Frame::NULL);
+    }
+
+    #[test]
+    fn apply_snapshot_rejects_a_basis_slot_outside_the_player_count_without_mutation() {
+        let snapshot = StateSnapshot {
+            frame: Frame::new(4),
+            num_players: 2,
+            state_bytes: serialize_state::<TestConfig>(&VecState::sample()).unwrap(),
+            bridge_inputs: Vec::new(),
+            bridge_statuses: Vec::new(),
+            checksum: None,
+            certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(6), 2)],
+            },
+        };
+
+        let mut joiner = SyncLayer::<TestConfig>::new(2, 8);
+        let result = apply_snapshot(&mut joiner, &snapshot, 2);
+
+        assert!(
+            matches!(
+                result,
+                Err(FortressError::SerializationErrorStructured { .. })
+            ),
+            "a basis naming slot 2 for a 2-player session must reject"
+        );
+        // Rejection happens before the seek/inject.
+        assert_eq!(joiner.current_frame(), Frame::new(0));
+        assert_eq!(joiner.last_saved_frame(), Frame::NULL);
+    }
+
+    #[test]
+    fn apply_snapshot_rejects_a_negative_basis_floor_without_mutation() {
+        let snapshot = StateSnapshot {
+            frame: Frame::new(4),
+            num_players: 2,
+            state_bytes: serialize_state::<TestConfig>(&VecState::sample()).unwrap(),
+            bridge_inputs: Vec::new(),
+            bridge_statuses: Vec::new(),
+            checksum: None,
+            certified_dropped: Vec::new(),
+            checksum_basis: crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(-2), 1)],
+            },
+        };
+
+        let mut joiner = SyncLayer::<TestConfig>::new(2, 8);
+        let result = apply_snapshot(&mut joiner, &snapshot, 2);
+
+        assert!(
+            matches!(
+                result,
+                Err(FortressError::SerializationErrorStructured { .. })
+            ),
+            "a negative freeze floor must reject even with no fold floor (#561)"
+        );
         assert_eq!(joiner.current_frame(), Frame::new(0));
         assert_eq!(joiner.last_saved_frame(), Frame::NULL);
     }

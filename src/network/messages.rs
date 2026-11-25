@@ -309,26 +309,34 @@ pub(crate) struct JoinRequest {
 }
 /// Bounded confirmed-history basis metadata carried by a hot-join snapshot.
 ///
-/// The basis token for a frame is `base` plus the additive terms of every
-/// `(floor, count)` event at or below it. `floor` is the highest edit floor
-/// already folded into `base`; frames below it have no reconstructible basis.
-/// A joiner copies this structure verbatim, so its post-snapshot tokens match
-/// the host's for every frame, including floors above the snapshot frame.
+/// A dropped slot contributes one term keyed by its **converged freeze
+/// boundary**: the first frame whose confirmed input repeats the slot's frozen
+/// value (`last_frame + 1`). Frames below that boundary are unchanged; a later
+/// lower boundary replaces the earlier one, so survivors that reach the same
+/// frozen history through different intermediate detections derive one token.
+/// A reactivated slot stops contributing. `events` holds every frozen slot's
+/// `(freeze_floor, slot_handle)` pair, sorted by `(floor, handle)`. Conforming
+/// hosts carry all of them and send `base = 0`, `floor = NULL`; the fields let a
+/// receiver interpret a basis from a peer that folded (older or non-conforming)
+/// and frames below its fold floor have no reconstructible basis. A session with
+/// more simultaneously frozen slots than [`MAX_CHECKSUM_BASIS_EVENTS`] refuses
+/// the hot-join serve instead of folding identities a joiner could not update.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ChecksumBasis {
-    /// Folded/additive base token.
+    /// Folded per-slot term sum.
     pub base: u64,
-    /// Highest rewrite floor folded into `base`, or [`Frame::NULL`].
+    /// Highest freeze floor folded into `base`, or [`Frame::NULL`].
     pub floor: Frame,
-    /// Active distinct rewrite floors and multiplicities, sorted ascending.
+    /// Active `(freeze floor, slot handle)` pairs, sorted by `(floor, handle)`.
     pub events: Vec<(Frame, u32)>,
 }
 
-/// Wire cap on distinct rewrite floors in [`ChecksumBasis::events`].
-pub(crate) const MAX_CHECKSUM_REWRITE_EVENTS: usize = 64;
+/// Wire cap on distinct frozen slots in [`ChecksumBasis::events`].
+#[cfg(any(feature = "hot-join", test))]
+pub(crate) const MAX_CHECKSUM_BASIS_EVENTS: usize = 64;
 
 impl ChecksumBasis {
-    /// Empty basis: no rewrite has affected any frame.
+    /// Empty basis: no frozen history has affected any frame.
     #[cfg(any(feature = "hot-join", test))]
     pub(crate) const fn none() -> Self {
         Self {
@@ -341,26 +349,44 @@ impl ChecksumBasis {
     /// Whether this basis is canonical and bounded enough to adopt.
     #[cfg(any(feature = "hot-join", test))]
     pub(crate) fn is_valid(&self) -> bool {
-        if self.events.len() > MAX_CHECKSUM_REWRITE_EVENTS {
+        if self.events.len() > MAX_CHECKSUM_BASIS_EVENTS {
             return false;
         }
-        if !self.floor.is_null() && self.floor.as_i32() < 0 {
+        if !self.floor.is_null() && !self.floor.is_valid() {
             return false;
         }
-        let mut previous: Option<Frame> = None;
-        for &(floor, count) in &self.events {
-            if floor.is_null() || count == 0 {
-                return false;
-            }
-            if previous.is_some_and(|prior| floor <= prior) {
+        let mut previous: Option<(Frame, u32)> = None;
+        for (index, &(floor, slot)) in self.events.iter().enumerate() {
+            // A negative (or null) event floor is not a canonical freeze
+            // boundary, whether or not a fold floor is present (#561).
+            if !floor.is_valid() {
                 return false;
             }
             if !self.floor.is_null() && floor <= self.floor {
                 return false;
             }
-            previous = Some(floor);
+            if previous.is_some_and(|prior| (floor, slot) <= prior) {
+                return false;
+            }
+            if self
+                .events
+                .iter()
+                .take(index)
+                .any(|&(_, prior_slot)| prior_slot == slot)
+            {
+                return false;
+            }
+            previous = Some((floor, slot));
         }
         true
+    }
+
+    /// Whether every event's slot handle names a player in `num_players`.
+    #[cfg(any(feature = "hot-join", test))]
+    pub(crate) fn slots_are_valid_for(&self, num_players: usize) -> bool {
+        self.events
+            .iter()
+            .all(|&(_, slot)| usize::try_from(slot).is_ok_and(|slot| slot < num_players))
     }
 }
 
@@ -883,7 +909,7 @@ impl Message {
 
 #[cfg(test)]
 mod checksum_basis_tests {
-    use super::{ChecksumBasis, MAX_CHECKSUM_REWRITE_EVENTS};
+    use super::{ChecksumBasis, MAX_CHECKSUM_BASIS_EVENTS};
     use crate::Frame;
 
     #[test]
@@ -905,6 +931,14 @@ mod checksum_basis_tests {
             "frame zero is a valid fold floor"
         );
         assert!(
+            ChecksumBasis {
+                events: vec![(Frame::new(3), 1), (Frame::new(3), 2)],
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "two slots may share one freeze floor"
+        );
+        assert!(
             !ChecksumBasis {
                 base: 0,
                 floor: Frame::new(-2),
@@ -924,27 +958,35 @@ mod checksum_basis_tests {
         );
         assert!(
             !ChecksumBasis {
-                events: vec![(Frame::new(9), 1), (Frame::new(3), 1)],
+                events: vec![(Frame::new(9), 1), (Frame::new(3), 2)],
                 ..ChecksumBasis::none()
             }
             .is_valid(),
-            "events must be sorted ascending"
+            "events must be sorted ascending by floor"
         );
         assert!(
             !ChecksumBasis {
-                events: vec![(Frame::new(3), 0)],
+                events: vec![(Frame::new(3), 2), (Frame::new(3), 1)],
                 ..ChecksumBasis::none()
             }
             .is_valid(),
-            "zero-count events are not canonical"
+            "events sharing a floor must be sorted ascending by slot"
         );
         assert!(
             !ChecksumBasis {
-                events: vec![(Frame::new(3), 1), (Frame::new(3), 1)],
+                events: vec![(Frame::new(3), 1), (Frame::new(9), 1)],
                 ..ChecksumBasis::none()
             }
             .is_valid(),
-            "duplicate floors must be consolidated before the wire"
+            "one slot must not carry two freeze floors"
+        );
+        assert!(
+            !ChecksumBasis {
+                events: vec![(Frame::new(-2), 1)],
+                ..ChecksumBasis::none()
+            }
+            .is_valid(),
+            "a negative event floor is not a freeze boundary even without a fold floor (#561)"
         );
         assert!(
             !ChecksumBasis {
@@ -952,10 +994,15 @@ mod checksum_basis_tests {
                 ..ChecksumBasis::none()
             }
             .is_valid(),
-            "the null frame is not a rewrite floor"
+            "the null frame is not a freeze floor"
         );
-        let oversized = (0..=MAX_CHECKSUM_REWRITE_EVENTS)
-            .map(|floor| (Frame::new(i32::try_from(floor).expect("fits")), 1))
+        let oversized: Vec<(Frame, u32)> = (0..=MAX_CHECKSUM_BASIS_EVENTS)
+            .map(|floor| {
+                (
+                    Frame::new(i32::try_from(floor).expect("fits")),
+                    u32::try_from(floor).expect("fits"),
+                )
+            })
             .collect();
         assert!(
             !ChecksumBasis {
@@ -965,6 +1012,17 @@ mod checksum_basis_tests {
             .is_valid(),
             "the wire event cap is enforced"
         );
+    }
+
+    #[test]
+    fn checksum_basis_slots_must_be_inside_the_player_count() {
+        let basis = ChecksumBasis {
+            events: vec![(Frame::new(3), 0), (Frame::new(4), 2)],
+            ..ChecksumBasis::none()
+        };
+        assert!(basis.slots_are_valid_for(3));
+        assert!(!basis.slots_are_valid_for(2));
+        assert!(!basis.slots_are_valid_for(0));
     }
 }
 

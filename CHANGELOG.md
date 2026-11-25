@@ -92,9 +92,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   below that floor stays latched so a genuine divergence is never masked. This restores `InSync`
   after both peers converge on the same post-rewrite checksum. A delayed report sent before the
   rewrite could still relatch because it carried only `(frame, checksum)`; checksum reports now
-  carry an additive basis token of their applied rewrite floors, and a comparison requires the
-  local entry's token to match. Pre-rewrite reports are ignored, while a same-token mismatch still
-  latches and emits `DesyncDetected`.
+  carry a basis token derived from the sender's converged per-slot freeze boundaries, and a
+  comparison requires the local entry's token to match. Pre-rewrite reports are ignored, while a
+  same-token mismatch still latches and emits `DesyncDetected`. Survivors that reach the same
+  frozen history through different intermediate detections share one token instead of remaining
+  permanently incomparable, and a reactivated slot stops contributing its old boundary.
 - **Pre-existing:** a peer-controlled coordinated-drop artifact that is malformed, stale, or
   equivocal no longer halts the receiver. Invalid prepares (stale membership, target generation,
   participant digest, a non-canonical target subset, or a coordinator that is not the first
@@ -340,13 +342,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Breaking:** the wire protocol version is now `6`. `ChecksumReport` carries a 64-bit additive
-  multiset token of the sender's applied confirmed-history rewrite floors (eight new bytes), so a
-  delayed pre-rewrite report is incomparable with a recomputed basis and cannot relatch a false
-  checksum mismatch. The hot-join `StateSnapshot` carries the full bounded basis (base, fold floor,
-  and active rewrite events) so a fresh joiner's post-snapshot reports remain comparable with a
-  host that rewrote history before serving, including floors above the snapshot frame. Upgrade
-  every peer in a session to v6; v5 headers are rejected at the handshake.
+- **Breaking:** the wire protocol version is now `6`. `ChecksumReport` carries a 64-bit token
+  derived from the sender's converged per-slot freeze boundaries (each dropped slot contributes
+  one term at the first frame whose confirmed input repeats its frozen value), so a delayed
+  pre-rewrite report is incomparable with a recomputed basis and cannot relatch a false checksum
+  mismatch, while survivors with the same final frozen history share one token. The hot-join
+  `StateSnapshot` carries every frozen slot's boundary event so a fresh joiner's post-snapshot
+  reports remain comparable with a host that rewrote history before serving, including boundaries
+  above the snapshot frame; a session with more simultaneously frozen slots than the bounded basis
+  event cap refuses the hot-join serve instead of folding identities a joiner could not update.
+  Upgrade every peer in a session to v6; v5 headers are rejected at the handshake.
 - **Breaking:** the wire protocol version is now `5`. `DropOperationId` carries a monotone
   terminal-attempt epoch and `DropAbort` carries the sender's next acceptable epoch plus the
   operation's canonical target list. Every coordinated-drop control message's operation grows by

@@ -122,21 +122,28 @@ fn checksum_history_oldest_frame(frame_to_send: Frame, max_history: usize, inter
     Frame::new(oldest)
 }
 
-/// Hard bound on distinct rewrite floors retained in the basis map. Older
-/// terms are folded into the session's cumulative base; the map only grows with
-/// distinct floors, not with repeated rewrites at one floor.
-const MAX_CHECKSUM_REWRITE_EVENT_FLOORS: usize =
-    crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS;
+/// Hard bound on frozen slots representable in a hot-join snapshot basis.
+/// A session with more simultaneously frozen slots refuses the serve rather
+/// than fold per-slot terms into an identity a joiner could not update.
+#[cfg(feature = "hot-join")]
+const MAX_CHECKSUM_FREEZE_SLOTS: usize = crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS;
 
-/// Domain-separated additive term for one applied rewrite floor.
+/// Domain-separated additive term for one slot's converged freeze boundary.
 ///
-/// The checksum basis token sums these terms (multiplied by the rewrite count
-/// at the floor), so the token is order-independent across reordered
-/// convergence rewrites while still changing for every applied rewrite.
-fn checksum_rewrite_floor_term(floor: Frame) -> u64 {
+/// A dropped slot contributes exactly one term, keyed by its handle and by the
+/// first frame whose confirmed input repeats the slot's frozen value. The basis
+/// token sums the terms of every slot whose boundary is at or below the frame,
+/// so survivors that reach the same frozen history through different
+/// intermediate detections derive the same token, while a later lower boundary
+/// for any slot still changes every frame it rewrites.
+fn checksum_freeze_floor_term(floor: Frame, handle: PlayerHandle) -> u64 {
+    // Handles are bounded to the u16 player domain on the wire; u32 keeps the
+    // term width-independent even if a local handle ever exceeds that domain.
+    let handle = u32::try_from(handle.as_usize()).unwrap_or(u32::MAX);
     let mut hasher = crate::hash::DeterministicHasher::new();
-    hasher.write(b"fortress.checksum.rewrite_floor.v1");
+    hasher.write(b"fortress.checksum.freeze_floor.v2");
     hasher.write(&floor.as_i32().to_le_bytes());
+    hasher.write(&handle.to_le_bytes());
     hasher.finish()
 }
 
@@ -687,20 +694,21 @@ where
     /// Basis token for each local checksum history entry. Missing entries
     /// default to `0` for compatibility with direct test fixtures.
     checksum_history_basis_tokens: BTreeMap<Frame, Option<u64>>,
-    /// Applied confirmed-history rewrite floors and their multiplicities,
-    /// bounded to [`MAX_CHECKSUM_REWRITE_EVENT_FLOORS`] distinct floors. The
-    /// basis token for a frame is an additive multiset summary of the floors at
-    /// or below it, so reordered convergence rewrites share one token while a
-    /// later rewrite at any floor still changes the token for every frame it
-    /// invalidates.
-    checksum_rewrite_events: BTreeMap<Frame, u32>,
-    /// Folded rewrite terms plus any adopted hot-join token. Folding keeps the
-    /// event map bounded without changing tokens for frames at or above the
-    /// highest folded floor.
+    /// Converged freeze boundary per dropped slot: the first frame whose
+    /// confirmed input repeats the slot's frozen value (`last_frame + 1`).
+    /// A later lower boundary replaces the earlier one, so survivors that
+    /// converge to the same frozen history derive one token regardless of
+    /// their intermediate detection floors. Reactivation removes the slot.
+    checksum_freeze_floors: BTreeMap<PlayerHandle, Frame>,
+    /// Adopted fold token (conforming hosts always send `0`; kept so a
+    /// snapshot from a peer that folded can still be interpreted).
     checksum_basis_base: u64,
-    /// Highest rewrite floor folded into [`Self::checksum_basis_base`], or
-    /// [`Frame::NULL`] before any fold.
-    checksum_rewrite_fold_floor: Frame,
+    /// Adopted fold floor (conforming hosts always send [`Frame::NULL`]).
+    checksum_basis_fold_floor: Frame,
+    /// Highest reactivation frame whose freeze term was released. Checksums for
+    /// earlier frames are not sent after the release, so a retained frame keeps
+    /// the token it was reported with.
+    checksum_release_floor: Frame,
     /// The last frame we sent a checksum for
     last_sent_checksum_frame: Frame,
     /// Optional observer for specification violations.
@@ -1741,7 +1749,11 @@ impl<T: Config> P2PSession<T> {
     }
 
     #[cfg(feature = "hot-join")]
-    fn record_committed_reactivation(&mut self, handle: PlayerHandle) {
+    fn record_committed_reactivation(&mut self, handle: PlayerHandle, activation_frame: Frame) {
+        // A reactivated slot is live again: its real inputs from the activation
+        // frame onward are a new history generation, so it no longer
+        // contributes a converged freeze term to the checksum basis.
+        self.release_checksum_freeze(handle, activation_frame);
         // A reactivated slot is live again: discard any stale automatic-timeout
         // intent queued for its previous generation.
         self.coordinated_drop.queued.remove(&handle);
@@ -6501,9 +6513,10 @@ impl<T: Config> P2PSession<T> {
             desync_detection,
             local_checksum_history: BTreeMap::new(),
             checksum_history_basis_tokens: BTreeMap::new(),
-            checksum_rewrite_events: BTreeMap::new(),
+            checksum_freeze_floors: BTreeMap::new(),
             checksum_basis_base: 0,
-            checksum_rewrite_fold_floor: Frame::NULL,
+            checksum_basis_fold_floor: Frame::NULL,
+            checksum_release_floor: Frame::NULL,
             last_sent_checksum_frame: Frame::NULL,
             violation_observer,
             telemetry,
@@ -7370,6 +7383,13 @@ impl<T: Config> P2PSession<T> {
                 continue;
             }
 
+            if !self.checksum_basis_is_representable() {
+                // More simultaneously frozen slots than the bounded basis can
+                // name: refuse the serve instead of sending a snapshot whose
+                // tokens the joiner could never keep canonical.
+                continue;
+            }
+
             let snapshot = match crate::sessions::hot_join::capture_snapshot_with_exclusions(
                 &self.sync_layer,
                 activation_frame,
@@ -7512,7 +7532,7 @@ impl<T: Config> P2PSession<T> {
                 );
                 continue;
             }
-            self.record_committed_reactivation(handle);
+            self.record_committed_reactivation(handle, activation_frame);
             // Force the host to re-simulate from the activation frame F so its
             // prediction for the reactivated handle anchors at F.
             //
@@ -7921,6 +7941,11 @@ impl<T: Config> P2PSession<T> {
         &self,
         snapshot_frame: Frame,
     ) -> Result<Option<StateSnapshot>, FortressError> {
+        if !self.checksum_basis_is_representable() {
+            // See the 2-peer serve gate: an over-cap basis cannot be carried
+            // without losing per-slot identity, so the serve stays closed.
+            return Ok(None);
+        }
         let bridge = self
             .sync_layer
             .confirmed_inputs(snapshot_frame, &self.local_connect_status)?;
@@ -8237,7 +8262,7 @@ impl<T: Config> P2PSession<T> {
                 handle
             );
         }
-        self.record_committed_reactivation(handle);
+        self.record_committed_reactivation(handle, activation_frame);
         self.coordinated_drop.certified_dropped.remove(&handle);
         // Anchor the reactivated slot's prediction at F, mirroring the 2-peer
         // Phase 3. Here `F == current_frame` (the pause pinned
@@ -9035,7 +9060,7 @@ impl<T: Config> P2PSession<T> {
         };
         self.record_closed_npeer_attempt(pending.handle, pending.frame);
         if committed {
-            self.record_committed_reactivation(pending.handle);
+            self.record_committed_reactivation(pending.handle, pending.frame);
             self.coordinated_drop
                 .certified_dropped
                 .remove(&pending.handle);
@@ -9986,7 +10011,7 @@ impl<T: Config> P2PSession<T> {
         // reactivation floor arms here (and not at the reopen above).
         let handle = pending_handle;
         let frame = pending_frame;
-        self.record_committed_reactivation(handle);
+        self.record_committed_reactivation(handle, frame);
         self.coordinated_drop.certified_dropped.remove(&handle);
         self.reset_reactivated_slot_gossip(
             handle,
@@ -10226,9 +10251,17 @@ impl<T: Config> P2PSession<T> {
             );
             return;
         }
-        self.checksum_basis_base = basis.base;
-        self.checksum_rewrite_fold_floor = basis.floor;
-        self.checksum_rewrite_events = basis.events.iter().copied().collect();
+        if !basis.slots_are_valid_for(self.num_players) {
+            report_violation!(
+                ViolationSeverity::Error,
+                ViolationKind::NetworkProtocol,
+                "Hot-join snapshot at frame {} carries a checksum basis naming a slot outside {} players; rejecting it fail-closed",
+                snapshot.frame,
+                self.num_players
+            );
+            return;
+        }
+        self.adopt_checksum_basis(&basis);
 
         // Import the snapshot's certified membership exclusions. The joining
         // slot itself is live and is removed from the exclusion set.
@@ -10246,6 +10279,7 @@ impl<T: Config> P2PSession<T> {
             self.coordinated_drop
                 .certified_dropped
                 .remove(&local_handle);
+            self.release_checksum_freeze(local_handle, snapshot.frame);
         }
 
         // Ack the loaded frame so the host reactivates + emits PeerJoined, and
@@ -11149,9 +11183,27 @@ impl<T: Config> P2PSession<T> {
             );
             return;
         }
-        self.checksum_basis_base = basis.base;
-        self.checksum_rewrite_fold_floor = basis.floor;
-        self.checksum_rewrite_events = basis.events.iter().copied().collect();
+        if !basis.slots_are_valid_for(self.num_players) {
+            report_violation!(
+                ViolationSeverity::Error,
+                ViolationKind::NetworkProtocol,
+                "N-peer hot-join snapshot at frame {} carries a checksum basis naming a slot outside {} players; rejecting it fail-closed",
+                buffered.snapshot.frame,
+                self.num_players
+            );
+            return;
+        }
+        self.adopt_checksum_basis(&basis);
+        if let Some(local_handle) = self
+            .hot_join
+            .joiner
+            .as_ref()
+            .map(|joiner| joiner.local_handle)
+        {
+            // The joining slot is live from its activation frame; its own
+            // pre-activation freeze term must not gate post-join comparisons.
+            self.release_checksum_freeze(local_handle, buffered.activation_frame);
+        }
 
         // Un-defer ALL remote endpoints (see the rustdoc argument above),
         // and record which endpoints are NOT yet Running: the joiner's own
@@ -14343,6 +14395,18 @@ impl<T: Config> P2PSession<T> {
                     self.sync_layer
                         .set_frozen_value_at(handle, converged_last_frame);
 
+                    // Record the slot's converged freeze boundary for the
+                    // checksum basis. `last_frame + 1` is the first frame whose
+                    // confirmed input repeats the frozen value; a later lower
+                    // convergence replaces this slot's term instead of adding a
+                    // second one (#562).
+                    let freeze_floor = safe_frame_add!(
+                        converged_last_frame,
+                        1,
+                        "P2PSession::disconnect_player_at_frames checksum basis"
+                    );
+                    self.record_checksum_freeze(handle, freeze_floor);
+
                     // N-peer joiner baseline guard (see the function-top
                     // comment): a converged freeze strictly below the
                     // applied snapshot frame is impossible to comply with —
@@ -15928,12 +15992,21 @@ impl<T: Config> P2PSession<T> {
         let converged_last_frame = converged_status.last_frame;
         self.sync_layer
             .set_frozen_value_at(handle, converged_last_frame);
+        // The frozen-value re-roll changes this slot's confirmed input at every
+        // frame >= the new boundary, even when the local simulation has not
+        // reached that frame yet. The persistent basis must therefore record the
+        // converged boundary unconditionally: a survivor that learns the fold
+        // ahead of its simulation would otherwise keep an older (or no) term and
+        // stay permanently incomparable with peers that recorded the same final
+        // frozen history (#562). Only the stale-checksum pruning and
+        // resimulation are gated on the simulation having reached the boundary.
+        let disconnect_frame = safe_frame_add!(
+            converged_last_frame,
+            1,
+            "P2PSession::converge_reserved_slot_freeze"
+        );
+        self.record_checksum_freeze(handle, disconnect_frame);
         if self.sync_layer.current_frame() > converged_last_frame {
-            let disconnect_frame = safe_frame_add!(
-                converged_last_frame,
-                1,
-                "P2PSession::converge_reserved_slot_freeze"
-            );
             self.disconnect_frame = if self.disconnect_frame.is_null() {
                 disconnect_frame
             } else {
@@ -17007,36 +17080,17 @@ impl<T: Config> P2PSession<T> {
         metrics.observe_event_queue_len(event_queue.len());
     }
 
-    /// Invalidates a peer's checksum comparison state when a confirmed-history
-    /// rewrite changes the local basis at or above `first_invalid`.
+    /// Invalidates a peer's checksum comparison state for frames at or above
+    /// `first_invalid` after a confirmed-history rewrite.
     ///
     /// A mismatch or pending report below the floor keeps its basis in retained
     /// history, so a genuine divergence is never masked. Reports at or above the
     /// floor describe the pre-rewrite trajectory and cannot be compared with the
-    /// recomputed local checksum. Eviction of old checksums is not a rewrite and
-    /// must not call this helper.
+    /// recomputed local checksum. The persistent basis change is recorded
+    /// separately by [`Self::record_checksum_freeze`], keyed by slot, so
+    /// survivors that converge to the same frozen history derive one token.
+    /// Eviction of old checksums is not a rewrite and must not call this helper.
     fn invalidate_checksum_mismatch_from(&mut self, first_invalid: Frame) {
-        // Count each applied floor. The additive token below is order-independent,
-        // so a reordered convergence rewrite set still produces one value, while
-        // a repeated or higher-floor rewrite changes the token for every frame
-        // whose basis it invalidates.
-        let fold_floor = self.checksum_rewrite_fold_floor;
-        if fold_floor.is_null() || first_invalid > fold_floor {
-            let count = self
-                .checksum_rewrite_events
-                .entry(first_invalid)
-                .or_insert(0);
-            *count = count.saturating_add(1);
-            self.compact_checksum_rewrite_events();
-        } else {
-            // Every floor in the active map is above the fold floor. A later
-            // rewrite at or below it belongs in the folded base; inserting it
-            // as an event would violate the canonical basis invariant and make
-            // every later hot-join snapshot invalid.
-            self.checksum_basis_base = self
-                .checksum_basis_base
-                .wrapping_add(checksum_rewrite_floor_term(first_invalid));
-        }
         self.checksum_history_basis_tokens
             .retain(|&frame, _token| frame < first_invalid);
         for remote in self.player_reg.remotes.values_mut() {
@@ -17055,6 +17109,53 @@ impl<T: Config> P2PSession<T> {
         }
     }
 
+    /// Records one dropped slot's converged freeze boundary: the first frame
+    /// whose confirmed input repeats the slot's frozen value (`last_frame + 1`).
+    ///
+    /// Boundaries only move **down** for a slot. A later detection at a higher
+    /// frame is idempotent because the slot is already frozen at or below that
+    /// frame; retaining it as an additional term would leave two survivors that
+    /// reached the same frozen history permanently incomparable, which is the
+    /// #562 false negative. The slot's single term is replaced, so the basis is
+    /// a pure function of the converged per-slot boundaries.
+    fn record_checksum_freeze(&mut self, player_handle: PlayerHandle, floor: Frame) {
+        if !floor.is_valid() {
+            // A null or negative boundary cannot order any confirmed frame.
+            return;
+        }
+        if self
+            .checksum_freeze_floors
+            .get(&player_handle)
+            .is_some_and(|&existing| existing <= floor)
+        {
+            return;
+        }
+        self.checksum_freeze_floors.remove(&player_handle);
+        let fold_floor = self.checksum_basis_fold_floor;
+        if !fold_floor.is_null() && floor <= fold_floor {
+            // Only an adopted, non-conforming fold reaches this branch: the
+            // event list must stay strictly above the fold floor. Conforming v6
+            // hosts never fold, so no per-slot identity is retained here.
+            self.checksum_basis_base = self
+                .checksum_basis_base
+                .wrapping_add(checksum_freeze_floor_term(floor, player_handle));
+            return;
+        }
+        self.checksum_freeze_floors.insert(player_handle, floor);
+    }
+
+    /// Removes a reactivated slot's freeze boundary: its real inputs from the
+    /// activation frame onward describe a new history generation. Checksums for
+    /// frames below the activation frame are suppressed afterwards by
+    /// [`Self::checksum_release_floor`], so their retained tokens do not change.
+    #[cfg(feature = "hot-join")]
+    fn release_checksum_freeze(&mut self, player_handle: PlayerHandle, activation_frame: Frame) {
+        if self.checksum_freeze_floors.remove(&player_handle).is_some() {
+            self.checksum_release_floor =
+                std::cmp::max(self.checksum_release_floor, activation_frame);
+        }
+    }
+
     /// Basis token stored for a local checksum history entry.
     ///
     /// Entries written before any rewrite carry `0`; direct test fixtures that
@@ -17066,42 +17167,35 @@ impl<T: Config> P2PSession<T> {
             .unwrap_or(Some(0))
     }
 
-    /// Additive multiset token of the applied rewrite floors at or below
-    /// `frame`, plus the adopted hot-join base when the frame is in its range.
+    /// Additive token of every slot freeze boundary at or below `frame`, plus
+    /// the adopted hot-join base when the frame is in its range.
     ///
-    /// Addition is commutative, so the same set of rewrite floors produces one
-    /// token regardless of the order in which convergence rewrites arrived. A
-    /// later rewrite at any floor adds a new term and therefore invalidates
-    /// comparisons for frames at or above that floor, while retained entries
-    /// below it keep their previous token. `0` means no rewrite affects the
-    /// basis.
+    /// A slot contributes exactly one term (its converged boundary), so the
+    /// same frozen history always produces the same token. A later lower
+    /// boundary replaces the term and therefore invalidates comparisons for
+    /// frames at or above that floor, while retained entries below it keep
+    /// their previous token. `0` means no frozen history affects the frame.
     fn checksum_basis_token_for(&self, frame: Frame) -> Option<u64> {
-        if !self.checksum_rewrite_fold_floor.is_null() && frame < self.checksum_rewrite_fold_floor {
+        if !self.checksum_basis_fold_floor.is_null() && frame < self.checksum_basis_fold_floor {
             return None;
         }
         let mut token = self.checksum_basis_base;
-        for (&floor, &count) in self.checksum_rewrite_events.range(..=frame) {
-            let term = checksum_rewrite_floor_term(floor).wrapping_mul(u64::from(count));
-            token = token.wrapping_add(term);
+        for (&handle, &floor) in &self.checksum_freeze_floors {
+            if floor <= frame {
+                token = token.wrapping_add(checksum_freeze_floor_term(floor, handle));
+            }
         }
         Some(token)
     }
 
-    /// Folds the lowest rewrite floors into the cumulative base until the
-    /// distinct-floor map is bounded. Tokens at or above the fold floor are
-    /// unchanged; frames below it have no retained basis and are reported as
-    /// unknown by [`Self::checksum_basis_token_for`].
-    fn compact_checksum_rewrite_events(&mut self) {
-        while self.checksum_rewrite_events.len() > MAX_CHECKSUM_REWRITE_EVENT_FLOORS {
-            let Some((floor, count)) = self.checksum_rewrite_events.pop_first() else {
-                break;
-            };
-            self.checksum_basis_base = self
-                .checksum_basis_base
-                .wrapping_add(checksum_rewrite_floor_term(floor).wrapping_mul(u64::from(count)));
-            self.checksum_rewrite_fold_floor =
-                std::cmp::max(self.checksum_rewrite_fold_floor, floor);
-        }
+    /// Whether every frozen slot boundary fits the bounded snapshot basis.
+    ///
+    /// Conforming sessions with more simultaneously frozen slots than the wire
+    /// event cap refuse the hot-join serve instead of folding identities into a
+    /// token a joiner could never update (review finding on #562).
+    #[cfg(feature = "hot-join")]
+    fn checksum_basis_is_representable(&self) -> bool {
+        self.checksum_freeze_floors.len() <= MAX_CHECKSUM_FREEZE_SLOTS
     }
 
     /// Basis token to attach to a newly collected checksum at `frame`, or
@@ -17114,17 +17208,54 @@ impl<T: Config> P2PSession<T> {
     /// Full bounded basis carried by a hot-join snapshot.
     #[cfg(feature = "hot-join")]
     fn checksum_basis_for_snapshot(&self) -> ChecksumBasis {
-        // alloc-bound: the rewrite-event map is capped at
-        // `MAX_CHECKSUM_REWRITE_EVENT_FLOORS`.
+        // alloc-bound: the per-slot freeze map is capped at
+        // `MAX_CHECKSUM_FREEZE_SLOTS`.
+        let mut events: Vec<(Frame, u32)> = self
+            .checksum_freeze_floors
+            .iter()
+            .map(|(&handle, &floor)| {
+                let slot = u32::try_from(handle.as_usize()).unwrap_or(u32::MAX);
+                (floor, slot)
+            })
+            .collect();
+        // Canonical wire order: ascending by (floor, slot).
+        events.sort_unstable();
         ChecksumBasis {
             base: self.checksum_basis_base,
-            floor: self.checksum_rewrite_fold_floor,
-            events: self
-                .checksum_rewrite_events
-                .iter()
-                .map(|(&floor, &count)| (floor, count))
-                .collect(),
+            floor: self.checksum_basis_fold_floor,
+            events,
         }
+    }
+
+    /// Adopts a validated snapshot basis as this session's per-slot freeze map.
+    ///
+    /// The joining slot's own boundary is released separately: the joiner is
+    /// live from the activation frame, so that entry describes only the frozen
+    /// pre-activation history (stored per-frame tokens already reflect it).
+    ///
+    /// Folded slot identities are not carried on the wire. Terms already in the
+    /// adopted `base` are therefore unknown to this session: a post-snapshot
+    /// lowering or reactivation of such a slot cannot subtract the inherited
+    /// term, so its token differs from pre-existing survivors at and above the
+    /// fold floor and those reports stay incomparable (skipped comparisons,
+    /// never a false mismatch). Terms this session folds or releases after the
+    /// adoption are tracked normally. Only reachable when the host had more
+    /// simultaneously frozen slots than the wire event cap before the snapshot.
+    #[cfg(feature = "hot-join")]
+    fn adopt_checksum_basis(&mut self, basis: &ChecksumBasis) {
+        self.checksum_basis_base = basis.base;
+        self.checksum_basis_fold_floor = basis.floor;
+        // alloc-bound: `is_valid` caps `events` at MAX_CHECKSUM_BASIS_EVENTS and
+        // the adoption gate validates every slot against the player count.
+        self.checksum_freeze_floors = basis
+            .events
+            .iter()
+            .filter_map(|&(floor, slot)| {
+                usize::try_from(slot)
+                    .ok()
+                    .map(|slot| (PlayerHandle::new(slot), floor))
+            })
+            .collect();
     }
 
     fn compare_local_checksums_against_peers(&mut self) {
@@ -17264,6 +17395,19 @@ impl<T: Config> P2PSession<T> {
                         "P2PSession::check_checksum_send_interval"
                     )
                 };
+
+                if !self.checksum_release_floor.is_null()
+                    && frame_to_send < self.checksum_release_floor
+                {
+                    // A reactivated slot's freeze term was released at the
+                    // activation frame. Sending this older schedule slot now
+                    // would label it without the term while a peer that sent it
+                    // before the release labeled it with the term, so the same
+                    // retained frame would have two tokens. Skip it; every
+                    // post-release report is at or above the activation frame.
+                    self.last_sent_checksum_frame = frame_to_send;
+                    return;
+                }
 
                 if frame_to_send <= self.sync_layer.last_confirmed_frame()
                     && frame_to_send <= self.sync_layer.last_saved_frame()
@@ -31991,134 +32135,332 @@ mod tests {
         );
     }
 
-    /// The basis token summarizes the multiset of applied rewrite floors:
-    /// frames below a floor keep their previous token, every new (including
-    /// repeated or higher-floor) rewrite changes the token for frames it
-    /// invalidates, and reordered convergence rewrites share one token.
+    /// The basis token summarizes one converged freeze boundary per slot:
+    /// frames below a slot's boundary keep their previous token, a boundary
+    /// change affects only frames at or above it, a higher later detection for
+    /// the same slot is idempotent, and reordered per-slot freezes agree.
     #[test]
-    fn checksum_basis_token_tracks_the_rewrite_multiset() {
+    fn checksum_basis_token_tracks_per_slot_freeze_boundaries() {
         let mut session = create_three_player_desync_session();
         let mut reordered = create_three_player_desync_session();
+        let handle_b = PlayerHandle::new(1);
+        let handle_d = PlayerHandle::new(2);
 
         assert_eq!(
             session.basis_token_for_checksum(Frame::new(0)),
             Some(0),
-            "no rewrite has been applied yet"
+            "no frozen history has been recorded yet"
         );
 
-        session.invalidate_checksum_mismatch_from(Frame::new(6));
+        session.record_checksum_freeze(handle_d, Frame::new(6));
         let after_six = session.basis_token_for_checksum(Frame::new(6));
         assert_ne!(after_six, Some(0));
         assert_eq!(
             session.basis_token_for_checksum(Frame::new(5)),
             Some(0),
-            "a frame below the rewrite floor keeps the unrewritten token"
+            "a frame below the freeze boundary keeps the unrewritten token"
         );
         assert_eq!(
             session.basis_token_for_checksum(Frame::new(10)),
             after_six,
-            "a floor applies to every frame at or above it"
+            "a boundary applies to every frame at or above it"
         );
 
-        session.invalidate_checksum_mismatch_from(Frame::new(10));
+        session.record_checksum_freeze(handle_b, Frame::new(10));
         let after_ten = session.basis_token_for_checksum(Frame::new(12));
         assert_ne!(
             after_ten, after_six,
-            "a later higher-floor rewrite must change the token for frames it invalidates"
+            "a later higher-floor freeze for another slot must change the token"
         );
         assert_eq!(
             session.basis_token_for_checksum(Frame::new(8)),
             after_six,
-            "a higher-floor rewrite must not change a retained frame below its floor"
+            "a higher-floor freeze must not change a retained frame below its floor"
         );
 
-        // Same rewrite set, opposite order: the additive multiset token is
-        // order-independent for frames at or above both floors.
-        reordered.invalidate_checksum_mismatch_from(Frame::new(10));
-        reordered.invalidate_checksum_mismatch_from(Frame::new(6));
+        // Same per-slot set, opposite order: the token is order-independent.
+        reordered.record_checksum_freeze(handle_b, Frame::new(10));
+        reordered.record_checksum_freeze(handle_d, Frame::new(6));
         assert_eq!(
             reordered.basis_token_for_checksum(Frame::new(12)),
             after_ten,
-            "reordered convergence rewrites must share one token"
+            "reordered convergence freezes must share one token"
         );
         assert_eq!(
             reordered.basis_token_for_checksum(Frame::new(8)),
             after_six,
-            "only floors at or below the frame participate in its token"
+            "only boundaries at or below the frame participate in its token"
         );
 
-        // A repeated rewrite at the same floor is a distinct basis change.
-        session.invalidate_checksum_mismatch_from(Frame::new(6));
-        assert_ne!(
+        // A later HIGHER detection of the same slot is idempotent: its
+        // converged boundary is already recorded at or below that frame.
+        session.record_checksum_freeze(handle_d, Frame::new(14));
+        assert_eq!(
             session.basis_token_for_checksum(Frame::new(12)),
             after_ten,
-            "a repeated rewrite at an existing floor must change the token"
+            "a higher re-detection of an already-frozen slot must not add a term"
         );
+        // A LOWER convergence replaces the slot's term, so a peer with the same
+        // final frozen history shares the token.
+        let mut lowered = create_three_player_desync_session();
+        lowered.record_checksum_freeze(handle_b, Frame::new(10));
+        lowered.record_checksum_freeze(handle_d, Frame::new(14));
+        lowered.record_checksum_freeze(handle_d, Frame::new(6));
+        let mut direct = create_three_player_desync_session();
+        direct.record_checksum_freeze(handle_b, Frame::new(10));
+        direct.record_checksum_freeze(handle_d, Frame::new(6));
         assert_eq!(
-            session.basis_token_for_checksum(Frame::new(5)),
-            Some(0),
-            "repeated rewrites above a frame still leave it unrewritten"
+            lowered.basis_token_for_checksum(Frame::new(12)),
+            direct.basis_token_for_checksum(Frame::new(12)),
+            "a lowered boundary must replace, not accumulate, the slot's term"
         );
     }
 
-    /// The rewrite-floor map is hard-bounded: excess distinct floors fold into
-    /// the cumulative base without changing any token at or above the fold.
+    /// Regression for #562: two survivors that converge to the same frozen
+    /// history through different intermediate freeze floors must share one
+    /// basis token for every retained frame. Pre-fix the late-detecting
+    /// survivor retained both floors additively, so its token never matched the
+    /// directly-detecting survivor and a genuine mismatch at or above the extra
+    /// floor was never compared.
     #[test]
-    fn checksum_rewrite_history_is_bounded_without_changing_current_tokens() {
-        let mut session = create_three_player_desync_session();
-        let total = MAX_CHECKSUM_REWRITE_EVENT_FLOORS + 7;
-        let mut expected = 0_u64;
-        for floor in 0..total {
-            let frame = Frame::new(i32::try_from(floor).expect("test floor fits"));
-            expected = expected.wrapping_add(checksum_rewrite_floor_term(frame));
-            session.invalidate_checksum_mismatch_from(frame);
+    fn converged_freeze_histories_share_one_basis_token() {
+        let handle_d = PlayerHandle::new(2);
+        let addr_b = test_addr(8080);
+        let handle_b = PlayerHandle::new(1);
+        let mut late = create_three_player_desync_session();
+        let mut early = create_three_player_desync_session();
+
+        for session in [&mut late, &mut early] {
+            for _ in 0..14 {
+                session.sync_layer.advance_frame();
+            }
+            session
+                .sync_layer
+                .set_last_confirmed_frame(Frame::new(14), session.save_mode);
         }
 
+        // Survivor `late` detects D's drop at frame 9 (its own receipt) and
+        // then the agreed freeze converges down to frame 5 on the re-adjust
+        // path. Survivor `early` sees the same converged freeze directly.
+        late.local_connect_status[handle_d.as_usize()].last_frame = Frame::new(9);
+        late.disconnect_player_at_frame(handle_d, Frame::new(9));
+        let pre_convergence_token = late
+            .basis_token_for_checksum(Frame::new(12))
+            .expect("the first freeze has a basis token");
+        let agreed = BTreeMap::from([(handle_d, Frame::new(5))]);
+        late.disconnect_player_at_frames(handle_d, Frame::new(5), Some(&agreed));
+        early.local_connect_status[handle_d.as_usize()].last_frame = Frame::new(5);
+        early.disconnect_player_at_frame(handle_d, Frame::new(5));
+
+        for raw in 0..=15 {
+            let frame = Frame::new(raw);
+            assert_eq!(
+                late.basis_token_for_checksum(frame),
+                early.basis_token_for_checksum(frame),
+                "both survivors converged to D frozen from frame 6, so their \
+                 basis tokens must match at {frame:?}"
+            );
+        }
         assert_eq!(
-            session.checksum_rewrite_events.len(),
-            MAX_CHECKSUM_REWRITE_EVENT_FLOORS,
-            "the distinct-floor map must stay within its hard bound"
+            late.basis_token_for_checksum(Frame::new(4)),
+            Some(0),
+            "frames below the converged freeze floor keep the unrewritten token"
         );
-        let fold_floor = session.checksum_rewrite_fold_floor;
-        assert!(!fold_floor.is_null(), "excess floors must be folded");
-        let at_fold = (0..=fold_floor.as_i32()).fold(0_u64, |token, floor| {
-            token.wrapping_add(checksum_rewrite_floor_term(Frame::new(floor)))
-        });
+        let converged_token = late
+            .basis_token_for_checksum(Frame::new(12))
+            .expect("the converged freeze has a basis token");
+        assert_ne!(
+            converged_token, pre_convergence_token,
+            "lowering the freeze floor rewrites frames at or above it"
+        );
+
+        // A report carrying the pre-convergence basis must stay incomparable.
+        {
+            let remote = late
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote
+                .pending_checksum_basis_tokens
+                .insert(Frame::new(12), pre_convergence_token);
+            remote.pending_checksums.insert(Frame::new(12), 0xDEAD_BEEF);
+        }
+        late.local_checksum_history.insert(Frame::new(12), 0x100C);
+        late.checksum_history_basis_tokens
+            .insert(Frame::new(12), Some(converged_token));
+        late.compare_local_checksums_against_peers();
+        assert!(
+            !late
+                .event_queue
+                .iter()
+                .any(|event| matches!(event, FortressEvent::DesyncDetected { .. })),
+            "a pre-convergence report must not compare against the rewritten basis"
+        );
+
+        // A report on the converged basis with a different checksum must latch.
+        {
+            let remote = late
+                .player_reg
+                .remotes
+                .get_mut(&addr_b)
+                .expect("B endpoint exists");
+            remote
+                .pending_checksum_basis_tokens
+                .insert(Frame::new(12), converged_token);
+            remote.pending_checksums.insert(Frame::new(12), 0x200C);
+        }
+        late.compare_local_checksums_against_peers();
         assert_eq!(
-            session.checksum_basis_token_for(fold_floor),
-            Some(at_fold),
-            "folding must preserve the token for the fold floor"
+            late.sync_health(handle_b),
+            Some(SyncHealth::DesyncDetected {
+                frame: Frame::new(12),
+                local_checksum: 0x100C,
+                remote_checksum: 0x200C,
+            }),
+            "a genuine mismatch on the converged basis must latch DesyncDetected"
+        );
+    }
+
+    /// Every frozen slot's boundary is carried in the snapshot basis up to the
+    /// wire cap; a session with more frozen slots refuses the serve instead of
+    /// folding identities into a token a joiner could never update.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn checksum_basis_represents_every_frozen_slot_up_to_the_cap() {
+        let mut session = create_three_player_desync_session();
+        for slot in 0..MAX_CHECKSUM_FREEZE_SLOTS {
+            session.checksum_freeze_floors.insert(
+                PlayerHandle::new(slot),
+                Frame::new(i32::try_from(slot).expect("fits")),
+            );
+        }
+        assert!(session.checksum_basis_is_representable());
+        let basis = session.checksum_basis_for_snapshot();
+        assert!(basis.is_valid());
+        assert_eq!(basis.events.len(), MAX_CHECKSUM_FREEZE_SLOTS);
+        assert_eq!(basis.base, 0);
+        assert!(basis.floor.is_null());
+
+        session.checksum_freeze_floors.insert(
+            PlayerHandle::new(MAX_CHECKSUM_FREEZE_SLOTS + 1),
+            Frame::new(0),
+        );
+        assert!(
+            !session.checksum_basis_is_representable(),
+            "an over-cap basis must refuse the hot-join serve"
+        );
+    }
+
+    /// A lower convergence replaces the slot's single event; nothing is folded
+    /// and no per-slot term accumulates.
+    #[test]
+    fn lowering_a_boundary_replaces_its_event() {
+        let mut session = create_three_player_desync_session();
+        let handle = PlayerHandle::new(1);
+        session.record_checksum_freeze(handle, Frame::new(30));
+
+        session.record_checksum_freeze(handle, Frame::new(15));
+
+        assert_eq!(
+            session.checksum_freeze_floors.get(&handle),
+            Some(&Frame::new(15))
+        );
+        assert!(session.checksum_basis_fold_floor.is_null());
+        assert_eq!(session.checksum_basis_base, 0);
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(20)),
+            Some(checksum_freeze_floor_term(Frame::new(15), handle))
+        );
+    }
+
+    /// Reactivation removes a slot's boundary and arms the release floor, so
+    /// post-activation tokens no longer carry a term for its frozen era and no
+    /// older schedule slot is reported after the release.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn reactivation_releases_the_slot_boundary() {
+        let mut session = create_three_player_desync_session();
+        let handle = PlayerHandle::new(2);
+        session.record_checksum_freeze(handle, Frame::new(6));
+        assert_ne!(
+            session.checksum_basis_token_for(Frame::new(10)),
+            Some(0),
+            "precondition: the frozen slot contributes a term"
+        );
+
+        session.release_checksum_freeze(handle, Frame::new(20));
+
+        assert_eq!(
+            session.checksum_release_floor,
+            Frame::new(20),
+            "the release must suppress later sends below the activation frame"
         );
         assert_eq!(
-            session.checksum_basis_token_for(Frame::new(
-                i32::try_from(total - 1).expect("test floor fits"),
-            )),
-            Some(expected),
-            "folding must preserve the token for frames above the fold floor"
+            session.checksum_basis_token_for(Frame::new(20)),
+            Some(0),
+            "a reactivated slot no longer contributes at or above its activation"
+        );
+        assert!(
+            session.checksum_basis_for_snapshot().events.is_empty(),
+            "a reactivated slot must not be advertised in the snapshot basis"
+        );
+    }
+
+    /// Regression for the review finding on #562: a reserved-slot convergence
+    /// that arrives while the local simulation is still behind the new boundary
+    /// must still update the persistent basis. The resimulation is (correctly)
+    /// not armed, but a later peer at the same converged history records the
+    /// boundary and both sides must share one token.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn reserved_slot_convergence_ahead_of_simulation_records_the_basis() {
+        let handle = PlayerHandle::new(2);
+        let mut behind = create_three_player_desync_session();
+        behind.local_connect_status[handle.as_usize()].disconnected = true;
+        behind.local_connect_status[handle.as_usize()].last_frame = Frame::new(8);
+        // current frame 0 <= converged 7: no resimulation, but the frozen
+        // history still starts at 8.
+        behind.converge_reserved_slot_freeze(handle, Frame::new(7));
+
+        assert_eq!(
+            behind.local_connect_status[handle.as_usize()].last_frame,
+            Frame::new(7),
+            "precondition: the converged boundary mined down to 7"
         );
         assert_eq!(
-            session.checksum_basis_token_for(Frame::new(fold_floor.as_i32() - 1)),
-            None,
-            "a frame below the folded floor has no reconstructible basis"
+            behind.checksum_freeze_floors.get(&handle),
+            Some(&Frame::new(8)),
+            "the converged boundary must be recorded even when the simulation is behind it"
         );
+
+        let mut ahead = create_three_player_desync_session();
+        ahead.record_checksum_freeze(handle, Frame::new(8));
+        for frame in [0, 6, 7, 8, 12] {
+            let frame = Frame::new(frame);
+            assert_eq!(
+                behind.basis_token_for_checksum(frame),
+                ahead.basis_token_for_checksum(frame),
+                "a peer that recorded the same converged boundary must share the token at {frame:?}"
+            );
+        }
     }
 
     /// A snapshot carries the full bounded basis, not a single frame token, so
-    /// a joiner reproduces the host's token for frames at and above rewrite
-    /// floors that are above the snapshot frame.
+    /// a joiner reproduces the host's token for frames at and above freeze
+    /// boundaries that are above the snapshot frame.
     #[cfg(feature = "hot-join")]
     #[test]
     fn adopting_a_snapshot_basis_preserves_tokens_above_the_snapshot_frame() {
         let mut host = create_three_player_desync_session();
-        host.invalidate_checksum_mismatch_from(Frame::new(5));
-        host.invalidate_checksum_mismatch_from(Frame::new(10));
+        host.record_checksum_freeze(PlayerHandle::new(1), Frame::new(5));
+        host.record_checksum_freeze(PlayerHandle::new(2), Frame::new(10));
         let basis = host.checksum_basis_for_snapshot();
 
         let mut joiner = create_three_player_desync_session();
         assert!(basis.is_valid());
-        joiner.checksum_basis_base = basis.base;
-        joiner.checksum_rewrite_fold_floor = basis.floor;
-        joiner.checksum_rewrite_events = basis.events.iter().copied().collect();
+        assert!(basis.slots_are_valid_for(3));
+        joiner.adopt_checksum_basis(&basis);
 
         for frame in [4, 5, 8, 10, 12] {
             let frame = Frame::new(frame);
@@ -32132,8 +32474,13 @@ mod tests {
             basis
                 .events
                 .iter()
-                .any(|(floor, _)| *floor == Frame::new(10)),
-            "the basis must carry floors above the snapshot frame"
+                .any(|(floor, slot)| *floor == Frame::new(10) && *slot == 2),
+            "the basis must carry per-slot boundaries above the snapshot frame"
+        );
+        assert_eq!(
+            basis.events,
+            vec![(Frame::new(5), 1), (Frame::new(10), 2)],
+            "the wire basis must be sorted by (floor, slot)"
         );
     }
 
@@ -32234,69 +32581,79 @@ mod tests {
         );
     }
 
-    /// A hot-join basis can retain a fold floor while holding fewer than the
-    /// cap in active events. A rewrite at or below that floor must then go to
-    /// the base directly; inserting an event would leave a non-canonical basis
-    /// because compaction has no spare-cap pressure to fold it.
+    /// Order-independence, including higher re-detections: the converged token
+    /// must depend only on the final per-slot boundaries, not on the sequence in
+    /// which detections arrived.
+    #[test]
+    fn freeze_event_order_does_not_change_the_converged_token() {
+        let handle_b = PlayerHandle::new(1);
+        let handle_d = PlayerHandle::new(2);
+        let orders = [
+            [(handle_d, 9), (handle_b, 12), (handle_d, 5), (handle_b, 12)],
+            [(handle_b, 12), (handle_d, 9), (handle_b, 12), (handle_d, 5)],
+            [(handle_d, 9), (handle_d, 5), (handle_b, 12), (handle_b, 12)],
+            [(handle_b, 12), (handle_d, 5), (handle_b, 12), (handle_d, 9)],
+        ];
+        let mut sessions: Vec<P2PSession<TestConfig>> = Vec::new();
+        for order in orders {
+            let mut session = create_three_player_desync_session();
+            for (handle, floor) in order {
+                session.record_checksum_freeze(handle, Frame::new(floor));
+            }
+            sessions.push(session);
+        }
+        let first = sessions.remove(0);
+        for frame in [0, 4, 5, 6, 9, 10, 12, 15] {
+            let frame = Frame::new(frame);
+            let expected = first.basis_token_for_checksum(frame);
+            for session in &sessions {
+                assert_eq!(
+                    session.basis_token_for_checksum(frame),
+                    expected,
+                    "every convergence order must derive one token at {frame:?}"
+                );
+            }
+        }
+    }
+
+    /// Two peers that froze different slots at the same floor have different
+    /// histories; the term must include the slot so their checksums are never
+    /// compared as if they shared a basis.
+    #[test]
+    fn same_floor_on_different_slots_yields_distinct_tokens() {
+        let mut one = create_three_player_desync_session();
+        let mut two = create_three_player_desync_session();
+        one.record_checksum_freeze(PlayerHandle::new(1), Frame::new(6));
+        two.record_checksum_freeze(PlayerHandle::new(2), Frame::new(6));
+
+        assert_ne!(
+            one.basis_token_for_checksum(Frame::new(8)),
+            two.basis_token_for_checksum(Frame::new(8)),
+            "the basis term must be keyed by the frozen slot, not only its floor"
+        );
+    }
+
+    /// An adopted, non-conforming fold floor keeps the derived event list
+    /// canonical: a boundary at or below it stays in the base.
     #[cfg(feature = "hot-join")]
     #[test]
-    fn rewrite_below_fold_floor_with_spare_capacity_goes_to_base() {
+    fn adopted_fold_floor_keeps_the_event_basis_canonical() {
         let mut session = create_three_player_desync_session();
         session.checksum_basis_base = 123;
-        session.checksum_rewrite_fold_floor = Frame::new(4);
-        session.checksum_rewrite_events.clear();
+        session.checksum_basis_fold_floor = Frame::new(4);
+        session.checksum_freeze_floors.clear();
+        let handle = PlayerHandle::new(1);
 
         for floor in [Frame::new(4), Frame::new(3)] {
-            let expected = session
-                .checksum_basis_base
-                .wrapping_add(checksum_rewrite_floor_term(floor));
-            session.invalidate_checksum_mismatch_from(floor);
+            session.record_checksum_freeze(handle, floor);
             assert!(
-                session.checksum_rewrite_events.is_empty(),
-                "a rewrite at or below the fold floor must not enter the event map"
-            );
-            assert_eq!(
-                session.checksum_basis_base, expected,
-                "the rewrite term must be added to the folded base"
+                session.checksum_freeze_floors.is_empty(),
+                "a boundary at or below an adopted fold floor must not enter the event map"
             );
         }
         assert!(
             session.checksum_basis_for_snapshot().is_valid(),
             "the resulting snapshot basis must remain canonical"
-        );
-    }
-
-    /// Once floors are folded, a later rewrite at or below the fold floor must
-    /// go into the cumulative base. Inserting it as an event would make every
-    /// subsequent snapshot basis non-canonical and reject hot join.
-    #[cfg(feature = "hot-join")]
-    #[test]
-    fn rewrite_at_or_below_the_fold_floor_keeps_the_snapshot_basis_valid() {
-        let mut session = create_three_player_desync_session();
-        for floor in 0..(MAX_CHECKSUM_REWRITE_EVENT_FLOORS as i32 + 3) {
-            session.invalidate_checksum_mismatch_from(Frame::new(floor));
-        }
-        let fold_floor = session.checksum_rewrite_fold_floor;
-        assert!(!fold_floor.is_null());
-        let token_before = session.checksum_basis_token_for(Frame::new(500));
-        let base_before = session.checksum_basis_base;
-
-        session.invalidate_checksum_mismatch_from(fold_floor);
-
-        let basis = session.checksum_basis_for_snapshot();
-        assert!(
-            basis.is_valid(),
-            "a rewrite at the fold floor must keep the basis canonical"
-        );
-        assert_eq!(
-            session.checksum_basis_base,
-            base_before.wrapping_add(checksum_rewrite_floor_term(fold_floor)),
-            "the term must be folded directly into the base"
-        );
-        assert_ne!(
-            session.checksum_basis_token_for(Frame::new(500)),
-            token_before,
-            "the rewrite must still change current-basis tokens"
         );
     }
 
@@ -32610,15 +32967,16 @@ mod tests {
         assert!(!session.is_synchronized());
     }
 
-    /// A delayed report can cross a second rewrite at a higher floor than the
-    /// first. The lowest-floor token would not change in that sequence, so the
-    /// delayed report would compare against the new basis. The multiset token
-    /// must change and keep the report incomparable.
+    /// A delayed report can cross a second, higher-floor freeze of a DIFFERENT
+    /// slot. A lowest-floor-only token would not change in that sequence, so
+    /// the delayed report would compare against the new basis. The per-slot
+    /// token must change and keep the report incomparable.
     #[test]
-    fn delayed_report_across_a_later_higher_floor_rewrite_does_not_relatch() {
+    fn delayed_report_across_a_later_higher_floor_freeze_does_not_relatch() {
         let mut session = create_three_player_desync_session();
         let addr_b = test_addr(8080);
         let handle_b = PlayerHandle::new(1);
+        let handle_d = PlayerHandle::new(2);
         let rewritten = Frame::new(12);
         let first_floor = Frame::new(6);
         let second_floor = Frame::new(10);
@@ -32633,8 +32991,9 @@ mod tests {
             .sync_layer
             .set_last_confirmed_frame(Frame::new(15), session.save_mode);
 
-        // First rewrite: the local entry at frame 12 is recomputed on token A.
-        session.invalidate_checksum_mismatch_from(first_floor);
+        // First rewrite: slot D freezes at floor 6 and the local entry at
+        // frame 12 is recomputed on token A.
+        session.record_checksum_freeze(handle_d, first_floor);
         let between_token = session
             .basis_token_for_checksum(rewritten)
             .expect("post-rewrite basis is reconstructible");
@@ -32646,18 +33005,20 @@ mod tests {
             .checksum_history_basis_tokens
             .insert(rewritten, Some(between_token));
 
-        // Second rewrite at a HIGHER floor: the rewrite sites clear the local
-        // checksum entries at/above the floor before invalidating comparisons.
+        // Second rewrite at a HIGHER floor for slot B: the rewrite sites clear
+        // the local checksum entries at/above the floor before invalidating
+        // comparisons.
         session
             .local_checksum_history
             .retain(|&frame, _| frame < second_floor);
+        session.record_checksum_freeze(handle_b, second_floor);
         session.invalidate_checksum_mismatch_from(second_floor);
         let current_token = session
             .basis_token_for_checksum(rewritten)
             .expect("current basis is reconstructible");
         assert_ne!(
             current_token, between_token,
-            "a later higher-floor rewrite must change the basis token"
+            "a later higher-floor freeze of another slot must change the basis token"
         );
         assert!(
             !session.local_checksum_history.contains_key(&rewritten),

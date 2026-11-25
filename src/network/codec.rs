@@ -46,7 +46,7 @@ use std::io::{self, Write};
 #[cfg(feature = "hot-join")]
 use crate::network::messages::{
     ChecksumBasis, JoinAborted, JoinCommitted, JoinRequest, ReactivateSlot, ReactivateSlotAck,
-    StateSnapshot, StateSnapshotAck, MAX_CHECKSUM_REWRITE_EVENTS,
+    StateSnapshot, StateSnapshotAck, MAX_CHECKSUM_BASIS_EVENTS,
 };
 use crate::network::messages::{
     ChecksumReport, ConnectionStatus, DropAbort, DropAbortReason, DropBackfill, DropCommit,
@@ -1165,9 +1165,9 @@ fn decode_state_snapshot(bytes: &[u8], cursor: &mut usize) -> CodecResult<StateS
     let basis_base = read_u64(bytes, cursor, "state_snapshot.checksum_basis.base")?;
     let basis_floor = read_frame(bytes, cursor, "state_snapshot.checksum_basis.floor", true)?;
     let events_len = read_usize(bytes, cursor, "state_snapshot.checksum_basis.events.len")?;
-    if events_len > MAX_CHECKSUM_REWRITE_EVENTS {
+    if events_len > MAX_CHECKSUM_BASIS_EVENTS {
         return Err(decode_message_error(format!(
-            "state_snapshot.checksum_basis has {events_len} events, above the {MAX_CHECKSUM_REWRITE_EVENTS} cap"
+            "state_snapshot.checksum_basis has {events_len} events, above the {MAX_CHECKSUM_BASIS_EVENTS} cap"
         )));
     }
     ensure_length_within_remaining(
@@ -1190,13 +1190,13 @@ fn decode_state_snapshot(bytes: &[u8], cursor: &mut usize) -> CodecResult<StateS
             "state_snapshot.checksum_basis.event.floor",
             false,
         )?;
-        let count = read_u32(bytes, cursor, "state_snapshot.checksum_basis.event.count")?;
-        if count == 0 {
-            return Err(decode_message_error(
-                "state_snapshot.checksum_basis event count must be positive",
-            ));
+        let slot = read_u32(bytes, cursor, "state_snapshot.checksum_basis.event.slot")?;
+        if slot > u32::from(u16::MAX) {
+            return Err(decode_message_error(format!(
+                "state_snapshot.checksum_basis event slot {slot} is outside the u16 player domain"
+            )));
         }
-        basis_events.push((floor, count));
+        basis_events.push((floor, slot));
     }
     let checksum_basis = ChecksumBasis {
         base: basis_base,
@@ -3965,22 +3965,27 @@ mod hot_join_tests {
             crate::network::messages::ChecksumBasis {
                 base: 0,
                 floor: Frame::NULL,
-                events: vec![(Frame::new(2), 0)],
-            },
-            crate::network::messages::ChecksumBasis {
-                base: 0,
-                floor: Frame::NULL,
                 events: vec![(Frame::new(2), 1), (Frame::new(2), 1)],
             },
             crate::network::messages::ChecksumBasis {
                 base: 0,
                 floor: Frame::NULL,
-                events: vec![(Frame::new(3), 1), (Frame::new(2), 1)],
+                events: vec![(Frame::new(3), 1), (Frame::new(2), 2)],
             },
             crate::network::messages::ChecksumBasis {
                 base: 0,
                 floor: Frame::new(4),
                 events: vec![(Frame::new(4), 1)],
+            },
+            crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(2), 1), (Frame::new(6), 1)],
+            },
+            crate::network::messages::ChecksumBasis {
+                base: 0,
+                floor: Frame::NULL,
+                events: vec![(Frame::new(-2), 1)],
             },
         ];
         for basis in invalid {
@@ -3990,6 +3995,14 @@ mod hot_join_tests {
                 "non-canonical checksum basis must reject at decode"
             );
         }
+
+        // Slot zero is a valid player handle, not a zero multiplicity.
+        let canonical = message(crate::network::messages::ChecksumBasis {
+            base: 0,
+            floor: Frame::NULL,
+            events: vec![(Frame::new(2), 0)],
+        });
+        roundtrip(canonical);
     }
 
     #[cfg(feature = "hot-join")]
@@ -4046,7 +4059,12 @@ mod hot_join_tests {
     fn state_snapshot_checksum_basis_event_cap_is_exact() {
         let events = |count: usize| {
             (0..count)
-                .map(|index| (Frame::new(i32::try_from(index).expect("fits")), 1))
+                .map(|index| {
+                    (
+                        Frame::new(i32::try_from(index).expect("fits")),
+                        u32::try_from(index).expect("fits"),
+                    )
+                })
                 .collect::<Vec<_>>()
         };
         let snapshot = |events| StateSnapshot {
@@ -4065,8 +4083,8 @@ mod hot_join_tests {
         };
 
         for count in [
-            crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS,
-            crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS + 1,
+            crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS,
+            crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS + 1,
         ] {
             let message = Message {
                 header: MessageHeader::new(0xABCD),
@@ -4074,7 +4092,7 @@ mod hot_join_tests {
             };
             let bytes = encode(&message).unwrap();
             let result = decode_message(&bytes);
-            if count == crate::network::messages::MAX_CHECKSUM_REWRITE_EVENTS {
+            if count == crate::network::messages::MAX_CHECKSUM_BASIS_EVENTS {
                 assert_eq!(result, Ok((message, bytes.len())));
             } else {
                 let error = result.expect_err("over-cap basis must reject");
