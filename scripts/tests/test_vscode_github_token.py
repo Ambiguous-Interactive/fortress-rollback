@@ -31,6 +31,7 @@ main = vscode_github_token.main
 parse_git_credential = vscode_github_token.parse_git_credential
 read_bridge_export = vscode_github_token.read_bridge_export
 resolve = vscode_github_token.resolve
+resolve_from_git_credential = vscode_github_token.resolve_from_git_credential
 resolve_from_environment = vscode_github_token.resolve_from_environment
 validate = vscode_github_token.validate
 
@@ -58,6 +59,18 @@ def test_read_bridge_export_accepts_mode_0600_payload(tmp_path: Path) -> None:
     assert credential.source == "vscode-bridge"
     assert credential.account == "wallstop"
     assert credential.scopes == ("repo", "read:user")
+
+
+def test_read_bridge_export_rejects_token_with_unsupported_characters(
+    tmp_path: Path,
+) -> None:
+    export = _write_export(
+        tmp_path / "vscode-github-token.json",
+        {"accessToken": "abc\nInjected: true"},
+    )
+
+    with pytest.raises(CredentialError, match="unsupported characters"):
+        read_bridge_export(export)
 
 
 def test_read_bridge_export_returns_none_when_absent(tmp_path: Path) -> None:
@@ -225,6 +238,31 @@ def test_find_ipc_sockets_returns_real_sockets_newest_first(tmp_path: Path) -> N
     assert regular not in sockets
 
 
+def test_resolve_from_git_credential_disables_askpass_routes(
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def runner(command: list[str], **kwargs: object) -> SimpleNamespace:
+        captured["command"] = command
+        captured["env"] = kwargs["env"]
+        return SimpleNamespace(returncode=1, stdout="")
+
+    credential = resolve_from_git_credential(
+        tmp_path / "example.sock",
+        env={"GIT_ASKPASS": "wrapper", "SSH_ASKPASS": "helper"},
+        runner=runner,
+    )
+
+    assert credential is None
+    assert captured["command"][:4] == ["git", "-c", "core.askPass=", "credential"]
+    env = captured["env"]
+    assert isinstance(env, dict)
+    assert "GIT_ASKPASS" not in env
+    assert "SSH_ASKPASS" not in env
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
 def test_resolve_from_environment_ignores_an_empty_token() -> None:
     assert resolve_from_environment({"GITHUB_PERSONAL_ACCESS_TOKEN": "  "}) is None
 
@@ -243,6 +281,20 @@ def test_parse_git_credential_ignores_malformed_lines() -> None:
     output = "protocol=https\nalias\nfoo=bar\npassword=secret\n"
 
     assert parse_git_credential(output) == "secret"
+
+
+def test_validate_does_not_echo_a_malformed_header_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise ValueError("Invalid header value b'Bearer super-secret-token'")
+
+    monkeypatch.setattr(vscode_github_token.urllib.request, "urlopen", explode)
+
+    with pytest.raises(CredentialError) as excinfo:
+        validate(Credential(token="super-secret-token", source="vscode-bridge"))
+
+    assert "super-secret-token" not in str(excinfo.value)
 
 
 def test_validate_reports_the_login_and_scopes() -> None:
@@ -299,6 +351,58 @@ def test_main_askpass_prints_only_the_token(
     assert exit_code == 0
     assert captured.out == "super-secret\n"
     assert captured.err == ""
+
+
+def test_main_askpass_returns_a_non_secret_username(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+
+    exit_code = main(["askpass", "Username for 'https://github.com':"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "x-access-token\n"
+
+
+def test_main_askpass_rejects_a_non_github_prompt_without_resolving(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resolved: list[object] = []
+
+    def resolve_spy(**_kwargs: object) -> Credential:
+        resolved.append(object())
+        return Credential(token="super-secret", source="vscode-bridge")
+
+    monkeypatch.setattr(vscode_github_token, "resolve", resolve_spy)
+
+    exit_code = main(["askpass", "Password for 'https://example.com':"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert "https://github.com" in captured.err
+    assert resolved == []
+
+
+def test_main_askpass_rejects_plain_http(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+
+    exit_code = main(["askpass", "Password for 'http://github.com':"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
 
 
 def test_main_exec_injects_the_token_into_the_child_environment(

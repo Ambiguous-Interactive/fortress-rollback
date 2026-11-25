@@ -20,11 +20,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -37,10 +39,24 @@ DEFAULT_TIMEOUT_SECONDS = 20.0
 SIGN_IN_COMMAND = "fortress.githubSignIn"
 SIGN_IN_TITLE = "Fortress: Sign in to GitHub"
 EXPORT_FILE_NAME = "vscode-github-token.json"
+TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]+$")
+ASKPASS_PROMPT = re.compile(r"^(Username|Password) for '(?P<url>[^']+)':")
 
 
 class CredentialError(RuntimeError):
     """A credential could not be resolved or validated."""
+
+
+def _checked_token(token: str, source: str) -> str:
+    """Return a token with a safe shape, or fail without echoing it.
+
+    GitHub tokens are URL-safe base64-ish strings. Rejecting whitespace and
+    control characters keeps a malformed token out of an Authorization header, a
+    subprocess environment, and diagnostic output.
+    """
+    if not TOKEN_SHAPE.fullmatch(token):
+        raise CredentialError(f"the {source} credential contains unsupported characters")
+    return token
 
 
 @dataclass(frozen=True)
@@ -98,6 +114,7 @@ def read_bridge_export(path: Path) -> Credential | None:
     token = payload.get("accessToken")
     if not isinstance(token, str) or not token.strip():
         raise CredentialError(f"{path} has no accessToken string")
+    token = _checked_token(token.strip(), "VS Code bridge")
     account = payload.get("account")
     raw_scopes = payload.get("scopes")
     scopes = (
@@ -168,9 +185,19 @@ def resolve_from_git_credential(
     child_env = dict(os.environ if env is None else env)
     child_env["REMOTE_CONTAINERS_IPC"] = str(socket_path)
     child_env["GIT_TERMINAL_PROMPT"] = "0"
+    # An inherited askpass wrapper may be this resolver; asking git for a
+    # credential must not recurse through it.
+    for variable in ("GIT_ASKPASS", "SSH_ASKPASS"):
+        child_env.pop(variable, None)
     try:
         completed = runner(  # noqa: S603 - fixed git subcommand, no shell
-            ["git", "credential", "fill"],  # noqa: S607 - git is resolved from PATH
+            [  # noqa: S607 - git is resolved from PATH
+                "git",
+                "-c",
+                "core.askPass=",
+                "credential",
+                "fill",
+            ],
             input=f"protocol=https\nhost={GIT_CREDENTIAL_HOST}\n\n",
             capture_output=True,
             text=True,
@@ -185,7 +212,10 @@ def resolve_from_git_credential(
     token = parse_git_credential(completed.stdout)
     if token is None:
         return None
-    return Credential(token=token, source="vscode-git-credential")
+    return Credential(
+        token=_checked_token(token, "Dev Containers helper"),
+        source="vscode-git-credential",
+    )
 
 
 def resolve_from_environment(env: Mapping[str, str] | None = None) -> Credential | None:
@@ -194,7 +224,7 @@ def resolve_from_environment(env: Mapping[str, str] | None = None) -> Credential
     token = environment.get("GITHUB_PERSONAL_ACCESS_TOKEN", "").strip()
     if not token:
         return None
-    return Credential(token=token, source="environment")
+    return Credential(token=_checked_token(token, "environment"), source="environment")
 
 
 def resolve(
@@ -260,7 +290,11 @@ def _github_user(
         raise CredentialError(
             f"could not reach {GITHUB_API_USER_URL}: {exc.reason}"
         ) from exc
-    except (OSError, ValueError) as exc:
+    except ValueError as exc:
+        raise CredentialError(
+            "could not validate the credential: malformed token"
+        ) from exc
+    except OSError as exc:
         raise CredentialError(f"could not validate the credential: {exc}") from exc
 
     login = payload.get("login") if isinstance(payload, dict) else None
@@ -300,6 +334,17 @@ def _format_credential(
     return " ".join(parts)
 
 
+def _askpass_request(prompt: str) -> str | None:
+    """Return ``username`` or ``password`` for an allowed GitHub HTTPS prompt."""
+    match = ASKPASS_PROMPT.match(prompt.strip())
+    if match is None:
+        return None
+    parsed = urllib.parse.urlsplit(match.group("url"))
+    if parsed.scheme != "https" or parsed.hostname != GIT_CREDENTIAL_HOST:
+        return None
+    return match.group(1).lower()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -327,7 +372,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "describe", help="resolve the credential and print non-secret metadata"
     )
     askpass = subparsers.add_parser(
-        "askpass", help="print the token for the GIT_ASKPASS contract"
+        "askpass", help="answer GitHub HTTPS GIT_ASKPASS username/password prompts"
     )
     askpass.add_argument("prompt", nargs="?", default="")
     exec_parser = subparsers.add_parser(
@@ -346,14 +391,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.socket is not None:
         resolve_kwargs["socket_path"] = args.socket
 
+    askpass_request = (
+        _askpass_request(args.prompt) if args.command == "askpass" else None
+    )
     try:
+        if args.command == "askpass" and askpass_request is None:
+            raise CredentialError(
+                "askpass refuses a prompt that is not for https://github.com"
+            )
         credential = resolve(**resolve_kwargs)
         if args.command == "check":
             print(_format_credential(credential, validate(credential)))
         elif args.command == "describe":
             print(_format_credential(credential))
         elif args.command == "askpass":
-            sys.stdout.write(f"{credential.token}\n")
+            if askpass_request == "username":
+                sys.stdout.write("x-access-token\n")
+            else:
+                sys.stdout.write(f"{credential.token}\n")
         elif args.command == "exec":
             command = list(args.argv)
             if command and command[0] == "--":
