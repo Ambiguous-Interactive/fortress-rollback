@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import http.client
 import importlib.util
 import json
 import os
@@ -483,6 +484,18 @@ def test_validate_does_not_echo_a_malformed_header_value(
         validate(Credential(token="super-secret-token", source="vscode-bridge"))
 
     assert "super-secret-token" not in str(excinfo.value)
+
+
+def test_validate_reports_a_malformed_http_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def explode(*_args: object, **_kwargs: object) -> object:
+        raise http.client.BadStatusLine("garbage")
+
+    monkeypatch.setattr(vscode_github_token.urllib.request, "urlopen", explode)
+
+    with pytest.raises(CredentialError, match="malformed HTTP response"):
+        validate(Credential(token="super-secret", source="vscode-bridge"))
 
 
 def test_validate_reports_the_login_and_scopes() -> None:

@@ -18,6 +18,7 @@ contract). ``exec`` injects it into a child process environment without printing
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -371,6 +372,10 @@ def _github_user(
     except urllib.error.URLError as exc:
         raise CredentialError(
             f"could not reach {GITHUB_API_USER_URL}: {exc.reason}"
+        ) from exc
+    except http.client.HTTPException as exc:
+        raise CredentialError(
+            "could not validate the credential: malformed HTTP response"
         ) from exc
     except ValueError as exc:
         raise CredentialError(
