@@ -405,6 +405,25 @@ def test_main_askpass_rejects_plain_http(
     assert captured.out == ""
 
 
+def test_main_askpass_rejects_a_nonstandard_port(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+
+    for prompt in (
+        "Password for 'https://github.com:8443':",
+        "Password for 'https://github.com:not-a-port':",
+    ):
+        exit_code = main(["askpass", prompt])
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert captured.out == ""
+
+
 def test_main_exec_injects_the_token_into_the_child_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

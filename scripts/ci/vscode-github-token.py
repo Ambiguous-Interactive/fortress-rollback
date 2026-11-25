@@ -342,6 +342,12 @@ def _askpass_request(prompt: str) -> str | None:
     parsed = urllib.parse.urlsplit(match.group("url"))
     if parsed.scheme != "https" or parsed.hostname != GIT_CREDENTIAL_HOST:
         return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port not in (None, 443):
+        return None
     return match.group(1).lower()
 
 
