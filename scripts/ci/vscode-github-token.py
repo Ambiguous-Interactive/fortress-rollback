@@ -156,15 +156,21 @@ def _trusted_path(path: Path) -> bool:
         return False
     if info.st_uid not in (os.geteuid(), 0) or (info.st_mode & 0o022) != 0:
         return False
-    try:
-        parent = path.parent.stat()
-    except OSError:
-        return False
-    if parent.st_uid not in (os.geteuid(), 0):
-        return False
-    if parent.st_mode & 0o022:
-        return bool(parent.st_mode & stat.S_ISVTX) and parent.st_uid == 0
-    return True
+    current = path.parent
+    while True:
+        try:
+            parent = current.stat()
+        except OSError:
+            return False
+        if parent.st_uid not in (os.geteuid(), 0):
+            return False
+        if parent.st_mode & 0o022 and not (
+            parent.st_mode & stat.S_ISVTX and parent.st_uid == 0
+        ):
+            return False
+        if current == current.parent:
+            return True
+        current = current.parent
 
 
 def find_ipc_sockets(
