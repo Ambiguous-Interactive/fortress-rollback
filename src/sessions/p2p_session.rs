@@ -32407,6 +32407,41 @@ mod tests {
         );
     }
 
+    /// Suppression ends at the release floor: the activation frame itself must
+    /// still be reported. Including it in the skipped range would skip the
+    /// first post-release schedule slot but still advance the send cursor,
+    /// leaving that frame unreported forever.
+    #[test]
+    fn checksum_send_at_the_release_floor_is_not_suppressed() {
+        let mut session = create_three_player_desync_session();
+
+        // Build the saved-state ring the send path harvests from.
+        for f in 0..=8 {
+            let request = session.sync_layer.save_current_state();
+            if let FortressRequest::SaveGameState { cell, frame } = request {
+                assert_eq!(frame, Frame::new(f));
+                cell.save(frame, Some(0u8), Some(0x5245_4C53_u128));
+            }
+            session.sync_layer.advance_frame();
+        }
+        session
+            .sync_layer
+            .set_last_confirmed_frame(Frame::new(8), session.save_mode);
+
+        let frame_to_send = Frame::new(7);
+        session.last_sent_checksum_frame = Frame::new(6);
+        session.checksum_release_floor = frame_to_send;
+
+        session.check_checksum_send_interval();
+
+        assert_eq!(
+            session.local_checksum_history.get(&frame_to_send).copied(),
+            Some(0x5245_4C53_u128),
+            "the activation frame is at the release floor and must be reported, \
+             not suppressed as a pre-release frame"
+        );
+    }
+
     /// Regression for the review finding on #562: a reserved-slot convergence
     /// that arrives while the local simulation is still behind the new boundary
     /// must still update the persistent basis. The resimulation is (correctly)
@@ -32654,6 +32689,53 @@ mod tests {
         assert!(
             session.checksum_basis_for_snapshot().is_valid(),
             "the resulting snapshot basis must remain canonical"
+        );
+    }
+
+    /// A boundary above an adopted fold floor stays an explicit event: folding
+    /// it into the base would advertise a non-canonical event list, because
+    /// events must stay strictly above the floor.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn adopted_fold_floor_keeps_events_above_it_explicit() {
+        let mut session = create_three_player_desync_session();
+        session.checksum_basis_base = 123;
+        session.checksum_basis_fold_floor = Frame::new(4);
+        session.checksum_freeze_floors.clear();
+        let handle = PlayerHandle::new(1);
+
+        session.record_checksum_freeze(handle, Frame::new(6));
+
+        assert_eq!(
+            session.checksum_freeze_floors.get(&handle),
+            Some(&Frame::new(6)),
+            "a boundary above the adopted fold floor must remain an explicit event"
+        );
+        assert_eq!(
+            session.checksum_basis_base, 123,
+            "only boundaries at or below the fold floor belong in the base"
+        );
+    }
+
+    /// The fold floor is representable at equality: frames strictly below it
+    /// cannot reconstruct the basis, while the floor itself can.
+    #[cfg(feature = "hot-join")]
+    #[test]
+    fn checksum_basis_token_rejects_only_frames_below_the_fold_floor() {
+        let mut session = create_three_player_desync_session();
+        session.checksum_basis_base = 123;
+        session.checksum_basis_fold_floor = Frame::new(4);
+        session.checksum_freeze_floors.clear();
+
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(3)),
+            None,
+            "a frame below the fold floor has no reconstructable basis"
+        );
+        assert_eq!(
+            session.checksum_basis_token_for(Frame::new(4)),
+            Some(123),
+            "the fold floor itself is representable and must keep the base"
         );
     }
 
