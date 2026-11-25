@@ -41,6 +41,8 @@ SIGN_IN_COMMAND = "fortress.githubSignIn"
 SIGN_IN_TITLE = "Fortress: Sign in to GitHub"
 EXPORT_FILE_NAME = "vscode-github-token.json"
 TOKEN_SHAPE = re.compile(r"^[A-Za-z0-9_-]+$")
+ACCOUNT_SHAPE = re.compile(r"^[A-Za-z0-9-]+$")
+SCOPE_SHAPE = re.compile(r"^[A-Za-z0-9:_-]+$")
 ASKPASS_PROMPT = re.compile(r"^(Username|Password) for '(?P<url>[^']+)':$")
 HELPER_PREFIX = "vscode-remote-containers-ipc-"
 HELPER_SOCKET_SUFFIX = ".sock"
@@ -121,15 +123,26 @@ def read_bridge_export(path: Path) -> Credential | None:
     token = _checked_token(token.strip(), "VS Code bridge")
     account = payload.get("account")
     raw_scopes = payload.get("scopes")
+    account_value = (
+        account
+        if isinstance(account, str) and ACCOUNT_SHAPE.fullmatch(account)
+        else None
+    )
     scopes = (
-        tuple(scope for scope in raw_scopes if isinstance(scope, str))
+        tuple(
+            scope
+            for scope in raw_scopes
+            if isinstance(scope, str)
+            and SCOPE_SHAPE.fullmatch(scope)
+            and token not in scope
+        )
         if isinstance(raw_scopes, list)
         else ()
     )
     return Credential(
         token=token.strip(),
         source="vscode-bridge",
-        account=account if isinstance(account, str) else None,
+        account=account_value,
         scopes=scopes,
     )
 
@@ -388,15 +401,23 @@ def validate(
     return Validation(login=login, scopes=tuple(scopes))
 
 
+def _safe_metadata(value: str, token: str) -> str:
+    """Return diagnostics-safe metadata that cannot echo the credential."""
+    return "-" if value and token in value else value
+
+
 def _format_credential(
     credential: Credential, validation: Validation | None = None
 ) -> str:
     """Format non-secret credential metadata for diagnostics."""
     scopes = validation.scopes if validation is not None else credential.scopes
+    safe_scopes = [
+        _safe_metadata(scope, credential.token) for scope in scopes
+    ]
     parts = [
         f"source={credential.source}",
-        f"account={credential.account or '-'}",
-        f"scopes={','.join(scopes) if scopes else '-'}",
+        f"account={_safe_metadata(credential.account or '-', credential.token)}",
+        f"scopes={','.join(scope for scope in safe_scopes if scope != '-') or '-'}",
     ]
     if validation is not None:
         parts.append(f"login={validation.login}")
@@ -462,7 +483,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the resolver CLI and return a process exit code."""
-    args = _build_parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if len(arguments) == 1 and _askpass_request(arguments[0]) is not None:
+        # Git invokes GIT_ASKPASS with only the prompt argument.
+        arguments = ["askpass", arguments[0]]
+    args = _build_parser().parse_args(arguments)
     resolve_kwargs: dict[str, Any] = {}
     if args.export is not None:
         resolve_kwargs["export_path"] = args.export

@@ -73,6 +73,25 @@ def test_read_bridge_export_rejects_token_with_unsupported_characters(
         read_bridge_export(export)
 
 
+def test_read_bridge_export_discards_metadata_that_echoes_the_token(
+    tmp_path: Path,
+) -> None:
+    export = _write_export(
+        tmp_path / "vscode-github-token.json",
+        {
+            "accessToken": "gho_secret",
+            "account": "gho_secret",
+            "scopes": ["gho_secret", "repo"],
+        },
+    )
+
+    credential = read_bridge_export(export)
+
+    assert credential is not None
+    assert credential.account is None
+    assert credential.scopes == ("repo",)
+
+
 def test_read_bridge_export_returns_none_when_absent(tmp_path: Path) -> None:
     assert read_bridge_export(tmp_path / "missing.json") is None
 
@@ -520,6 +539,44 @@ def test_main_askpass_prints_only_the_token(
     assert exit_code == 0
     assert captured.out == "super-secret\n"
     assert captured.err == ""
+
+
+def test_main_answers_git_askpass_directly(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(token="super-secret", source="vscode-bridge"),
+    )
+
+    exit_code = main(["Password for 'https://github.com':"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert captured.out == "super-secret\n"
+
+
+def test_main_describe_never_prints_metadata_that_echoes_the_token(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        vscode_github_token,
+        "resolve",
+        lambda **_kwargs: Credential(
+            token="super-secret",
+            source="vscode-bridge",
+            account="super-secret",
+            scopes=("super-secret", "repo"),
+        ),
+    )
+
+    exit_code = main(["describe"])
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "super-secret" not in captured.out
+    assert "scopes=repo" in captured.out
 
 
 def test_main_askpass_returns_a_non_secret_username(
