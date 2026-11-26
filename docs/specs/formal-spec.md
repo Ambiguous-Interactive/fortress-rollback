@@ -644,10 +644,11 @@ its recomputed local checksum:
 ```
 
 This is the AP/EL input-exchange posture: the receiver detects a genuine
-cross-basis divergence once a same-basis report arrives. The Z3 gate proofs are
-model-only (`z3_proof_different_basis_is_never_compared` and
-`z3_proof_desync_detection_no_false_negatives_on_comparison`). They prove the
-comparison primitive and the gate, not the Rust implementation.
+cross-basis divergence once a same-basis report arrives. The Z3 tests model the
+gate decision and the comparison primitive (`model_only`); they do not execute
+the Rust gate. The production gate is code-linked by the Rust tests
+`delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite` and
+`unknown_basis_tokens_are_never_compared`.
 
 ### SAFE-7b: Converged history shares a token
 
@@ -669,6 +670,14 @@ token", not the converse. This property is the target of #572
 (`ChecksumBasis.tla` plus Kani on the extracted tracker) and is not yet a proved
 property.
 
+The equality above covers conforming v6 sessions that never fold. A host with
+more simultaneously frozen slots than the wire event cap folds below-floor terms
+into the adopted `checksum_basis_base` (`record_checksum_freeze`), and
+`adopt_checksum_basis` cannot subtract an inherited folded term. A peer on that
+path can derive a different token for the same converged history. Such reports
+stay incomparable (skipped comparisons), so the exception costs availability and
+never creates a false latch.
+
 ### SAFE-7c: Rewrite clears stale latch state
 
 A confirmed-history rewrite at floor `r` invalidates every comparison at or above
@@ -680,7 +689,9 @@ A confirmed-history rewrite at floor `r` invalidates every comparison at or abov
 ```
 
 `SyncHealth::DesyncDetected` stays latched within one basis, not terminal for
-the session lifetime. The Rust tests
+the session lifetime. After a rewrite clears the latch, `sync_health()` returns
+`InSync` when the endpoint has a previously verified frame and `Pending`
+otherwise; both are unlatched. The Rust tests
 `freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated` and
 `delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite` cover the
 behavior. `ChecksumExchange.tla` latches a verdict per pair and does not yet
