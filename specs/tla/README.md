@@ -38,6 +38,7 @@ This directory contains TLA+ specifications for formally verifying the correctne
 | `Rollback.tla` | `Rollback.cfg` | ✓ CI | Rollback mechanism |
 | `Concurrency.tla` | `Concurrency.cfg` | ✓ CI | GameStateCell thread safety |
 | `ChecksumExchange.tla` | `ChecksumExchange.cfg` | ✓ CI | Checksum exchange for desync detection, per-(local,remote)-pair verdicts (N=3 peers) |
+| `ChecksumBasis.tla` | `ChecksumBasis.cfg` (+ `_BasisBlind.cfg` enforced demo-FAIL; `_Witness.cfg` manual non-vacuity) | ✓ CI | Protocol-v6 checksum basis token for one frozen slot. `FIX_MODE = "Basis"` sums one term per converged boundary, so survivors that converge to the same frozen history derive the same token; `FIX_MODE = "BasisBlind"` is the pre-#563 additive multiset and violates `NoPermanentFalseNegative` (the #562 false negative). Open latches are cleared on a boundary change (`LatchClearedAtRewrite`); a cross-basis report is discarded (`NoFalseLatchAcrossBasis`). Scope: 2 peers, 2 frames, one slot. |
 | `SpectatorSession.tla` | `SpectatorSession.cfg` | ✓ CI | Single-host spectator session with frame delay and catchup (multi-host failover is modeled separately in `SpectatorFailover.tla`) |
 | `TimeSync.tla` | `TimeSync.cfg` | ✓ CI | Per-endpoint rolling-window frame-advantage (pinned N=2; the cross-endpoint aggregation is modeled separately in `FrameAdvantageAggregation.tla`, see cfg) |
 | `PeerDrop.tla` | `PeerDrop.cfg` | ✓ CI | Halt vs ContinueWithout peer-drop policy model |
@@ -731,6 +732,21 @@ convergence-scope model.
 **Linearizability:**
 
 - Operations appear atomic (guaranteed by mutex)
+
+### ChecksumBasis.tla
+
+Focused protocol-v6 checksum-basis companion. One frozen slot, two peers, two
+frames. `FIX_MODE = "Basis"` keeps one term per converged boundary and proves
+`NoPermanentFalseNegative` (same converged history, same token),
+`NoFalseLatchAcrossBasis` (a latch is only created on an equal-token
+comparison), and `LatchClearedAtRewrite` (a boundary change at or above a latch
+frame retires it and bumps its generation). `FIX_MODE = "BasisBlind"` is the
+pre-#563 additive multiset and is an enforced expected-fail:
+`NoPermanentFalseNegative` is violated (the #562 permanent false negative).
+`ChecksumBasis_Witness.cfg` is a manual, deliberately-falsifiable reachability
+witness: a latch, a discarded cross-basis report, and a boundary-change clear
+are all reachable. The 64-bit collision bound and the folded/adopted basis
+exception are documented, not modeled.
 
 ### ChecksumExchange.tla
 

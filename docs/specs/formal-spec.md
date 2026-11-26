@@ -6,7 +6,7 @@
 
 # Fortress Rollback Formal Specification
 
-**Version:** 1.5
+**Version:** 1.6
 **Date:** November 26, 2026
 **Status:** Complete
 
@@ -14,6 +14,10 @@ This document provides a formal specification of Fortress Rollback's core compon
 
 ## Changelog
 
+- **v1.6 (2026-11-26):** Extracted `ChecksumBasisTracker` and added
+  `ChecksumBasis.tla` with an enforced `BasisBlind` expected-fail and a
+  non-vacuity witness; the five Kani proofs cover the transition and fold
+  kernels.
 - **v1.5 (2026-11-26):** Retired the stale Z3 desync claims and documented
   SAFE-7a/7b/7c: the basis-token comparison gate, the converged-history token
   property, and the confirmed-history rewrite that clears a latched mismatch.
@@ -666,9 +670,10 @@ A lower convergence replaces the slot's term; a higher re-detection is
 idempotent; reactivation removes it. The 64-bit token collision bound remains
 unproved: collisions follow the usual 64-bit birthday bound over the number of
 distinct bases compared in a session, and the claim is "same basis implies same
-token", not the converse. This property is the target of #572
-(`ChecksumBasis.tla` plus Kani on the extracted tracker) and is not yet a proved
-property.
+token", not the converse. `ChecksumBasis.tla` machine-checks this property for
+the conforming (non-folding) case (2 peers, 2 frames), and the five Kani
+harnesses on the extracted `ChecksumBasisTracker` cover the freeze transition,
+the fold, and the adopt/retained-token kernel (`src/sessions/checksum_basis.rs`).
 
 The equality above covers conforming v6 sessions that never fold. A host with
 more simultaneously frozen slots than the wire event cap folds below-floor terms
@@ -694,8 +699,9 @@ the session lifetime. After a rewrite clears the latch, `sync_health()` returns
 otherwise; both are unlatched. The Rust tests
 `freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated` and
 `delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite` cover the
-behavior. `ChecksumExchange.tla` latches a verdict per pair and does not yet
-model the rewrite transition.
+behavior. `ChecksumBasis.tla` models the boundary-change clear
+(`LatchClearedAtRewrite`); `ChecksumExchange.tla` latches a verdict per pair and
+does not model the rewrite.
 
 ---
 
@@ -875,7 +881,8 @@ implementation/test obligations.
 | Concurrency (GameStateCell)   | Loom | ✅ Implemented (`loom-tests/`)                    |
 | Time synchronization          | TLA+ | ✅ Implemented (`specs/tla/TimeSync.tla`)         |
 | Checksum exchange             | TLA+ | ✅ Implemented (`specs/tla/ChecksumExchange.tla`) |
-| Checksum basis-token gate and rewrite latch clearing | Z3 (model-only) + Rust tests | ✅ Gate and clearing behavior implemented and tested; converged-token algebra (`ChecksumBasis.tla`, Kani) tracked on #572 |
+| Checksum basis-token gate and rewrite latch clearing | Z3 (model-only) + Rust tests | ✅ Gate and clearing behavior implemented and tested |
+| Checksum basis token over converged history | TLA+ + Kani | ✅ Bounded model (`ChecksumBasis.tla`, 2 peers/2 frames; `BasisBlind` enforced expected-fail) and five Kani kernels (`src/sessions/checksum_basis.rs`) |
 | Spectator session             | TLA+ | ✅ Implemented (`specs/tla/SpectatorSession.tla`) |
 | Concurrency model             | TLA+ | ✅ Implemented (`specs/tla/Concurrency.tla`)      |
 | Graceful-drop barrier model | TLA+ | ✅ Implemented (`specs/tla/CoordinatedPeerDrop.tla`) |
@@ -889,6 +896,7 @@ implementation/test obligations.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.6     | 2026-11-26 | Extracted `ChecksumBasisTracker` (`src/sessions/checksum_basis.rs`) with five Kani proofs, and added `ChecksumBasis.tla` with the `BasisBlind` enforced expected-fail and a non-vacuity witness |
 | 1.5     | 2026-11-26 | Retired the stale Z3 "always trigger"/"terminal" desync claims; added SAFE-7a (basis-token gate), SAFE-7b (converged history shares a token; target of #572), and SAFE-7c (rewrite clears stale latch state); fixed the document version header |
 | 1.4     | 2026-11-25 | Checksum basis tokens derive from converged per-slot freeze boundaries, so survivors with the same frozen history share a token (and still change it on a lower boundary); negative event floors are rejected |
 | 1.3     | 2026-11-22 | Documented the protocol-v6 checksum basis token, which keeps delayed pre-rewrite reports incomparable with a recomputed basis |
