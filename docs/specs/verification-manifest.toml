@@ -48,28 +48,29 @@ residuals = []
 
 [[component]]
 id = "checksum-basis"
-status = "stale"
+status = "bounded"
 owner = "maintainer"
 last_reviewed = "2026-11-26"
-paths = ["src/sessions/p2p_session.rs", "src/network/messages.rs"]
-symbols = ["src/sessions/p2p_session.rs::checksum_basis_token_for", "src/sessions/p2p_session.rs::checksum_history_basis_token_for", "src/sessions/p2p_session.rs::basis_token_for_checksum"]
-specs = ["specs/tla/ChecksumExchange.tla"]
+paths = ["src/sessions/checksum_basis.rs", "src/sessions/p2p_session.rs", "src/network/messages.rs"]
+symbols = ["src/sessions/checksum_basis.rs::record_freeze", "src/sessions/checksum_basis.rs::token_at", "src/sessions/checksum_basis.rs::history_token_for", "src/sessions/p2p_session.rs::invalidate_checksum_mismatch_from"]
+specs = ["specs/tla/ChecksumExchange.tla", "specs/tla/ChecksumBasis.tla"]
+kani = ["proof_checksum_basis_same_converged_history_same_token", "proof_checksum_basis_lower_boundary_replaces_term", "proof_checksum_basis_higher_or_equal_redetection_idempotent", "proof_checksum_basis_token_unchanged_below_boundary", "proof_checksum_basis_adopt_preserves_tokens_above_snapshot"]
 z3 = ["z3_proof_checksum_comparison_guard", "z3_proof_different_basis_is_never_compared"]
-tests = ["sessions::p2p_session::tests::converged_freeze_histories_share_one_basis_token", "sessions::p2p_session::tests::unknown_basis_tokens_are_never_compared"]
-scope = "converged per-slot freeze boundaries; the 64-bit token collision bound is documented, not proved"
-residuals = [{ id = "basis-token-model", description = "ChecksumExchange.tla predates the v6 basis token; #572 adds ChecksumBasis.tla and Kani proofs", review_by = "2027-03-01" }]
+tests = ["sessions::checksum_basis::tests::old_additive_floor_multiset_diverges_from_converged_token", "sessions::p2p_session::tests::converged_freeze_histories_share_one_basis_token", "sessions::p2p_session::tests::unknown_basis_tokens_are_never_compared"]
+scope = "converged per-slot freeze boundaries; bounded TLA (2 peers, 2 frames) plus pure-kernel Kani; the 64-bit collision bound and the folded/adopted basis exception are documented, not proved"
+residuals = []
 
 [[component]]
 id = "checksum-latch"
-status = "stale"
+status = "bounded"
 owner = "maintainer"
 last_reviewed = "2026-11-26"
 paths = ["src/sessions/p2p_session.rs"]
 symbols = ["src/sessions/p2p_session.rs::invalidate_checksum_mismatch_from"]
-specs = ["specs/tla/ChecksumExchange.tla"]
+specs = ["specs/tla/ChecksumExchange.tla", "specs/tla/ChecksumBasis.tla"]
 tests = ["sessions::p2p_session::tests::freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated", "sessions::p2p_session::tests::delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite"]
-scope = "same-basis mismatch latches; rewrite clears latches and pending reports at or above the floor"
-residuals = [{ id = "latch-model", description = "the rewrite/latch-clearing transition is not modeled yet; #572 extends the checksum model", review_by = "2027-03-01" }]
+scope = "same-basis mismatch latches; a boundary change or rewrite clears latches and pending reports at or above the floor"
+residuals = []
 
 [[component]]
 id = "provisional-ready"

@@ -54,8 +54,8 @@ runtime refinement link:
 | --------- | ------ | ----------------------- | ---------------- | -------------- |
 | `sync-handshake` | modeled | `SyncHandshakeV1.tla`, `SyncHandshakeV1Fair.tla`, `SyncHandshakeV1Mismatch.tla`, `SyncHandshakeV1Trace.tla`; 2 Kani; 2 Rust tests | `src/network/protocol/mod.rs`, `src/network/protocol/state.rs`, `src/network/protocol/handshake_trace.rs` | none |
 | `input-queue-freeze` | modeled | `InputQueue.tla`, `FreezeConvergence.tla`; 2 Kani; 1 Z3; 1 Rust test | `src/input_queue/mod.rs` | none |
-| `checksum-basis` | stale | `ChecksumExchange.tla`; 2 Z3; 2 Rust tests | `src/sessions/p2p_session.rs`, `src/network/messages.rs` | basis-token-model (2027-03-01) |
-| `checksum-latch` | stale | `ChecksumExchange.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | latch-model (2027-03-01) |
+| `checksum-basis` | bounded | `ChecksumExchange.tla`, `ChecksumBasis.tla`; 5 Kani; 2 Z3; 3 Rust tests | `src/sessions/checksum_basis.rs`, `src/sessions/p2p_session.rs`, `src/network/messages.rs` | none |
+| `checksum-latch` | bounded | `ChecksumExchange.tla`, `ChecksumBasis.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
 | `provisional-ready` | unmodeled | 3 Rust tests | `src/sessions/p2p_session.rs` | ready-digest-model (2027-01-15) |
 | `terminal-epoch` | unmodeled | 2 Rust tests | `src/sessions/p2p_session.rs` | terminal-epoch-proof (2027-02-01) |
 | `coordinated-barrier` | modeled | `CoordinatedPeerDrop.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |

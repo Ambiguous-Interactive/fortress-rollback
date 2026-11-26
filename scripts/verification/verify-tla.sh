@@ -68,6 +68,7 @@ SPECS=(
     "Concurrency"
     "Rollback"
     "ChecksumExchange"
+    "ChecksumBasis"
     "TimeSync"
     "SpectatorSession"
     "SpectatorFailover"
@@ -90,6 +91,7 @@ SPECS=(
 EXPECTED_FAILURE_CHECKS=(
     "SyncHandshakeV1HandlersDisabled"
     "CoordinatedPeerDropImmediateMin"
+    "ChecksumBasisBlind"
 )
 
 # Positive companion configurations that share a base module but carry
@@ -460,6 +462,60 @@ verify_coordinated_peer_drop_immediate_min() {
     return 1
 }
 
+verify_checksum_basis_blind() {
+    local verbose="${1:-false}"
+    local label="ChecksumBasisBlind"
+    local output_file
+    output_file=$(mktemp)
+
+    local -a tlc_cmd=(
+        java
+        "-Xmx$TLA_MEMORY"
+        -XX:+UseParallelGC
+        -jar "$TLA_TOOLS_JAR"
+        -deadlock
+        -workers "$TLA_WORKERS"
+        -lncheck final
+        -config "$TLA_DIR/ChecksumBasis_BasisBlind.cfg"
+        "$TLA_DIR/ChecksumBasis.tla"
+    )
+    local -a run_cmd
+    if [[ -n "$TLA_SPEC_TIMEOUT" ]] && command -v timeout &> /dev/null; then
+        run_cmd=(timeout "$TLA_SPEC_TIMEOUT" "${tlc_cmd[@]}")
+    else
+        run_cmd=("${tlc_cmd[@]}")
+    fi
+
+    echo -e "${BLUE}Verifying $label expected counterexample...${NC}"
+    local exit_code=0
+    if [[ "$verbose" == "true" ]]; then
+        (cd "$TLA_DIR" && "${run_cmd[@]}") 2>&1 | tee "$output_file" || exit_code=$?
+    else
+        (cd "$TLA_DIR" && "${run_cmd[@]}") > "$output_file" 2>&1 || exit_code=$?
+    fi
+
+    local expected_property='Error: Invariant NoPermanentFalseNegative is violated.'
+    if [[ $exit_code -eq 12 ]] \
+        && grep -Fq "$expected_property" "$output_file" \
+        && grep -Fq 'Error: The behavior up to this point is:' "$output_file" \
+        && grep -qE '^[1-9][0-9,]* states generated,.* distinct states found' "$output_file" \
+        && ! grep -Eq 'Parsing or semantic analysis failed|Unable to access jarfile|Exception in thread|TLC threw' "$output_file"; then
+        echo -e "${GREEN}✓ $label produced the expected NoPermanentFalseNegative counterexample${NC}"
+        RESULTS[$label]="PASS"
+        ((PASSED++))
+        rm -f "$output_file"
+        return 0
+    fi
+
+    echo -e "${RED}✗ $label did not produce the required invariant counterexample${NC}"
+    echo "TLC output (last 20 lines):"
+    tail -20 "$output_file"
+    RESULTS[$label]="FAIL"
+    ((FAILED++))
+    rm -f "$output_file"
+    return 1
+}
+
 verify_coordinated_peer_drop_companion() {
     local label="$1"
     local cfg_file="$2"
@@ -679,6 +735,16 @@ main() {
 
         if ! verify_coordinated_peer_drop_companion \
             "CoordinatedPeerDropFaults" "CoordinatedPeerDrop_Faults.cfg" "$verbose"; then
+            any_failed=true
+        fi
+        echo ""
+    fi
+
+    # The additive-multiset regression is part of the checksum-basis gate.
+    if [[ "$any_failed" == "true" && "$fail_fast" == "true" ]]; then
+        :
+    elif [[ -z "$target_spec" || "$target_spec" == "ChecksumBasis" ]]; then
+        if ! verify_checksum_basis_blind "$verbose"; then
             any_failed=true
         fi
         echo ""

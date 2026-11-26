@@ -408,6 +408,11 @@ compute_partition_layout() {
 # Tier definitions - proofs grouped by approximate runtime
 # Tier 1: Fast proofs (<30s each) - simple property checks
 TIER1_PROOFS=(
+    # Checksum basis kernels (src/sessions/checksum_basis.rs)
+    "proof_checksum_basis_same_converged_history_same_token"
+    "proof_checksum_basis_lower_boundary_replaces_term"
+    "proof_checksum_basis_higher_or_equal_redetection_idempotent"
+    "proof_checksum_basis_token_unchanged_below_boundary"
     # Core frame/handle proofs (src/lib.rs)
     "proof_frame_new_valid"
     "proof_frame_null_consistency"
@@ -487,6 +492,8 @@ TIER1_PROOFS=(
 
 # Tier 2: Medium proofs (30s-2min each) - moderate complexity
 TIER2_PROOFS=(
+    # Checksum basis adoption kernel (bounded snapshot map)
+    "proof_checksum_basis_adopt_preserves_tokens_above_snapshot"
     # Core frame proofs (src/lib.rs)
     "proof_frame_add_small_safe"
     "proof_frame_sub_frames_correct"

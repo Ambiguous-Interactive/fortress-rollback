@@ -267,6 +267,9 @@ pub mod time_sync;
 pub mod sessions {
     #[doc(hidden)]
     pub mod builder;
+    /// Converged checksum-basis token tracker (extracted for Kani).
+    #[doc(hidden)]
+    pub(crate) mod checksum_basis;
     /// Configuration types for session behavior.
     #[doc(hidden)]
     pub mod config;

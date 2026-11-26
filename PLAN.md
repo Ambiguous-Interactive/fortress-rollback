@@ -8,7 +8,7 @@
 
 ## In progress
 
-_None._
+- [ ] #572 Prove the checksum basis token over converged freeze history — part (a) extraction + Kani and the remaining `ChecksumBasis.tla` companion. Claimed: ses_de6fd17caffetszqvtSz73umoT 2026-11-26T19:56:58Z. Expires: 2026-11-26T22:56:58Z. Exit: `ChecksumBasisTracker` is extracted with characterization evidence; the five listed Kani proofs are registered, pass, and each has RED evidence; `verify-tla.sh ChecksumBasis` passes with `BasisBlind` enforced expected-fail and a non-vacuous witness; no wire change.
 
 ## Future
 
