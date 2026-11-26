@@ -283,7 +283,12 @@ def registrations(root: Path) -> tuple[set[str], set[str], set[str]]:
         match = re.search(rf"^{array}=\((.*?)^\)", tla_text, re.DOTALL | re.MULTILINE)
         if match is not None:
             tla.update(re.findall(r'"([A-Za-z0-9_]+)"', match.group(1)))
-    kani = set(re.findall(r'"((?:proof|verify)_\w+)"', _read(root / VERIFY_KANI_REL) or ""))
+    kani_text = _read(root / VERIFY_KANI_REL) or ""
+    kani: set[str] = set()
+    for tier in (1, 2, 3):
+        match = re.search(rf"^TIER{tier}_PROOFS=\((.*?)^\)", kani_text, re.DOTALL | re.MULTILINE)
+        if match is not None:
+            kani.update(re.findall(r'"((?:proof|verify)_\w+)"', match.group(1)))
     z3 = set(re.findall(r"(?m)^\s*fn\s+(z3_\w+)\s*\(", _read(root / Z3_REL) or ""))
     return tla, kani, z3
 
@@ -468,20 +473,13 @@ def parse_git_diff(text: str) -> dict[str, FileDiff]:
     for line in text.splitlines():
         if line.startswith("diff --git "):
             current, in_hunk, old_path = None, False, ""
-        elif line.startswith("--- "):
-            old = line[4:].strip()
-            old_path = old[2:] if old.startswith("a/") else old
-        elif line.startswith("+++ "):
-            new = line[4:].strip()
-            deleted = new == "/dev/null"
-            path = old_path if deleted else (new[2:] if new.startswith("b/") else new)
-            current = raw.setdefault(path, [set(), [], [], False])
-            current[3] = deleted
-        elif current is not None and line.startswith("@@"):
+            continue
+        if current is not None and line.startswith("@@"):
             match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
             new_line = int(match.group(1)) if match else 0
             in_hunk = True
-        elif current is not None and in_hunk:
+            continue
+        if current is not None and in_hunk:
             if line.startswith("+"):
                 current[0].add(new_line)
                 current[1].append(line[1:])
@@ -490,6 +488,17 @@ def parse_git_diff(text: str) -> dict[str, FileDiff]:
                 current[2].append(line[1:])
             elif line.startswith(" "):
                 new_line += 1
+            continue
+        if line.startswith("--- "):
+            old = line[4:].strip()
+            old_path = old[2:] if old.startswith("a/") else old
+        elif line.startswith("+++ "):
+            new = line[4:].strip()
+            deleted = new == "/dev/null"
+            path = old_path if deleted else (new[2:] if new.startswith("b/") else new)
+            current = raw.setdefault(path, [set(), [], [], False])
+            current[3] = deleted
+            in_hunk = False
     return {
         path: FileDiff(path, frozenset(lines), tuple(added), tuple(removed), bool(deleted))
         for path, (lines, added, removed, deleted) in raw.items()
@@ -656,7 +665,8 @@ def _manifest_path(root: Path, argument: str | None) -> Path:
 def _cmd_check(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     try:
-        report = check_manifest(load_manifest(_manifest_path(root, args.manifest)), root)
+        manifest = load_manifest(_manifest_path(root, args.manifest))
+        report = check_manifest(manifest, root)
     except ManifestError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
@@ -668,7 +678,18 @@ def _cmd_check(args: argparse.Namespace) -> int:
     for message in report.errors:
         print(f"ERROR: {message}", file=sys.stderr)
     if report.ok:
-        print(f"model-impact check: OK ({len(report.errors)} errors, {len(report.warnings)} warnings)")
+        artifacts = sum(
+            len(component.specs)
+            + len(component.kani)
+            + len(component.z3)
+            + len(component.tests)
+            for component in manifest.components
+        )
+        print(
+            f"model-impact check: OK ({len(manifest.components)} components, "
+            f"{sum(len(component.symbols) for component in manifest.components)} symbols, "
+            f"{artifacts} artifacts)"
+        )
     return 0 if report.ok else 1
 
 
