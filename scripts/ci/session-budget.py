@@ -115,88 +115,149 @@ def _create_state_exclusive(
         raise
 
 
+def _ensure_lock_parent(lock_dir: Path) -> None:
+    """Create the lock parent, reporting filesystem failures as budget errors."""
+    try:
+        lock_dir.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise BudgetError(
+            f"cannot create the session budget lock directory at "
+            f"{lock_dir.parent}: {exc}"
+        ) from exc
+
+
+def _create_lock_directory(lock_dir: Path) -> bool:
+    """Create the lock directory, recreating a vanished parent once.
+
+    Returns ``True`` when this caller created the directory, and ``False``
+    when another writer already holds the path.
+    """
+    try:
+        os.mkdir(lock_dir)
+        return True
+    except FileExistsError:
+        return False
+    except FileNotFoundError:
+        # A caller using a temporary state directory can remove it between the
+        # parent mkdir and the lock mkdir. Recreate the parent once, then fail
+        # closed with a budget error instead of leaking a raw OSError.
+        _ensure_lock_parent(lock_dir)
+        try:
+            os.mkdir(lock_dir)
+            return True
+        except FileExistsError:
+            return False
+        except OSError as exc:
+            raise BudgetError(
+                f"cannot create the session budget lock at {lock_dir}: {exc}"
+            ) from exc
+    except OSError as exc:
+        raise BudgetError(
+            f"cannot create the session budget lock at {lock_dir}: {exc}"
+        ) from exc
+
+
 @contextmanager
 def _state_lock(
     path: Path, timeout: float = LOCK_TIMEOUT_SECONDS
 ) -> Iterator[Callable[[], None]]:
     """Serialize budget updates with a shared directory lock."""
     lock_dir = path.with_name(f"{path.name}.lock")
-    lock_dir.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_lock_parent(lock_dir)
     token = secrets.token_hex(16)
     owner = lock_dir / "owner"
     deadline = time.monotonic() + timeout
+    last_filesystem_error: OSError | None = None
+
+    def deadline_error() -> BudgetError:
+        if last_filesystem_error is None:
+            return BudgetError(f"another session is updating {path}")
+        return BudgetError(
+            f"cannot acquire the session budget lock at {lock_dir}: "
+            f"{last_filesystem_error}"
+        )
+
     while True:
         if time.monotonic() >= deadline:
-            raise BudgetError(f"another session is updating {path}")
-        try:
-            os.mkdir(lock_dir)
-        except FileExistsError:
+            raise deadline_error()
+        if _create_lock_directory(lock_dir):
             try:
-                modified = owner.stat().st_mtime
-            except FileNotFoundError:
-                try:
-                    modified = lock_dir.stat().st_mtime
-                except FileNotFoundError:
-                    continue
-            if time.time() - modified > LOCK_STALE_SECONDS:
-                try:
-                    observed_owner = owner.read_text(encoding="utf-8")
-                except FileNotFoundError:
-                    observed_owner = None
-                stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
-                try:
-                    os.rename(lock_dir, stale)
-                except OSError:
-                    continue
-                try:
-                    renamed_owner = (stale / "owner").read_text(encoding="utf-8")
-                    renamed_modified = (stale / "owner").stat().st_mtime
-                except FileNotFoundError:
-                    renamed_owner = None
-                    renamed_modified = None
-                except OSError:
-                    try:
-                        os.rename(stale, lock_dir)
-                    except OSError:
-                        pass
-                    raise
-                if renamed_owner != observed_owner or (
-                    renamed_modified is not None
-                    and time.time() - renamed_modified <= LOCK_STALE_SECONDS
-                ):
-                    # A heartbeat or a fresh owner replaced the stale lock
-                    # between our stat and rename. Put it back instead of
-                    # entering the critical section.
-                    try:
-                        os.rename(stale, lock_dir)
-                    except OSError:
-                        pass
-                    continue
-                shutil.rmtree(stale, ignore_errors=True)
+                handle = os.open(
+                    owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                )
+            except FileExistsError:
+                last_filesystem_error = None
+                time.sleep(0.01)
                 continue
-            if time.monotonic() >= deadline:
-                raise BudgetError(f"another session is updating {path}")
-            time.sleep(0.01)
-            continue
+            except FileNotFoundError as exc:
+                # A reaper can rename the directory between our mkdir and
+                # owner publication. Retry the acquisition within the deadline
+                # instead of failing the budget update; the JS lock retries
+                # ENOENT for the same window. Keep the cause so a persistent
+                # failure is not reported as contention.
+                last_filesystem_error = exc
+                time.sleep(0.01)
+                continue
+            except OSError:
+                # Do not remove lock_dir here: a reaper may have moved our
+                # directory and a replacement owner may now occupy the path.
+                raise
+            with os.fdopen(handle, "w", encoding="utf-8") as created:
+                created.write(token)
+            break
+
+        last_filesystem_error = None
         try:
-            handle = os.open(owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        except FileExistsError:
-            time.sleep(0.01)
-            continue
+            modified = owner.stat().st_mtime
         except FileNotFoundError:
-            # A reaper can rename the directory between our mkdir and owner
-            # publication. Retry the acquisition within the deadline instead
-            # of failing the budget update; the JS lock retries ENOENT for
-            # the same window.
-            time.sleep(0.01)
+            try:
+                modified = lock_dir.stat().st_mtime
+            except FileNotFoundError as exc:
+                # A dangling symlink makes mkdir fail with EEXIST while both
+                # stats fail with ENOENT. Sleep before retrying so the wait
+                # does not spin on one core.
+                last_filesystem_error = exc
+                time.sleep(0.01)
+                continue
+        if time.time() - modified > LOCK_STALE_SECONDS:
+            try:
+                observed_owner = owner.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                observed_owner = None
+            stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
+            try:
+                os.rename(lock_dir, stale)
+            except OSError:
+                continue
+            try:
+                renamed_owner = (stale / "owner").read_text(encoding="utf-8")
+                renamed_modified = (stale / "owner").stat().st_mtime
+            except FileNotFoundError:
+                renamed_owner = None
+                renamed_modified = None
+            except OSError:
+                try:
+                    os.rename(stale, lock_dir)
+                except OSError:
+                    pass
+                raise
+            if renamed_owner != observed_owner or (
+                renamed_modified is not None
+                and time.time() - renamed_modified <= LOCK_STALE_SECONDS
+            ):
+                # A heartbeat or a fresh owner replaced the stale lock
+                # between our stat and rename. Put it back instead of
+                # entering the critical section.
+                try:
+                    os.rename(stale, lock_dir)
+                except OSError:
+                    pass
+                continue
+            shutil.rmtree(stale, ignore_errors=True)
             continue
-        except OSError:
-            # Do not remove lock_dir here: a reaper may have moved our
-            # directory and a replacement owner may now occupy the path.
-            raise
-        with os.fdopen(handle, "w", encoding="utf-8") as created:
-            created.write(token)
-        break
+        if time.monotonic() >= deadline:
+            raise deadline_error()
+        time.sleep(0.01)
     stop = threading.Event()
 
     def heartbeat() -> None:
