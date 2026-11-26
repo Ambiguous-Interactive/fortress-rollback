@@ -553,7 +553,10 @@ def _symbol_hits(
         if not names:
             reasons.append(f"{path_text} (mapped path)")
             continue
-        if diff is not None and diff.deleted:
+        if diff is None:
+            reasons.append(f"{path_text} (new or untracked)")
+            continue
+        if diff.deleted:
             reasons.append(f"{path_text} (deleted)")
             continue
         hit = [
@@ -604,7 +607,16 @@ def affected_components(
 ) -> ImpactReport:
     """Map the diff from *base* to components and detect missing updates."""
     today = today or dt.date.today()
-    changed = {line.strip() for line in _git(root, "diff", "--name-only", "--no-color", base).splitlines() if line.strip()}
+    changed = {
+        line.strip()
+        for line in _git(root, "diff", "--name-only", "--no-color", base).splitlines()
+        if line.strip()
+    }
+    changed.update(
+        line.strip()
+        for line in _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
+        if line.strip()
+    )
     diffs = parse_git_diff(_git(root, "diff", "-U0", "--no-color", base))
     fn_index = function_index(root)
     impacts: list[ComponentImpact] = []

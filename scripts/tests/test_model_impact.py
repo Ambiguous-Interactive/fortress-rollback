@@ -225,6 +225,16 @@ def test_unknown_symbol_warns_but_does_not_fail(tmp_path: Path) -> None:
     assert any("advisory" in warning for warning in report.warnings)
 
 
+def test_untracked_mapped_path_is_flagged(tmp_path: Path) -> None:
+    manifest = _manifest().replace('"src/other.rs"', '"src/new.rs"').replace(
+        "src/demo.rs::mapped_fn", "src/new.rs::new_fn"
+    )
+    repo = build_repo(tmp_path, manifest)
+    (repo / "src" / "new.rs").write_text("pub fn new_fn() {}\n", encoding="utf-8")
+    report = run_affected(repo)
+    assert any("new or untracked" in reason for reason in report.impacts[0].reasons)
+
+
 # --- affected: mapped symbol drift -----------------------------------------
 
 
