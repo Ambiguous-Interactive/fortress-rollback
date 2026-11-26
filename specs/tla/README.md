@@ -45,6 +45,7 @@ This directory contains TLA+ specifications for formally verifying the correctne
 | `CoordinatorFailover.tla` | `CoordinatorFailover.cfg` (failover liveness) + `CoordinatorFailoverCompeting.cfg` (competing-cut safety) | ✓ CI | Bounded coordinator failover for coordinated graceful drop (#497): after a one-second coordinator-silence window the fixed fallback candidate (the deterministic second-lowest participant) acts for a reachable strict majority, admits the retained prepare, and drives the same quorum/cut/ready/commit path. An early coordinator message followed by silence is modeled by the unavailable-coordinator configuration (the model abstracts the message history into `COORD_AVAILABLE`); candidate selection is deterministic, not reachability-based; an unreachable candidate fails closed at the deadline. The main cfg isolates the coordinator and proves the fallback quorum eventually commits; the competing cfg lets the real coordinator choose a different cut and proves at most one cut can ever commit (quorum intersection plus one stable ready transcript per peer). Scope: one operation, fixed receipts, one ready transcript; loss/backfill/target acknowledgement remain Rust-level obligations. |
 | `CoordinatorSplitView.tla` | `CoordinatorSplitView.cfg` (+ `CoordinatorSplitViewLocal.cfg` manual demo-FAIL) | ✓ CI | Split-view participant-set safety for coordinated graceful drop (#504): two disjoint requester groups derive the participant set from the shared agreed membership epoch, so at most one group can hold a strict majority and `AtMostOneCommittedCut` holds non-vacuously (GROUP_B 5 / GROUP_F 3 / coordinator 1, quorum 5; GROUP_B commits, GROUP_F cannot). The manual local-view configuration derives `group + coordinator` per requester and is a manual demo-FAIL (not auto-run by `verify-tla.sh`): both groups commit different cuts. Scope: one target, group-internal all-ready abstraction; operation-identity binding and participant-digest validation are Rust-level obligations pinned by the deterministic split-view simulation row and the participant-derivation unit guards. |
 | `CoordinatedPeerDrop.tla` | `CoordinatedPeerDrop.cfg` (+ `_Fair.cfg` and `_Faults.cfg` positive companions; `_ImmediateMin.cfg` enforced demo-FAIL) | ✓ CI | Graceful-drop prepare/backfill/certificate/commit barrier implementation under review. `FIX_MODE = "Barrier"` checks a cut at the maximum of every exposed high-water and target receipt, two serialized operation IDs across two membership/target eras, value-bearing bounded backfill, independent/idempotent commit, stale-era rejection, and confirmed-history immutability. `FIX_MODE = "ImmediateMin"` reproduces D14. The fair companion proves two operations resolve with a receipt-raised cut, membership-era rebase, non-vacuous backfill, stale-message rejection, and duplicate handling; the arbitrary-loss fault companion proves any prepared, pre-commit operation eventually fails closed under its explicit fair fault/Fail-propagation assumptions. A certified local commit is irreversible: post-commit timeout only closes the bounded retransmission journal, and participant loss cannot convert it to failure. Scope: one target input stream and two fixed survivors; changing participant cardinality and endpoint/multi-handle composition remain Rust-level obligations. |
+| `CoordinatedReadyDigest.tla` | `CoordinatedReadyDigest.cfg` (+ `_ProvisionalCounts.cfg` enforced demo-FAIL; `_ProvisionalCountsSafety.cfg` and `_Witness.cfg` manual) | ✓ CI | Coordinated-drop provisional `Ready` digest gate (#529/#530). `FIX_MODE = "AuthorityLocked"` keeps a pre-digest non-authority Ready provisional: only the effective authority or independently verified local history locks the cut digest, a matching provisional is promoted, a mismatching one is discarded, and a counted Ready always matches the lock. `FIX_MODE = "ProvisionalCounts"` is the pre-#530 first-Ready-wins rule and violates `LockedDigestAuthorized`. Scope: 3 participants, one already-selected cut, two digests; cut selection/backfill are `CoordinatedPeerDrop.tla` and the coordinator fallback is `CoordinatorFailover.tla`. |
 | `NPeerReactivation.tla` | `NPeerReactivation.cfg` | ✓ CI | N-peer mesh reconnection activation-frame agreement (Agreement C) (N=3 survivors) |
 | `NPeerServeFreezeConvergence.tla` | `NPeerServeFreezeConvergence.cfg` (+ `_GateBlind.cfg` demo-FAIL, `_Witness.cfg` non-vacuity — both manual, not auto-run) | ✓ CI | N-peer hot-join SERVE GATE vs per-survivor freeze convergence (Session-33 round-5 Finding 1, `npeer_owed_freeze_readjust_at_or_below`), the companion to `NPeerReactivation.tla` that de-vacuizes its round-5 gates: models per-PEER freeze frames `f0` that initially differ (asymmetric loss), the owed downward re-adjust, and the coordinator serving a joiner a snapshot it cannot re-base below (fold-below-S, S58/S60). FIX_MODE ladder mirrors `DoubleFailureRelay.tla` (GateBlind → `NoServeDivergence` violated; Gate PASS safety+liveness). Closes the NPeerReactivation per-survivor-`f0` spec-budget residual (S33 residual 10) |
 | `FreezeConvergence.tla` | `FreezeConvergence.cfg` | ✓ CI | Cross-survivor freeze-value convergence to the global-min agreed frame (the c25fc1f desync fix, N=3 survivors) |
@@ -748,6 +749,37 @@ witness: a latch, a discarded cross-basis report, and a boundary-change clear
 are all reachable. The 64-bit collision bound and the folded/adopted basis
 exception are documented, not modeled.
 
+### CoordinatedReadyDigest.tla
+
+Focused companion to `CoordinatedPeerDrop.tla` for the #529/#530 provisional
+`Ready` digest gate. Three participants, one already-selected cut, two digests.
+`FIX_MODE = "AuthorityLocked"` keeps a pre-digest non-authority Ready in
+`provisional`: only the effective authority or the participant's independently
+installed local history locks the digest, a matching provisional is promoted, and
+a mismatching one is discarded. It checks `AtMostOneCommittedDigest`,
+`CommittedHistoriesAgree`, `ProvisionalNeverCounts`, and
+`LockedDigestAuthorized`, plus `ReadyAfterLock` and `ProvisionalNotCounted` as
+structural tripwires that guard future edits. `FIX_MODE = "ProvisionalCounts"` is the pre-#530
+first-Ready-wins rule and is an enforced expected-fail: a non-authority Ready
+locks a divergent digest (`LockedDigestAuthorized` violated).
+`CoordinatedReadyDigest_ProvisionalCountsSafety.cfg` is the manual negative
+result: the same buggy rule still satisfies `AtMostOneCommittedDigest`,
+`CommittedHistoriesAgree`, and `ProvisionalNeverCounts` here, because the model
+has a single certificate source (`Certify` by the authority, then `Accept`
+copying that digest) and one digest per participant. It does **not** test the
+quorum argument — that config passes at any quorum, and the model's commit
+invariants are structural. Production's additional guard is the strict-majority
+`coordinated_drop_quorum` (`participants.len() / 2 + 1`,
+`src/sessions/p2p_session.rs:2752-2754`, whose own contract comment says two
+disjoint certificates for one operation can never both complete); the model
+cites it rather than proving it. The reachable #529 harm is therefore the divergent lock,
+which later fails closed as `ConflictingHistory` in production
+(`coordinated_drop_mark_ready`/`apply_commit`), not two commits.
+`CoordinatedReadyDigest_Witness.cfg` is a manual reachability witness: a
+promotion, a discard, an authority commit, and a participant accept are all
+reachable. Cut selection and backfill are `CoordinatedPeerDrop.tla`; the
+coordinator/acting-fallback transition is `CoordinatorFailover.tla`.
+
 ### ChecksumExchange.tla
 
 All verdict state (`pendingChecksums`/`syncHealth`/`lastVerifiedFrame`) is keyed by ordered
@@ -841,6 +873,10 @@ Each spec has a `.cfg` file with TLC-compatible settings:
 | `FrameAdvantageAggregation.cfg` | NUM_ENDPOINTS=3, MAX_ADVANTAGE=4, MULTI_HANDLE_COUNT=2, MIN_RECOMMENDATION=3 (no symmetry) | ~26,200 distinct states (~901,000 generated) |
 | `SpectatorFailover.cfg` | HOSTS={1,2,3}, MAX_FRAME=3, NULL_FRAME=999 (no symmetry — canonical=min(live), liveness) | ~96,800 distinct states (~446,000 generated), ~6s single worker |
 | `SpectatorReactivationEpoch.cfg` | HOSTS={1,2}, MAX_FRAME=2, NULL_FRAME=999, MAXGEN=3, FIX_MODE="Epoch" (no symmetry — canonical=min(HOSTS)) | ~10,900 distinct states (~92,700 generated), ~3s single worker |
+| `CoordinatedReadyDigest.cfg` | PARTICIPANTS={0,1,2}, AUTHORITY=0, FIX_MODE="AuthorityLocked" | ~120,500 distinct states (~890,000 generated), ~1s workers-auto |
+| `CoordinatedReadyDigest_ProvisionalCounts.cfg` (demo, expected FAIL — safety) | same constants, FIX_MODE="ProvisionalCounts" (pre-#530 first-Ready-wins) | `LockedDigestAuthorized` violated: the authority locks a non-authority's divergent digest |
+| `CoordinatedReadyDigest_ProvisionalCountsSafety.cfg` (manual, expected **PASS**) | same constants, FIX_MODE="ProvisionalCounts", protocol invariants only | **No error found** — ~17,400 distinct states; the buggy rule still satisfies the commit invariants here because commits are single-source (a negative result, not a quorum proof) |
+| `CoordinatedReadyDigest_Witness.cfg` (manual demo, expected FAIL — non-vacuity) | same constants, FIX_MODE="AuthorityLocked" | `WitnessGoal` violated — a promotion, a discard, an authority commit, and a participant accept are all reachable |
 | `DoubleFailureRelay.cfg` | SURVIVORS={a,b,c}, MAX_FRAME=3, WINDOW=1, RECEIPTS={0,3}, FIX_MODE="MeshAgree" (no symmetry — liveness; links monotone-heal, weak fairness) | ~865,600 distinct states (~3.88M generated), ~2min single worker |
 | `DoubleFailureRelay_InheritedFloor.cfg` (demo, expected FAIL — safety) | same constants, FIX_MODE="InheritedFloor" (cache-only no-wire shortcut) | `NoConfirmedDivergence` violated in ~2min (corroborate-then-drop race) |
 | `DoubleFailureRelay_AsyncAckStale.cfg` (S47 demo, expected FAIL — safety) | same constants + EPOCH_MAX=2, FIX_MODE="AsyncAckStale" (in-flight ack, no epoch gate) | safety violated (`LockedRecordMatchesFreeze`) — the no-gate control |

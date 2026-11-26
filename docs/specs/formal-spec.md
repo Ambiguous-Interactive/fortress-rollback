@@ -6,7 +6,7 @@
 
 # Fortress Rollback Formal Specification
 
-**Version:** 1.6
+**Version:** 1.7
 **Date:** November 26, 2026
 **Status:** Complete
 
@@ -14,6 +14,11 @@ This document provides a formal specification of Fortress Rollback's core compon
 
 ## Changelog
 
+- **v1.7 (2026-11-26):** Added SAFE-12a and `CoordinatedReadyDigest.tla` for
+  the #529/#530 provisional `Ready` digest gate: only the effective authority or
+  independently verified local history locks the cut digest, a pre-lock
+  provisional does not count until promoted, and the pre-#530 first-Ready-wins
+  rule is an enforced expected-fail.
 - **v1.6 (2026-11-26):** Extracted `ChecksumBasisTracker` and added
   `ChecksumBasis.tla` with an enforced `BasisBlind` expected-fail and a
   non-vacuity witness; the five Kani proofs cover the transition and fold
@@ -840,6 +845,60 @@ The model covers one target input stream and two fixed survivor identities;
 changing participant cardinality and multi-handle endpoint composition remain
 implementation/test obligations.
 
+### SAFE-12a: Provisional Ready reports never lock or count
+
+A `Ready` report carries the cut and the digest of the history the reporter
+installed at that cut. Frame agreement alone does not establish history
+agreement, so a non-authority `Ready` that arrives while the digest is unlocked
+is provisional:
+
+```
+□(locked(p, C, d) → d = local_digest(p) ∨ d = authority_digest(C))
+□(counted(p, q, C, d) → d = locked(p, C))
+```
+
+Only the effective authority (the deterministic coordinator or the adopted
+acting fallback) or the receiver's independently verified local history may
+establish `locked(p, C, d)`. A provisional report is promoted only when its
+digest matches the established digest and is otherwise discarded. A pre-lock
+provisional never counts toward the strict-majority quorum; after promotion it
+counts because it now matches the authority-locked history. Before #530 a
+first-Ready-wins rule let a non-authority report lock a divergent digest
+(#529), which then rejected the authority's certificate and turned a healthy
+session into `ConflictingHistory`.
+
+`specs/tla/CoordinatedReadyDigest.tla` machine-checks this for three
+participants, one already-selected cut, and two digests. Its
+`FIX_MODE = "AuthorityLocked"` configuration checks `AtMostOneCommittedDigest`,
+`CommittedHistoriesAgree`, `ProvisionalNeverCounts` (a counted transcript
+equals the receiver's lock), and `LockedDigestAuthorized`, plus
+`ReadyAfterLock` and `ProvisionalNotCounted`. The last two are structural
+tripwires: the current transitions cannot violate them, so they guard future
+edits rather than describe an independent risk. `FIX_MODE = "ProvisionalCounts"`
+is the enforced expected-fail that violates `LockedDigestAuthorized`, and
+`CoordinatedReadyDigest_Witness.cfg` shows a promotion, a discard, an authority
+commit, and a participant accept are reachable.
+
+The manual `CoordinatedReadyDigest_ProvisionalCountsSafety.cfg` records a
+negative result: the buggy rule still satisfies the model's commit invariants.
+That is structural, not a quorum proof — the model has one certificate source
+(`Certify` by the authority, then `Accept` copying that digest) and one digest
+per participant, so it cannot reach two divergent commits at any quorum. The
+production guard against two certificates is the strict-majority
+`coordinated_drop_quorum` (`participants.len() / 2 + 1`,
+`src/sessions/p2p_session.rs:2752-2754`, whose contract comment states that two
+disjoint certificates for one operation can never both complete); this document
+cites that guard rather than proving it. The divergent-digest commit the #573
+text asks the demo to find is therefore unreachable under the issue's own
+assumptions, and the observed #529 impact is the divergent lock plus the
+fail-closed `ConflictingHistory` in `coordinated_drop_mark_ready` and
+`apply_commit`, not two commits. The production behavior is pinned by
+`non_authority_ready_cannot_lock_the_digest_or_count`,
+`matching_provisional_ready_is_promoted_when_authority_locks_the_digest`, and
+`local_history_locks_the_digest_despite_a_conflicting_provisional_ready`. Cut
+selection and backfill are `CoordinatedPeerDrop.tla`; the coordinator/acting
+fallback transition is `CoordinatorFailover.tla`.
+
 ---
 
 ## Constants
@@ -889,6 +948,7 @@ implementation/test obligations.
 | Coordinated-drop coordinator failover | TLA+ | ✅ Implemented (`specs/tla/CoordinatorFailover.tla` + competing-cut safety companion) |
 | Coordinated-drop split-view participant sets | TLA+ | ✅ Implemented (`specs/tla/CoordinatorSplitView.tla` + manual local-view demo-fail) |
 | Coordinated-drop terminal-epoch replay guard | Rust tests + exact-byte goldens | ✅ Implemented (`src/sessions/p2p_session.rs`, `src/network/wire_golden_v6.rs`) |
+| Coordinated-drop provisional `Ready` digest gate | TLA+ | ✅ Bounded 3-participant/1-cut/2-digest model (`specs/tla/CoordinatedReadyDigest.tla`; `ProvisionalCounts` enforced expected-fail) |
 
 ---
 
@@ -896,6 +956,7 @@ implementation/test obligations.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.7     | 2026-11-26 | Added SAFE-12a and `CoordinatedReadyDigest.tla`: only the authority or locally verified history locks the cut digest, provisional Ready reports never count, and the pre-#530 first-Ready-wins rule is an enforced expected-fail |
 | 1.6     | 2026-11-26 | Extracted `ChecksumBasisTracker` (`src/sessions/checksum_basis.rs`) with five Kani proofs, and added `ChecksumBasis.tla` with the `BasisBlind` enforced expected-fail and a non-vacuity witness |
 | 1.5     | 2026-11-26 | Retired the stale Z3 "always trigger"/"terminal" desync claims; added SAFE-7a (basis-token gate), SAFE-7b (converged history shares a token; target of #572), and SAFE-7c (rewrite clears stale latch state); fixed the document version header |
 | 1.4     | 2026-11-25 | Checksum basis tokens derive from converged per-slot freeze boundaries, so survivors with the same frozen history share a token (and still change it on a lower boundary); negative event floors are rejected |

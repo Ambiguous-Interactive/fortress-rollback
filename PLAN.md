@@ -12,7 +12,7 @@ _None._
 
 ## Future
 
-1. [ ] #573 Model the provisional `Ready` digest gate. Exit: `CoordinatedReadyDigest` passes in `AuthorityLocked` mode; `ProvisionalCounts` reproduces the divergent-digest commit; witness shows promotion is reachable; docs and FIX_MODE prose checks pass.
+1. [ ] #573 Model the provisional `Ready` digest gate. Exit: `CoordinatedReadyDigest` passes in `AuthorityLocked` mode; `ProvisionalCounts` is an enforced expected-fail that shows a non-authority `Ready` locking a divergent digest (the divergent-digest commit is unreachable under a strict-majority quorum and stays a documented negative result); the witness reaches promotion, discard, authority commit, and participant accept; docs and FIX_MODE prose checks pass.
 2. [ ] #574 Prove the coordinated-drop terminal epoch table invariants. Exit: the extracted table passes the listed Kani proofs; the old handles-only key fails the one-ahead case; `formal-spec.md` no longer claims "without a new model"; full tests pass.
 3. [ ] #575 Audit proof strength and retire non-binding Z3 claims. Exit: all `z3_*` tests are classified; a mutated basis gate leaves the stale desync tests green (recorded); stale claims are removed and at least one code-linked proof is added. Depends on #572.
 4. [ ] #576 Extract proofable decision kernels from `p2p_session`. Exit: at least one pure kernel (`ChecksumBasisTracker`, `ReadyTranscripts`, or `TerminalEpochTable`) is `pub(crate)` in its own module with characterization evidence and a Kani target; no public API, wire, or behavior change; full tier and preflight pass. One module per PR.

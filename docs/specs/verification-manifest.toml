@@ -74,15 +74,15 @@ residuals = []
 
 [[component]]
 id = "provisional-ready"
-status = "unmodeled"
+status = "bounded"
 owner = "maintainer"
 last_reviewed = "2026-11-26"
 paths = ["src/sessions/p2p_session.rs"]
 symbols = ["src/sessions/p2p_session.rs::coordinated_drop_promote_provisional_ready"]
-specs = []
+specs = ["specs/tla/CoordinatedReadyDigest.tla"]
 tests = ["sessions::p2p_session::tests::non_authority_ready_cannot_lock_the_digest_or_count", "sessions::p2p_session::tests::matching_provisional_ready_is_promoted_when_authority_locks_the_digest", "sessions::p2p_session::tests::local_history_locks_the_digest_despite_a_conflicting_provisional_ready"]
-scope = "only the authority or independently verified local history locks a cut digest; provisional Ready reports do not count"
-residuals = [{ id = "ready-digest-model", description = "CoordinatedPeerDrop.tla models Ready with a cut only; #573 adds CoordinatedReadyDigest.tla", review_by = "2027-01-15" }]
+scope = "one already-selected cut, three participants, two digests; only the effective authority or independently verified local history locks the cut digest, a matching provisional is promoted, a mismatching one is discarded, and a counted Ready matches the lock. The pre-#530 rule is an enforced expected-fail. Cut selection and the coordinator fallback are modeled separately"
+residuals = []
 
 [[component]]
 id = "terminal-epoch"

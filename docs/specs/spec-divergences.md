@@ -56,7 +56,7 @@ runtime refinement link:
 | `input-queue-freeze` | modeled | `InputQueue.tla`, `FreezeConvergence.tla`; 2 Kani; 1 Z3; 1 Rust test | `src/input_queue/mod.rs` | none |
 | `checksum-basis` | bounded | `ChecksumExchange.tla`, `ChecksumBasis.tla`; 5 Kani; 2 Z3; 3 Rust tests | `src/sessions/checksum_basis.rs`, `src/sessions/p2p_session.rs`, `src/network/messages.rs` | none |
 | `checksum-latch` | bounded | `ChecksumExchange.tla`, `ChecksumBasis.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
-| `provisional-ready` | unmodeled | 3 Rust tests | `src/sessions/p2p_session.rs` | ready-digest-model (2027-01-15) |
+| `provisional-ready` | bounded | `CoordinatedReadyDigest.tla`; 3 Rust tests | `src/sessions/p2p_session.rs` | none |
 | `terminal-epoch` | unmodeled | 2 Rust tests | `src/sessions/p2p_session.rs` | terminal-epoch-proof (2027-02-01) |
 | `coordinated-barrier` | modeled | `CoordinatedPeerDrop.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
 | `coordinator-failover` | modeled | `CoordinatorFailover.tla`, `CoordinatorFailoverCompeting.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
