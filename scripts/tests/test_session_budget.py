@@ -326,11 +326,160 @@ def test_lock_owner_publication_retry_is_deadline_bounded(
     monkeypatch.setattr(session_budget.os, "open", always_reaped_open)
 
     try:
-        with pytest.raises(session_budget.BudgetError, match="another session"):
+        with pytest.raises(
+            session_budget.BudgetError, match="cannot acquire"
+        ) as excinfo:
             with session_budget._state_lock(path, timeout=0.1):
                 pass
     finally:
         shutil.rmtree(lock_dir, ignore_errors=True)
+
+    # A persistent missing directory is a filesystem failure, not contention,
+    # and the carried cause names the problem.
+    assert "another session" not in str(excinfo.value)
+    assert "No such file or directory" in str(excinfo.value)
+
+
+def test_lock_does_not_steal_a_competing_owner_after_a_reap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    owner = lock_dir / "owner"
+    real_open = os.open
+    reaped = False
+
+    def competing_open(
+        target: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal reaped
+        if Path(target) == owner and not reaped:
+            reaped = True
+            shutil.rmtree(lock_dir, ignore_errors=True)
+            try:
+                real_open(target, flags, mode, dir_fd=dir_fd)
+            except FileNotFoundError as exc:
+                # A competing session wins the free path before our retry.
+                # The retry must wait for the live owner instead of stealing it.
+                lock_dir.mkdir()
+                (lock_dir / "owner").write_text("competitor", encoding="utf-8")
+                raise exc
+            raise AssertionError("expected the owner publication to fail")
+        return real_open(target, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(session_budget.os, "open", competing_open)
+
+    try:
+        with pytest.raises(session_budget.BudgetError, match="another session"):
+            with session_budget._state_lock(path, timeout=0.1):
+                pass
+        assert reaped
+        assert (lock_dir / "owner").read_text(encoding="utf-8") == "competitor"
+    finally:
+        shutil.rmtree(lock_dir, ignore_errors=True)
+
+
+def test_lock_recreates_a_state_directory_removed_during_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state" / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    real_mkdir = os.mkdir
+    vanished = False
+
+    def vanishing_mkdir(
+        target: str | os.PathLike[str],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal vanished
+        if Path(target) == lock_dir and not vanished:
+            vanished = True
+            # A caller using a temporary state directory can tear it down
+            # between our parent mkdir and the lock mkdir.
+            shutil.rmtree(lock_dir.parent)
+            raise FileNotFoundError(2, "No such file or directory", str(target))
+        real_mkdir(target, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(session_budget.os, "mkdir", vanishing_mkdir)
+
+    with session_budget._state_lock(path) as fence:
+        fence()
+        assert (lock_dir / "owner").is_file()
+
+    assert vanished
+    assert not lock_dir.exists()
+
+
+def test_lock_reports_a_budget_error_when_the_state_directory_cannot_be_recreated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "state" / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    real_mkdir = os.mkdir
+    vanished = False
+
+    def unrecoverable_mkdir(
+        target: str | os.PathLike[str],
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> None:
+        nonlocal vanished
+        if Path(target) == lock_dir:
+            vanished = True
+            shutil.rmtree(lock_dir.parent, ignore_errors=True)
+            raise FileNotFoundError(2, "No such file or directory", str(target))
+        if vanished:
+            raise PermissionError(13, "Permission denied", str(target))
+        real_mkdir(target, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(session_budget.os, "mkdir", unrecoverable_mkdir)
+
+    with pytest.raises(session_budget.BudgetError, match="cannot create"):
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+
+def test_lock_ownerless_dangling_path_sleeps_before_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    os.symlink(lock_dir.with_name("missing-lock-target"), lock_dir)
+    clock = [0.0]
+    sleeps: list[float] = []
+    calls = 0
+
+    def monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        # Without a sleep the fake clock never advances; fail instead of
+        # hanging the suite.
+        if calls > 1000:
+            raise AssertionError("lock acquisition spun without sleeping")
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(session_budget.time, "monotonic", monotonic)
+    monkeypatch.setattr(session_budget.time, "sleep", sleep)
+
+    with pytest.raises(session_budget.BudgetError, match="cannot acquire"):
+        with session_budget._state_lock(path, timeout=0.05):
+            pass
+
+    # A dangling symlink makes mkdir fail with EEXIST while both stats fail
+    # with ENOENT. The retry must sleep instead of spinning on one core.
+    assert sleeps
+    assert clock[0] >= 0.05
 
 
 def test_write_state_fence_rejects_a_lost_lock(tmp_path: Path) -> None:
