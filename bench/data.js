@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795723383256,
+  "lastUpdate": 1795729506142,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "cc117df56381ef998a0721ab647929f10c4edf4e",
-          "message": "test: kill the same-frame checksum-latch boundary mutant (#466)\n\n## RCA\n\nThe merge-group `Mutation Testing Summary` on main `8a4ec54` (PR #462)\nfailed:\n\n```text\nMISSED src/sessions/p2p_session.rs:13207:80: replace < with <= in\n       P2PSession<T>::compare_local_checksums_against_peers\nerror: diff scope has 1 missed mutants\n```\n\nThe line is the new per-peer mismatch latch predicate\n`remote_frame < latched`. No test delivered a second mismatch for the\n**same**\nframe, so the `<`/`<=` edge was equivalent for every exercised input.\n\n## Fix\n\nExtend\n`sync_health_reports_the_earliest_mismatch_regardless_of_arrival_order`:\nafter the earlier frame is latched, deliver a conflicting duplicate\nreport for\nthat same frame. `sync_health` must keep the first observed checksums\nfor that\nframe; with `<=` the latch rewrites the evidence and the test fails.\n\nVerified with the exact surviving mutant:\n\n```text\n$ cargo mutants -f src/sessions/p2p_session.rs \\\n    -F 'replace < with <= in P2PSession<T>::compare_local_checksums_against_peers' --baseline skip\nFound 1 mutant to test\n1 mutant tested in 76s: 1 caught\n```\n\n## Validation\n\n| Check | Result |\n| --- | --- |\n| `cargo nextest run --workspace --features tokio,json` | 3251 passed,\n75 skipped |\n| `cargo clippy --workspace --all-targets --features tokio,json -- -D\nwarnings` | clean |\n| `agent-preflight.py --full --auto-fix` | all checks passed |\n\nTest-only change; no production behavior or wire bytes change.",
-          "timestamp": "2026-11-17T23:17:57Z",
-          "tree_id": "5632992cff9811cc42b36ca2b8bff68f1bed9152",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/cc117df56381ef998a0721ab647929f10c4edf4e"
-        },
-        "date": 1794958247162,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 43775,
-            "range": "± 1143",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 27707,
-            "range": "± 416",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 861,
-            "range": "± 74",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1008,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 7940,
-            "range": "± 153",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 2840,
             "range": "± 199",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "4c2d33f4fbc0b0f976869a92e43295569f7004f9",
+          "message": "verification: extract the checksum basis kernel and prove it (#572) (#592)\n\n## Description\n\nCompletes the remaining #572 work: the `ChecksumBasisTracker`\nextraction, the\nfive Kani proofs, and the focused `ChecksumBasis.tla` companion (with\nthe\n`BasisBlind` enforced expected-fail and a non-vacuity witness). The\nZ3/docs\nslice landed earlier in #586 and the #589 corrections in #591.\n\n### Extraction (behavior-preserving)\n\n- Moves the five basis fields and the token/freeze methods out of\n  `src/sessions/p2p_session.rs` into `src/sessions/checksum_basis.rs`\n(`ChecksumBasisTracker`). The session keeps only the remote-report\nclearing\nin `invalidate_checksum_mismatch_from`, which delegates the per-frame\ntoken\n  retain to the tracker.\n- Adds the pure `freeze_action` transition and `fold_token` fold so the\nKani\nharnesses target the actual kernels instead of a whole session.\n`record_freeze`\n  and `token_at` call them.\n- The tracker's fields are `pub(crate)` so the existing characterization\ntests\n  can insert fixtures without changing their semantics.\n- `Default` is manual: `Frame::default()` is frame 0, not `Frame::NULL`,\nso a\nderived default made floor 0 look like an adopted fold. The hot-join cap\ntest\n  caught it (`basis.is_valid()` failed); the manual default restores the\n  pre-extraction `Frame::NULL` initialization.\n\n### Kani (five registered proofs)\n\n- `proof_checksum_basis_same_converged_history_same_token`\n- `proof_checksum_basis_lower_boundary_replaces_term`\n- `proof_checksum_basis_higher_or_equal_redetection_idempotent`\n- `proof_checksum_basis_token_unchanged_below_boundary`\n- `proof_checksum_basis_adopt_preserves_tokens_above_snapshot`\n\nAll five are in Tier 1 of `scripts/verification/verify-kani.sh`;\n`check-kani-coverage.sh` reports all 131 proofs covered.\n\n### TLA+\n\n`specs/tla/ChecksumBasis.tla` + `ChecksumBasis.cfg` (2 peers, frames\n0..1, one\nslot):\n\n- `NoPermanentFalseNegative`: peers frozen at the same converged\nboundary derive\n  the same token at every frame at or above it.\n- `NoFalseLatchAcrossBasis`: a latch is only created on an equal-token\n  comparison.\n- `LatchClearedAtRewrite`: a boundary change at or above a latch frame\nretires\n  it and bumps its generation.\n- `FIX_MODE = \"BasisBlind\"` (`ChecksumBasis_BasisBlind.cfg`) is the\npre-#563\n  additive multiset and is an enforced expected-fail:\n  `NoPermanentFalseNegative` is violated.\n- `ChecksumBasis_Witness.cfg` is a manual, deliberately falsifiable\n  reachability check; TLC reaches `{\"latched\", \"discarded\", \"cleared\"}`.\n\nRegistered in `verify-tla.sh` (`ChecksumBasis` in `SPECS`,\n`ChecksumBasisBlind` in the expected-failure path); README,\n`formal-spec.md`\n(SAFE-7b/7c and the verification row, version 1.6), and the verification\nmanifest (`checksum-basis`/`checksum-latch` now `bounded`, residuals\ncleared)\nare updated; the alignment table and wiki mirror are regenerated.\n\n## Size note\n\nThe diff is 1,063 insertions / 359 deletions, but 359 of those\ninsertions are\nthe moved implementation (the deletions are the old copies) and ~300 are\nthe\nmodel/config/docs; the net behavior change is the tracker extraction\nplus the\nproof kernels (~400 net lines). The kernel, the five proofs, the TLA\nmodel, and\nthe manifest entry are one verification story and are kept in one PR;\nthe Z3\nhalf was already split into #586/#591.\n\n## Type of Change\n\n- [x] ♻️ Refactor (behavior-preserving extraction)\n- [x] 🧪 Test (five Kani proofs, characterization/differential test)\n- [x] 📚 Documentation (formal spec, README, manifest, wiki)\n- [x] 🔧 CI/Build (Kani/TLA registration)\n\n## Verification Impact\n\n- [x] `updated: docs/specs/verification-manifest.toml` +\n      `specs/tla/ChecksumBasis.tla` + `src/sessions/checksum_basis.rs`\n- [x] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (see\n      Testing)\n\n`model-impact.py check` is OK (11 components, 32 symbols, 51 artifacts);\n`affected --base origin/main` reports no mapped impact because the\nmapped\nproduction paths changed by the extraction are accompanied by the\nmodel/proof\nupdate in the same diff.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] Zero-panic policy: no `unwrap`/`expect`/`panic!` added to\nproduction code;\nthe tracker keeps the existing `Result`/fallback style and `.get`/hash\n      fallbacks.\n- [x] I have added tests (characterization, differential, Kani, TLA).\n- [x] `cargo fmt --all -- --check` passes.\n- [x] `cargo clippy --workspace --all-targets --features tokio,json`\npasses.\n- [x] `cargo tfull` passes (`3789 passed, 77 skipped`).\n\n### If Applicable\n\n- [x] Documentation updated (formal spec, TLA README, manifest, wiki)\n- [ ] `CHANGELOG.md` not changed: internal refactor + verification only,\nno\n      user-visible behavior or API change\n- [ ] Examples not applicable\n- [x] No new compiler warnings\n\n## Testing\n\n```bash\n# Characterization baseline / after\ncargo test --lib basis\n# baseline on main: 9 passed\n# after extraction:  10 passed (the new differential test)\n\ncargo tfull\n# 3789 tests run: 3789 passed, 77 skipped\ncargo test --doc\n# 160 passed; 0 failed; 51 ignored\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features hot-join,tokio,json,sync-send --document-private-items\n# clean\ncargo clippy --workspace --all-targets --features tokio,json\n# clean\n\n# Kani (five Tier-1 proofs)\nRUSTFLAGS=\"--cap-lints=allow\" cargo kani --harness proof_checksum_basis_same_converged_history_same_token\n# VERIFICATION:- SUCCESSFUL (1/1)\n# ... the other four: SUCCESSFUL (1/1)\nbash scripts/verification/check-kani-coverage.sh\n# SUCCESS: All 131 Kani proofs are covered in tier lists.\n\n# TLA+\n./scripts/verification/verify-tla.sh ChecksumBasis\n# ChecksumBasis: PASS\n# ChecksumBasisBlind: PASS (expected NoPermanentFalseNegative counterexample)\njava ... -config specs/tla/ChecksumBasis_Witness.cfg ...\n# Invariant WitnessGoal violated at witness = {\"latched\",\"discarded\",\"cleared\"}\n\npython3 scripts/ci/agent-preflight.py --full --auto-fix      # all checks passed\npython3 scripts/verification/model-impact.py check           # OK, 51 artifacts\npython3 scripts/hooks/check-plan-hygiene.py                  # clean\nbash scripts/ci/check-doc-claims.sh                          # SUCCESS\npython3 scripts/docs/check-links.py                          # 0 errors, 0 warnings\npython3 scripts/docs/check-tla-config-consistency.py         # SUCCESS\nnpx markdownlint <changed markdown> --config .markdownlint.json  # clean\ntypos <changed files>                                        # clean\n```\n\n**RED evidence:**\n\n1. Kani proof mutation: removing the `freeze_action` down-only guard\nmakes\n   `proof_checksum_basis_same_converged_history_same_token` FAILED\n   (`assert_failed_inner`, restored after the run).\n2. Kani proof mutation: removing the `fold_token` `floor <= frame` guard\nmakes\n`proof_checksum_basis_token_unchanged_below_boundary` FAILED on the\nassertion\n   (restored after the run).\n3. Differential unit test\n`old_additive_floor_multiset_diverges_from_converged_token`: the\npre-#563\n   multiset token differs from the converged single-term token (#562).\n4. Negative result: the first extraction used `#[derive(Default)]`,\nwhich gave\n`fold_floor = 0`; the hot-join cap test failed on `basis.is_valid()`. A\nmanual\n   `Default` with `Frame::NULL` fixed it; 9/9 basis tests then passed.\n\n**Local Kani note:** the devcontainer's active Kani is 0.68.0 while\n`.kani-version` pins 0.67.0, and 0.68 adds a pre-existing lint in\n`src/sync_layer/mod.rs` under `deny(warnings)`. The local runs used\n`RUSTFLAGS=\"--cap-lints=allow\"`; no lint allowance was committed, and CI\nruns\nthe 0.67.0 pin.\n\n## Risks and Rollback\n\n- **Risk:** the extraction changes field access paths in ~70 test sites;\nthe\ncharacterization tests and the full suite guard it. No public API, wire,\nor\n  serialization change.\n- **Risk:** the TLA model is bounded (2 peers, 2 frames) and does not\nmodel the\nfolded/adopted basis exception or the 64-bit collision bound; those stay\n  documented as scope, not proved properties.\n- **Risk:** the pure Kani kernels do not cover the BTreeMap construction\nitself;\nthe cap characterization test and the `adopt` proof cover the map\ninputs.\n- **Rollback:** revert this PR; the tracker methods return to\n`p2p_session.rs`, the Kani/TLA registrations are removed, and the\nmanifest\n  returns to the stale residual.\n\n## Post-review additions\n\n- `ChecksumReport::basis_token` and `SyncHealth::InSync` now describe\nthe\nconverged-boundary token and rewrite clearing. `src/network/messages.rs`\nis\nalso mapped to `double-failure-relay`, so the manifest carries a\none-month,\nnamed waiver for that doc-only path; `checksum-basis` is updated by the\nnew\n  spec/proofs in the same diff.\n- `PLAN.md` removes the completed #572 item and leaves `In progress`\nempty.\n\n## Related Issues\n\n- Fixes #572\n- #589 (post-merge model corrections, merged in #591)\n- Tracking: #580",
+          "timestamp": "2026-11-26T21:34:29Z",
+          "tree_id": "b0b18060347acf2d25cf5065239f04750ca97810",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/4c2d33f4fbc0b0f976869a92e43295569f7004f9"
+        },
+        "date": 1795729504653,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 41543,
+            "range": "± 2038",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 24289,
+            "range": "± 582",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1091,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1243,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 2765,
+            "range": "± 168",
             "unit": "ns/iter"
           }
         ]
