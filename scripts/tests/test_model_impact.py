@@ -34,6 +34,7 @@ PAST = "2000-01-01"
 
 def _manifest(
     *,
+    status: str = "modeled",
     specs: str = '["specs/tla/Demo.tla"]',
     kani: str = '["proof_demo"]',
     z3: str = '["z3_proof_demo"]',
@@ -45,7 +46,7 @@ def _manifest(
 
 [[component]]
 id = "demo"
-status = "modeled"
+status = "{status}"
 owner = "maintainer"
 last_reviewed = "{TODAY.isoformat()}"
 paths = ["src/demo.rs", "src/other.rs"]
@@ -176,7 +177,7 @@ def test_unregistered_kani_harness_fails(tmp_path: Path) -> None:
 def test_missing_rust_test_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(tests='["demo::tests::missing_test"]'))
     report = run_check(repo)
-    assert any("has no definition" in error for error in report.errors)
+    assert any("has no #[test] definition" in error for error in report.errors)
 
 
 def test_missing_z3_proof_fails(tmp_path: Path) -> None:
@@ -210,6 +211,36 @@ def test_stale_residual_review_by_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(residual=residual))
     report = run_check(repo)
     assert any("review_by" in error and "has expired" in error for error in report.errors)
+
+
+def test_missing_alignment_document_fails_check(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    (repo / model_impact.DIVERGENCES_REL).unlink()
+    assert any("cannot read" in error for error in run_check(repo).errors)
+
+
+def test_deletion_inside_mapped_symbol_is_flagged(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", ""), encoding="utf-8")
+    report = run_affected(repo)
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_unmodeled_component_test_update_satisfies_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path, _manifest(status="unmodeled"))
+    demo = repo / "src" / "demo.rs"
+    text = demo.read_text(encoding="utf-8")
+    demo.write_text(
+        text.replace("    1\n", "    2\n").replace(
+            "assert_eq!(super::mapped_fn(), 1);",
+            "assert_eq!(super::mapped_fn(), 2);",
+        ),
+        encoding="utf-8",
+    )
+    report = run_affected(repo)
+    assert report.drifted == ()
+    assert report.impacts[0].verification_updated is True
 
 
 # --- check: symbol regex is advisory ---------------------------------------

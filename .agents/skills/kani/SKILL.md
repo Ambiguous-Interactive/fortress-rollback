@@ -346,9 +346,10 @@ Every new or changed harness needs one of:
 - a **non-vacuity witness**: a reachable-state test (or a sibling harness) that shows the
   precondition can hold and the interesting branch is exercised.
 
-Label the proof strength in the PR and manifest: `code_linked` (actual Rust kernel),
+Label the proof strength in the PR and in this reference: `code_linked` (actual Rust kernel),
 `model_only` (copied/re-implemented predicate), `bounded` (small configuration), or
-`witness_only` (reachability). See
+`witness_only` (reachability). The manifest's `status` is component-level; do not add
+per-harness labels to the manifest in this pass. See
 [../verification/references/model-impact.md](../verification/references/model-impact.md).
 
 Prefer extracting a pure, `pub(crate)` decision kernel over proving a whole session: Kani cannot

@@ -103,6 +103,7 @@ class Report(NamedTuple):
 class FileDiff(NamedTuple):
     path: str
     new_lines: frozenset[int]
+    old_lines: frozenset[int]
     added_text: tuple[str, ...]
     removed_text: tuple[str, ...]
     deleted: bool
@@ -275,6 +276,24 @@ def function_index(root: Path) -> dict[str, Path]:
     return index
 
 
+TEST_ATTR_RE = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
+
+
+def test_index(root: Path) -> dict[str, Path]:
+    """Map Rust ``#[test]``/``#[tokio::test]`` functions to their files."""
+    index: dict[str, Path] = {}
+    for path in _rust_files(root):
+        lines = (_read(path) or "").splitlines()
+        for line_number, line in enumerate(lines):
+            match = re.search(r"\bfn\s+(\w+)\s*\(", line)
+            if match is None:
+                continue
+            attributes = "\n".join(lines[max(0, line_number - 3) : line_number])
+            if TEST_ATTR_RE.search(attributes):
+                index.setdefault(match.group(1), path)
+    return index
+
+
 def registrations(root: Path) -> tuple[set[str], set[str], set[str]]:
     """Return registered TLA checks, Kani harnesses, and Z3 test names."""
     tla_text = _read(root / VERIFY_TLA_REL) or ""
@@ -317,7 +336,11 @@ def _covers(check: str, stem: str) -> bool:
 
 def tla_checks(component: Component) -> tuple[str, ...]:
     """Return the registered TLA check names for a component's specs."""
-    return tuple(Path(spec).stem for spec in component.specs)
+    names: list[str] = []
+    for spec in component.specs:
+        stem = Path(spec).stem
+        names.append(f"{stem}Contract" if stem.endswith("Trace") else stem)
+    return tuple(names)
 
 
 def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None) -> Report:
@@ -371,10 +394,10 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
             if proof not in z3:
                 errors.append(f"{cid}: Z3 proof '{proof}' is not defined in {Z3_REL}")
         if fn_index is None:
-            fn_index = function_index(root)
+            fn_index = test_index(root)
         for test in component.tests:
             if test.rsplit("::", 1)[-1] not in fn_index:
-                errors.append(f"{cid}: Rust test '{test}' has no definition under src/ or tests/")
+                errors.append(f"{cid}: Rust test '{test}' has no #[test] definition under src/ or tests/")
         residual_ids: set[str] = set()
         for residual in component.residuals:
             if residual.residual_id in residual_ids:
@@ -401,7 +424,7 @@ def _extract(text: str) -> str:
 def _render_errors(manifest: Manifest, root: Path) -> list[str]:
     text = _read(root / DIVERGENCES_REL)
     if text is None:
-        return []
+        return [f"{DIVERGENCES_REL}: cannot read the generated alignment document"]
     if BEGIN not in text or END not in text or text.index(END) < text.index(BEGIN):
         return [f"{DIVERGENCES_REL}: generated alignment markers are missing or out of order"]
     if _extract(text) != render_block(manifest):
@@ -472,6 +495,7 @@ def parse_git_diff(text: str) -> dict[str, FileDiff]:
     raw: dict[str, list[Any]] = {}
     current: list[Any] | None = None
     old_path = ""
+    old_line = 0
     new_line = 0
     in_hunk = False
     for line in text.splitlines():
@@ -479,18 +503,22 @@ def parse_git_diff(text: str) -> dict[str, FileDiff]:
             current, in_hunk, old_path = None, False, ""
             continue
         if current is not None and line.startswith("@@"):
-            match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
-            new_line = int(match.group(1)) if match else 0
+            match = re.match(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            old_line = int(match.group(1)) if match else 0
+            new_line = int(match.group(2)) if match else 0
             in_hunk = True
             continue
         if current is not None and in_hunk:
             if line.startswith("+"):
                 current[0].add(new_line)
-                current[1].append(line[1:])
+                current[2].append(line[1:])
                 new_line += 1
             elif line.startswith("-"):
-                current[2].append(line[1:])
+                current[1].add(old_line)
+                current[3].append(line[1:])
+                old_line += 1
             elif line.startswith(" "):
+                old_line += 1
                 new_line += 1
             continue
         if line.startswith("--- "):
@@ -500,12 +528,19 @@ def parse_git_diff(text: str) -> dict[str, FileDiff]:
             new = line[4:].strip()
             deleted = new == "/dev/null"
             path = old_path if deleted else (new[2:] if new.startswith("b/") else new)
-            current = raw.setdefault(path, [set(), [], [], False])
-            current[3] = deleted
+            current = raw.setdefault(path, [set(), set(), [], [], False])
+            current[4] = deleted
             in_hunk = False
     return {
-        path: FileDiff(path, frozenset(lines), tuple(added), tuple(removed), bool(deleted))
-        for path, (lines, added, removed, deleted) in raw.items()
+        path: FileDiff(
+            path,
+            frozenset(lines),
+            frozenset(old_lines),
+            tuple(added),
+            tuple(removed),
+            bool(deleted),
+        )
+        for path, (lines, old_lines, added, removed, deleted) in raw.items()
     }
 
 
@@ -518,8 +553,8 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout
 
 
-def _fn_range(path: Path, name: str) -> tuple[int, int] | None:
-    lines = (_read(path) or "").splitlines()
+def _fn_range_text(text: str, name: str) -> tuple[int, int] | None:
+    lines = text.splitlines()
     for start, line in enumerate(lines):
         if not re.search(rf"\bfn\s+{re.escape(name)}\b", line):
             continue
@@ -534,15 +569,28 @@ def _fn_range(path: Path, name: str) -> tuple[int, int] | None:
     return None
 
 
+def _fn_range(path: Path, name: str) -> tuple[int, int] | None:
+    return _fn_range_text(_read(path) or "", name)
+
+
 def _range_hit(diff: FileDiff | None, span: tuple[int, int] | None) -> bool:
     return bool(diff and span and any(span[0] <= line <= span[1] for line in diff.new_lines))
 
 
+def _range_hit_old(diff: FileDiff | None, span: tuple[int, int] | None) -> bool:
+    return bool(diff and span and any(span[0] <= line <= span[1] for line in diff.old_lines))
+
+
 def _symbol_hits(
-    root: Path, component: Component, changed: set[str], diffs: dict[str, FileDiff]
+    root: Path,
+    component: Component,
+    changed: set[str],
+    diffs: dict[str, FileDiff],
+    base: str,
 ) -> list[str]:
     reasons: list[str] = []
     symbol_paths = {symbol.partition("::")[0] for symbol in component.symbols}
+    base_cache: dict[str, str] = {}
     for path_text in sorted(changed & (set(component.paths) | symbol_paths)):
         names = [
             symbol.partition("::")[2]
@@ -559,14 +607,24 @@ def _symbol_hits(
         if diff.deleted:
             reasons.append(f"{path_text} (deleted)")
             continue
-        hit = [
-            name
-            for name in names
-            if _range_hit(diff, _fn_range(root / path_text, name))
-            or (diff is not None and any(name in line for line in diff.added_text + diff.removed_text))
-        ]
-        if hit:
-            reasons.append(f"{path_text} ({', '.join(hit)})")
+        if path_text not in base_cache:
+            try:
+                base_cache[path_text] = _git(root, "show", f"{base}:{path_text}")
+            except GitError:
+                base_cache[path_text] = ""
+        hit_names: list[str] = []
+        for name in names:
+            current_span = _fn_range(root / path_text, name)
+            base_span = _fn_range_text(base_cache[path_text], name)
+            if _range_hit(diff, current_span) or _range_hit_old(diff, base_span):
+                hit_names.append(name)
+            elif any(
+                re.search(DEFINITION_RE.format(name=re.escape(name)), line)
+                for line in diff.added_text + diff.removed_text
+            ):
+                hit_names.append(name)
+        if hit_names:
+            reasons.append(f"{path_text} ({', '.join(hit_names)})")
         elif not any(_fn_range(root / path_text, name) for name in names):
             reasons.append(f"{path_text} (mapped path; symbol ranges not found)")
     return reasons
@@ -578,14 +636,22 @@ def _verification_updated(
     changed: set[str],
     diffs: dict[str, FileDiff],
     fn_index: dict[str, Path],
+    test_idx: dict[str, Path],
 ) -> bool:
     if any(spec in changed for spec in component.specs):
         return True
     z3_rel = Z3_REL.as_posix()
     if any(_range_hit(diffs.get(z3_rel), _fn_range(root / Z3_REL, proof)) for proof in component.z3):
         return True
-    for name in (*component.kani, *(test.rsplit("::", 1)[-1] for test in component.tests)):
+    for name in component.kani:
         location = fn_index.get(name)
+        if location is not None and _range_hit(
+            diffs.get(location.relative_to(root).as_posix()), _fn_range(location, name)
+        ):
+            return True
+    for test in component.tests:
+        name = test.rsplit("::", 1)[-1]
+        location = test_idx.get(name)
         if location is not None and _range_hit(
             diffs.get(location.relative_to(root).as_posix()), _fn_range(location, name)
         ):
@@ -619,9 +685,10 @@ def affected_components(
     )
     diffs = parse_git_diff(_git(root, "diff", "-U0", "--no-color", base))
     fn_index = function_index(root)
+    test_idx = test_index(root)
     impacts: list[ComponentImpact] = []
     for component in manifest.components:
-        reasons = _symbol_hits(root, component, changed, diffs)
+        reasons = _symbol_hits(root, component, changed, diffs, base)
         if not reasons:
             continue
         waiver = next(
@@ -637,7 +704,7 @@ def affected_components(
                 component,
                 tuple(reasons),
                 _commands(component),
-                _verification_updated(root, component, changed, diffs, fn_index),
+                _verification_updated(root, component, changed, diffs, fn_index, test_idx),
                 waiver,
             )
         )

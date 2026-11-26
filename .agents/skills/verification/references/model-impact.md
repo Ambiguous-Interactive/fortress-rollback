@@ -85,12 +85,14 @@ Rules:
 
 - `modeled` -- the listed model/proofs cover the mapped behavior; a change needs an update.
 - `bounded` -- the model covers a stated bound; a change at production scale needs an update.
-- `unmodeled` -- no model/proof exists yet; any change needs a waiver until the gap is closed.
-- `stale` -- a model exists but predates current behavior; any change needs a waiver or the model
-  update that makes it current.
+- `unmodeled` -- no model/proof exists yet; a change needs a mapped spec/proof/test update or a waiver.
+- `stale` -- a model exists but predates current behavior; a change needs the model update, a
+  mapped spec/proof/test update, or a waiver.
 
-`unmodeled` and `stale` are deliberate debt markers, not passing grades. The residual `review_by`
-date forces re-triage; an expired date fails `check`.
+The gate accepts any mapped spec/proof/test edit or an active waiver. Status is a review signal
+that decides what the reviewer should demand, not a separate enforcement branch. `unmodeled` and
+`stale` are deliberate debt markers, not passing grades. The residual `review_by` date forces
+re-triage; an expired date fails `check`.
 
 ## Waivers
 
