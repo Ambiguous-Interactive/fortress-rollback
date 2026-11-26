@@ -82,8 +82,10 @@ session is re-marked with the new session's start; its original creation time st
 the rolling limit.
 
 The required `Session Budget` check counts every same-author PR created in the three hours before
-the current PR, independent of the session ID. Three or more fail, and a PR created more than three
-hours after its current session start fails. A fresh marker cannot bypass the rolling count.
+the check run, independent of the session ID. Three or more fail, and a PR created more than three
+hours after its current session start fails. A fresh marker cannot bypass the rolling count. The
+window advances with the check, so a PR becomes mergeable once the older PRs age out; a rerun is a
+valid recovery and does not require closing and reopening the PR.
 
 RCA for the original gap: the clock was chat-scoped, the PR cap was prose only, and the first
 worktree lease needed an operator `close` before the next session could start. A continuation prompt

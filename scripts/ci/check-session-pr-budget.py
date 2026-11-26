@@ -83,7 +83,12 @@ def evaluate_session_budget(
     window: timedelta = timedelta(hours=DEFAULT_WINDOW_HOURS),
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Validate one PR and count every same-author PR in the rolling window."""
+    """Validate one PR and count every same-author PR in the rolling window.
+
+    The window ends at the check time, not at the candidate PR's creation
+    time. Otherwise a PR opened within three hours of two prior PRs can never
+    pass, even after those PRs age out (#583).
+    """
     if max_prs < 1:
         raise BudgetError("max_prs must be positive")
     if window <= timedelta(0) or window > timedelta(hours=MAX_WINDOW_HOURS):
@@ -109,20 +114,20 @@ def evaluate_session_budget(
         )
 
     author = _pr_author(pr)
-    window_start = created - window
+    window_start = current - window
     candidates: dict[int, dict[str, Any]] = {}
     for other in all_prs:
         if _pr_author(other) != author:
             continue
         other_created = _pr_created(other)
-        if window_start <= other_created <= created:
+        if window_start <= other_created <= current:
             candidates[_pr_number(other)] = other
     candidates[_pr_number(pr)] = pr
     numbers = sorted(candidates)
     if len(numbers) > max_prs:
         raise BudgetError(
             f"{len(numbers)} PRs by {author} were created in the "
-            f"{window.total_seconds() / 3600:.0f}-hour window ending at the current PR: "
+            f"{window.total_seconds() / 3600:.0f}-hour window ending at this check: "
             f"{numbers}; the maximum is {max_prs}"
         )
 
