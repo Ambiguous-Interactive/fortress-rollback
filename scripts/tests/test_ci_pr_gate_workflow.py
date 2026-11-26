@@ -123,7 +123,6 @@ def test_pr_gate_has_one_aggregate_required_job() -> None:
         "api-census",
         "wasm-check",
         "kani-compile",
-        "session-budget",
     }
 
     step = gate["steps"][0]
@@ -134,33 +133,15 @@ def test_pr_gate_has_one_aggregate_required_job() -> None:
     assert '.result == "neutral"' in step["run"]
 
 
-def test_pr_gate_enforces_the_session_budget() -> None:
-    """The required gate must count PRs and reject a stale session marker."""
+def test_pr_gate_does_not_enforce_the_rolling_session_budget() -> None:
+    """The rolling three-hour PR window was removed by operator request.
+
+    The session lease still tracks the 180-minute clock and claimed PRs; the
+    required gate now only aggregates the code checks.
+    """
     jobs = _load(PR_GATE)["jobs"]
-    job = jobs["session-budget"]
-
-    assert job["name"] == "Session Budget"
-    assert job["timeout-minutes"] == 5
-    step = job["steps"][-1]
-    assert "check-session-pr-budget.py" in step["run"]
-    assert "pull_request.number" in step["env"]["PR_NUMBER"]
-    assert "merge_group.head_ref" in step["env"]["MERGE_GROUP_HEAD_REF"]
-    assert "pull_request.base.sha" in step["env"]["BASE_SHA"]
-    assert "merge_group.base_sha" in step["env"]["BASE_SHA"]
-
-    checkouts = [
-        candidate for candidate in job["steps"] if candidate.get("uses") == "actions/checkout@v7"
-    ]
-    assert len(checkouts) == 2
-    assert checkouts[0]["with"]["path"] == "base"
-    assert "pull_request.base.sha" in checkouts[0]["with"]["ref"]
-    assert checkouts[1]["with"]["path"] == "pr"
-
-    run = step["run"]
-    assert "base/scripts/ci/check-session-pr-budget.py" in run
-    assert "pr/scripts/ci/check-session-pr-budget.py" in run
-    assert 'python3 "$TRUSTED_SCRIPT"' in run
-    assert "bootstrap uses the PR copy" in run
+    assert "session-budget" not in jobs
+    assert "session-budget" not in jobs["gate"]["needs"]
 
 
 def test_pr_gate_compiles_the_cfg_kani_tree_without_running_proofs() -> None:

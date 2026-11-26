@@ -1,6 +1,6 @@
 ---
 name: session-loop
-description: "Run one agentic work session from triage to a merged green PR. Use when starting or coordinating a coding session, choosing unblocked work, auditing recent PR feedback, enforcing the 3-hour budget, or closing out with a synced repository. Do NOT use for feature design or deep code review; load dev-pipeline, code-review, or the owning area skill."
+description: "Run one agentic work session from triage to a merged green PR. Use when starting or coordinating a coding session, choosing unblocked work, auditing recent PR feedback, enforcing the 180-minute budget, or closing out with a synced repository. Do NOT use for feature design or deep code review; load dev-pipeline, code-review, or the owning area skill."
 ---
 
 # Session Loop
@@ -66,31 +66,14 @@ Use the exact `session_id` that `check --json` prints. OpenCode IDs look like `s
 add a `session-` prefix to them.
 
 The plugin blocks mutating tools at 180 minutes and leaves read-only inspection available. It warns
-after the second claimed PR but keeps the tools needed to finish that PR; the required CI check is
-the hard PR cap. The operator never has to run `close`: a new session hands itself off automatically.
-At closeout the agent runs `close` so the next session starts with a clean lease, but a missed close
-only delays the handoff until the lease is idle or expired.
+after the second claimed PR but keeps the tools needed to finish that PR. The operator never has to
+run `close`: a new session hands itself off automatically. At closeout the agent runs `close` so the
+next session starts with a clean lease, but a missed close only delays the handoff until the lease is
+idle or expired.
 
-Every PR body must include:
-
-```text
-<!-- session: <id> started: <ISO8601 with Z or offset> -->
-```
-
-The marker belongs to the session that currently owns the PR. A PR carried over from an earlier
-session is re-marked with the new session's start; its original creation time still counts against
-the rolling limit.
-
-The required `Session Budget` check counts every same-author PR created in the three hours before
-the check run, independent of the session ID. Three or more fail, and a PR created more than three
-hours after its current session start fails. A fresh marker cannot bypass the rolling count. The
-window advances with the check, so a PR becomes mergeable once the older PRs age out; a rerun is a
-valid recovery and does not require closing and reopening the PR.
-
-RCA for the original gap: the clock was chat-scoped, the PR cap was prose only, and the first
-worktree lease needed an operator `close` before the next session could start. A continuation prompt
-could look like a new session, and no check counted opened PRs. The automatic handoff, the rolling
-required check, and the PR marker replace all three controls.
+The rolling three-hour, two-PR CI window and its PR-body session marker were removed by operator
+request on 2026-11-26. The lease still enforces the 180-minute clock and the per-session claimed-PR
+count; "one open authored PR at a time" and the two-PR session cap remain prose rules.
 
 ## Step 1: Sync and triage
 
@@ -134,9 +117,8 @@ A second PR may be opened only when all of these hold:
 - The session still has one open authored PR at a time.
 
 Maximum two opened PRs per session. Merging an already-open green PR from a previous session does
-not count. The exception is optional; closeout quality comes first. The required `Session Budget`
-check is the backstop: a third PR in the rolling three-hour window fails even when the local claim is
-missing.
+not count. The exception is optional; closeout quality comes first. The lease records claimed PRs,
+but the two-PR cap is a prose rule; do not treat a missing local claim as permission to exceed it.
 
 ## Step 3: Deep analysis (only if no work)
 
@@ -211,11 +193,10 @@ Add the WASM or deep lane when the trigger table requires it. Do not open a PR w
 required check.
 
 The PR must state the goal, evidence, risks, rollback, and the item link, and fill
-`.github/PULL_REQUEST_TEMPLATE.md`. Include
-`<!-- session: <id> started: <ISO8601 with Z or offset> -->` in the body. A PR carried over from an earlier session
-is re-marked with the current session's start; the rolling count still uses the PR creation time. Do
-not check boxes for checks that were not run. After opening the PR, run
-`python3 scripts/ci/session-budget.py claim-pr --id <session_id from check --json> --number <PR>`.
+`.github/PULL_REQUEST_TEMPLATE.md`. Do not check boxes for checks that were not run. After opening
+the PR, run
+`python3 scripts/ci/session-budget.py claim-pr --id <session_id from check --json> --number <PR>`
+so the lease records it.
 
 Review and CI budget:
 

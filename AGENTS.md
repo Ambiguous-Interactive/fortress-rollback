@@ -4,7 +4,7 @@ Read and follow these before making changes:
 
 1. [`.agents/skills/fortress-development/SKILL.md`](.agents/skills/fortress-development/SKILL.md) —
    canonical project context and engineering policy.
-2. [`.agents/skills/session-loop/SKILL.md`](.agents/skills/session-loop/SKILL.md) — the 3-hour,
+2. [`.agents/skills/session-loop/SKILL.md`](.agents/skills/session-loop/SKILL.md) — the 180-minute,
    one-item, one-PR session contract.
 
 Use [the question template](.agents/skills/fortress-development/assets/ask-user-question.md) when a
