@@ -1,0 +1,160 @@
+# Code-to-verification manifest (schema 1).
+#
+# Each [[component]] maps production paths and symbols to the TLA+ specs,
+# Kani harnesses, Z3 proofs, and Rust tests that keep it honest.
+# `scripts/verification/model-impact.py` validates this file and maps diffs to
+# components; a mapped code change needs a mapped spec/proof/test update in the
+# same diff or an explicit [[waiver]].
+#
+# status:
+#   modeled   - a model and/or executable proof covers the component
+#   bounded   - a model covers a bounded configuration only
+#   unmodeled - no model or proof exists yet; changes need a waiver
+#   stale     - the model predates current behavior; changes need a waiver
+#
+# TLA check names derive from the spec file stems (a `*Trace.tla` spec maps to
+# its registered `<stem>Contract` check). Symbols are advisory `path::name`
+# definitions; paths, specs, harnesses, proofs, and tests fail closed.
+# Expired residual review_by dates fail the check so the gap is re-triaged.
+
+schema_version = 1
+
+[[component]]
+id = "sync-handshake"
+status = "modeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/network/protocol/mod.rs", "src/network/protocol/state.rs", "src/network/protocol/handshake_trace.rs"]
+symbols = ["src/network/protocol/mod.rs::observe_handshake", "src/network/protocol/mod.rs::activate_handshake_trace", "src/network/protocol/mod.rs::handshake_trace", "src/network/protocol/state.rs::ProtocolState"]
+specs = ["specs/tla/SyncHandshakeV1.tla", "specs/tla/SyncHandshakeV1Fair.tla", "specs/tla/SyncHandshakeV1Mismatch.tla", "specs/tla/SyncHandshakeV1Trace.tla"]
+kani = ["proof_state_index_domain", "proof_event_partial_eq_symmetric"]
+tests = ["network::protocol::tests::handshake_mismatch_reports_each_field_in_locked_precedence_order", "network::protocol::tests::handshake_trace_records_exact_handler_and_duplicate_order"]
+scope = "two peers, two fixed-width config fields, bounded retries; the trace contract excludes digest/token entropy"
+residuals = []
+
+[[component]]
+id = "input-queue-freeze"
+status = "modeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/input_queue/mod.rs"]
+symbols = ["src/input_queue/mod.rs::freeze_at", "src/input_queue/mod.rs::freeze_at_prevalidated_cut", "src/input_queue/mod.rs::refreeze_with_value", "src/input_queue/mod.rs::roll_confirmed_input_to"]
+specs = ["specs/tla/InputQueue.tla", "specs/tla/FreezeConvergence.tla"]
+kani = ["proof_freeze_add_input_no_mutation", "proof_freeze_player_preserves_frame_state"]
+z3 = ["z3_proof_frozen_peer_input_is_constant_after_drop"]
+tests = ["input_queue::tests::freeze_at_rolls_last_confirmed_input_back_to_earlier_frame"]
+scope = "single ring, agreed freeze frame, converged freeze value; cross-peer convergence is modeled separately"
+residuals = []
+
+[[component]]
+id = "checksum-basis"
+status = "stale"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs", "src/network/messages.rs"]
+symbols = ["src/sessions/p2p_session.rs::checksum_basis_token_for", "src/sessions/p2p_session.rs::checksum_history_basis_token_for", "src/sessions/p2p_session.rs::basis_token_for_checksum"]
+specs = ["specs/tla/ChecksumExchange.tla"]
+z3 = ["z3_proof_checksum_comparison_guard"]
+tests = ["sessions::p2p_session::tests::converged_freeze_histories_share_one_basis_token"]
+scope = "converged per-slot freeze boundaries; the 64-bit token collision bound is documented, not proved"
+residuals = [{ id = "basis-token-model", description = "ChecksumExchange.tla predates the v6 basis token; #572 adds ChecksumBasis.tla and Kani proofs", review_by = "2027-03-01" }]
+
+[[component]]
+id = "checksum-latch"
+status = "stale"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/p2p_session.rs::invalidate_checksum_mismatch_from"]
+specs = ["specs/tla/ChecksumExchange.tla"]
+tests = ["sessions::p2p_session::tests::freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated", "sessions::p2p_session::tests::delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite"]
+scope = "same-basis mismatch latches; rewrite clears latches and pending reports at or above the floor"
+residuals = [{ id = "latch-model", description = "the rewrite/latch-clearing transition is not modeled yet; #572 extends the checksum model", review_by = "2027-03-01" }]
+
+[[component]]
+id = "provisional-ready"
+status = "unmodeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/p2p_session.rs::coordinated_drop_promote_provisional_ready"]
+specs = []
+tests = ["sessions::p2p_session::tests::non_authority_ready_cannot_lock_the_digest_or_count", "sessions::p2p_session::tests::matching_provisional_ready_is_promoted_when_authority_locks_the_digest", "sessions::p2p_session::tests::local_history_locks_the_digest_despite_a_conflicting_provisional_ready"]
+scope = "only the authority or independently verified local history locks a cut digest; provisional Ready reports do not count"
+residuals = [{ id = "ready-digest-model", description = "CoordinatedPeerDrop.tla models Ready with a cut only; #573 adds CoordinatedReadyDigest.tla", review_by = "2027-01-15" }]
+
+[[component]]
+id = "terminal-epoch"
+status = "unmodeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/p2p_session.rs::coordinated_drop_epoch_key", "src/sessions/p2p_session.rs::coordinated_drop_record_epoch", "src/sessions/p2p_session.rs::coordinated_drop_admit_epoch"]
+specs = []
+tests = ["sessions::p2p_session::tests::current_era_epoch_is_recorded_when_a_one_ahead_era_is_stored", "sessions::p2p_session::tests::stale_terminal_epoch_prepare_is_rejected_at_a_participant"]
+scope = "current and one-ahead generations coexist; at most two eras per canonical target set; fallback adoption is bounded"
+residuals = [{ id = "terminal-epoch-proof", description = "the epoch map is prose-only; #574 extracts it and adds Kani proofs", review_by = "2027-02-01" }]
+
+[[component]]
+id = "coordinated-barrier"
+status = "modeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/p2p_session.rs::coordinated_drop_target_digest", "src/sessions/p2p_session.rs::coordinated_drop_participant_digest", "src/sessions/p2p_session.rs::coordinated_drop_cut_digest"]
+specs = ["specs/tla/CoordinatedPeerDrop.tla"]
+tests = ["sessions::p2p_session::tests::commit_before_local_cut_adopts_the_certificate", "sessions::p2p_session::tests::coordinated_drop_commit_rejects_empty_participant_certificate"]
+scope = "one target input stream, two fixed survivors, one operation; endpoint/multi-handle composition stays in Rust tests"
+residuals = []
+
+[[component]]
+id = "coordinator-failover"
+status = "modeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/p2p_session.rs::coordinated_drop_fallback_coordinator", "src/sessions/p2p_session.rs::coordinated_drop_effective_coordinator", "src/sessions/p2p_session.rs::coordinated_drop_silent_since"]
+specs = ["specs/tla/CoordinatorFailover.tla", "specs/tla/CoordinatorFailoverCompeting.tla"]
+tests = ["sessions::p2p_session::tests::coordinator_report_for_another_operation_does_not_suppress_failover", "sessions::p2p_session::tests::repeated_request_preserves_the_earlier_failover_grace"]
+scope = "fixed deterministic fallback candidate, one operation, fixed receipts; reachability-based candidate selection is out of scope"
+residuals = []
+
+[[component]]
+id = "participant-split-view"
+status = "modeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/p2p_session.rs::coordinated_drop_participants", "src/sessions/p2p_session.rs::coordinated_drop_membership_epoch"]
+specs = ["specs/tla/CoordinatorSplitView.tla"]
+tests = ["sessions::p2p_session::tests::participant_set_digest_separates_split_view_operations"]
+scope = "shared agreed membership epoch, two disjoint requester groups, one target; operation-identity binding stays in Rust guards"
+residuals = []
+
+[[component]]
+id = "double-failure-relay"
+status = "modeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_session.rs", "src/network/protocol/mod.rs", "src/network/messages.rs"]
+symbols = ["src/sessions/p2p_session.rs::remote_slot_confirmed_bound", "src/sessions/p2p_session.rs::pessimistic_floor_relay_topology", "src/network/protocol/mod.rs::merge_peer_connect_status", "src/network/protocol/mod.rs::send_floor_reply"]
+specs = ["specs/tla/DoubleFailureRelay.tla"]
+tests = ["sessions::p2p_session::tests::remote_slot_confirmed_bound_consumes_relay_floor_round_after_prune", "sessions::p2p_session::tests::confirmed_frame_post_prune_unreplied_relay_holds_at_last_confirmed"]
+scope = "N>=4 relay residual with the seq-validated pessimistic floor round; non-hot-join topology and monotone healing stay in Rust"
+residuals = [{ id = "relay-topology", description = "non-hot-join relay topology and monotone-healing partitions are outside the model", review_by = "2027-06-01" }]
+
+[[component]]
+id = "spectator-reactivation"
+status = "modeled"
+owner = "maintainer"
+last_reviewed = "2026-11-26"
+paths = ["src/sessions/p2p_spectator_session.rs"]
+symbols = ["src/sessions/p2p_spectator_session.rs::reactivation_provenance", "src/sessions/p2p_spectator_session.rs::merge_connection_status", "src/sessions/p2p_spectator_session.rs::consume_drop_witnesses"]
+specs = ["specs/tla/SpectatorFailover.tla", "specs/tla/SpectatorReactivationEpoch.tla"]
+tests = ["sessions::p2p_spectator_session::tests::spectator_connection_status_merge_converges_freeze_and_follows_reactivation", "sessions::p2p_spectator_session::tests::within_cycle_pre_drop_epoch_blocks_follow_post_drop_epoch_follows"]
+scope = "host->spectator reactivation epoch across reordered pre-drop snapshots; host failover and the cross-cycle high-water gate are scoped out"
+residuals = [{ id = "cross-cycle-high-water", description = "a cross-cycle high-water gate needs a frame buffer and is not modeled", review_by = "2027-06-01" }]
+
+# A waiver is a named, time-boxed approval to change mapped code without a
+# matching model/proof update. Keep this list empty unless a maintainer records
+# the approval in the tracked PR or issue.

@@ -369,6 +369,26 @@ def is_tla_consistency_surface_file(path: str) -> bool:
     return path.endswith((".tla", ".cfg")) or path == "specs/tla/README.md"
 
 
+def is_model_impact_surface_file(path: str) -> bool:
+    """Return True for files that can affect the model-impact gate.
+
+    Any ``src/`` or ``specs/tla/`` change can map to a manifest component, and
+    the manifest, render target, checker, registration scripts, Z3 tests, and
+    checker tests can change the gate's own result.
+    """
+    if path.startswith(("src/", "specs/tla/")):
+        return True
+    return path in {
+        "docs/specs/spec-divergences.md",
+        "docs/specs/verification-manifest.toml",
+        "scripts/tests/test_model_impact.py",
+        "scripts/verification/model-impact.py",
+        "scripts/verification/verify-kani.sh",
+        "scripts/verification/verify-tla.sh",
+        "tests/verification/z3.rs",
+    }
+
+
 def is_network_timing_surface_file(path: str) -> bool:
     """Return True for files that affect network timing invariant checks."""
     return path in {
@@ -530,6 +550,9 @@ def plan_checks(
     )
     tla_consistency_changed = any(
         is_tla_consistency_surface_file(path) for path in changed_files
+    )
+    model_impact_changed = any(
+        is_model_impact_surface_file(path) for path in changed_files
     )
     network_timing_changed = any(
         is_network_timing_surface_file(path) for path in changed_files
@@ -840,6 +863,32 @@ def plan_checks(
             )
         )
 
+    if run_all or model_impact_changed:
+        checks.append(
+            PlannedCheck(
+                check_id="model-impact",
+                description=(
+                    "validate the code-to-verification manifest, artifact "
+                    "registrations, residual dates, and generated alignment table"
+                ),
+                command=[
+                    PYTHON_EXECUTABLE,
+                    "scripts/verification/model-impact.py",
+                    "check",
+                ],
+                fix_hint=(
+                    "Fix the missing path/spec/harness/test, register the Kani "
+                    "harness in verify-kani.sh, renew or remove an expired "
+                    "residual, or run 'python3 scripts/verification/"
+                    "model-impact.py render'."
+                ),
+                fix_command=[
+                    PYTHON_EXECUTABLE,
+                    "scripts/verification/model-impact.py",
+                    "render",
+                ],
+            )
+        )
     if run_all or network_timing_changed:
         checks.append(
             PlannedCheck(

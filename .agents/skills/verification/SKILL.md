@@ -5,6 +5,21 @@ description: "Formal Verification: TLA+ and Z3 guidance for Fortress Rollback. U
 
 # Formal Verification: TLA+ and Z3
 
+## Model-Impact Gate
+
+`docs/specs/verification-manifest.toml` maps production paths and symbols to their TLA+ specs,
+Kani harnesses, Z3 proofs, and Rust tests. Treat it as the review gate, not documentation:
+
+```bash
+python3 scripts/verification/model-impact.py check                 # manifest integrity + fresh table
+python3 scripts/verification/model-impact.py render                # regenerate the alignment table
+```
+
+The manifest is the review map: a mapped change should update the listed spec, proof, or test (or
+carry an explicit `[[waiver]]`). A waiver needs a named maintainer approval recorded in the tracked
+PR or issue. Every new or changed proof also needs a RED mutation or a non-vacuity witness; a proof
+that stays green when its guard is removed is not evidence.
+
 ## TLA+ Quick Start
 
 TLA+ specs are abstract models of behavior, NOT translations of code. Model what could go wrong subtly (concurrency, coordination, protocol logic). Skip implementation details (serialization, checksums, performance).
