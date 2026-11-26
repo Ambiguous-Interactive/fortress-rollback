@@ -22,6 +22,9 @@ on:
   pull_request:
     paths:
       - '**.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.cargo/config.toml'
       - 'specs/**'
       - 'docs/specs/verification-manifest.toml'
       - 'docs/specs/spec-divergences.md'

@@ -289,7 +289,24 @@ def test_kani_version_has_one_authority() -> None:
 
 def test_deep_workflows_are_merge_queue_or_scheduled_only() -> None:
     for name in DEEP_WORKFLOWS:
-        triggers = _triggers(_load(WORKFLOWS / name))
+        workflow = _load(WORKFLOWS / name)
+        triggers = _triggers(workflow)
+        if name == "ci-verification.yml":
+            # The only PR job is the fast, Python-only model-impact gate. Every
+            # heavy job must be explicitly gated off pull_request so the deep
+            # suite still runs only on merge queue, main, and the schedule.
+            assert "pull_request" in triggers
+            assert "merge_group" in triggers
+            jobs = workflow["jobs"]
+            assert "model-impact" in jobs
+            for job_name, job in jobs.items():
+                if job_name == "model-impact":
+                    continue
+                assert job.get("if") == "github.event_name != 'pull_request'", job_name
+            for step in jobs["model-impact"]["steps"]:
+                run = step.get("run", "")
+                assert not any(tool in run for tool in ("cargo", "kani", "java")), step
+            continue
         assert "pull_request" not in triggers, f"{name} must not gate pull requests"
         if name == "ci-codeql.yml":
             assert "schedule" in triggers
