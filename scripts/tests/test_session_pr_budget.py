@@ -82,6 +82,37 @@ def test_pr_outside_the_window_is_ignored() -> None:
     assert summary["prs"] == [101, 102]
 
 
+def test_rerun_after_prior_prs_age_out_uses_the_check_time() -> None:
+    """A PR must become mergeable when its older siblings leave the window.
+
+    The window ends at the check time, not at the candidate PR's creation
+    time (regression for #583).
+    """
+    session_start = START + timedelta(hours=2)
+    old = pr(100, START)
+    prior = pr(101, START + timedelta(hours=1))
+    current = pr(
+        102,
+        START + timedelta(hours=2, minutes=10),
+        started=session_start,
+    )
+
+    with pytest.raises(check_session_pr_budget.BudgetError, match="maximum is 2"):
+        evaluate(
+            current,
+            [old, prior, current],
+            now=START + timedelta(hours=2, minutes=20),
+        )
+
+    summary = evaluate(
+        current,
+        [old, prior, current],
+        now=START + timedelta(hours=4, minutes=10),
+    )
+
+    assert summary["prs"] == [102]
+
+
 def test_other_session_ids_still_count_toward_the_limit() -> None:
     first = pr(100, START + timedelta(minutes=5), session_id="session-0")
     second = pr(101, START + timedelta(minutes=20), session_id="session-1")
