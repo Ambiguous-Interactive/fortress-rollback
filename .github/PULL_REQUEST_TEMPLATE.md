@@ -18,6 +18,17 @@
 - [ ] 🧪 Test (adding or updating tests)
 - [ ] 🔧 CI/Build (changes to CI configuration or build process)
 
+## Verification Impact
+
+<!-- Run `python3 scripts/verification/model-impact.py affected --base origin/main` and check one. -->
+<!-- A mapped code change needs a spec/proof/test update or a named maintainer waiver. -->
+
+- [ ] `none` — no mapped production path or symbol changed
+- [ ] `updated: <spec/proof>` — the model, proof, or mapped test is updated in this PR
+- [ ] `waived: <reason + approver>` — a named maintainer approved the exception and it is recorded in the tracked issue/PR
+
+- [ ] Any new or changed proof has a RED mutation or a non-vacuity witness (state which below)
+
 ## Checklist
 
 <!-- Please review and check all applicable items -->

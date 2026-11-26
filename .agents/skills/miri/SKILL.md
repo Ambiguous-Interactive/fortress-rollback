@@ -27,6 +27,7 @@ Miri interprets Rust's MIR to detect undefined behavior at runtime, tracking poi
 | All thread interleavings | Use Loom |
 | FFI/foreign functions | Mock FFI, use sanitizers |
 | Future UB / incomplete weak memory | Stay updated, use Loom for atomics |
+| Logic or state-machine bugs | Miri is a UB oracle, not a logic oracle: use Kani, TLA+, Z3, and the model-impact gate |
 
 ## Quick Decision Tree
 

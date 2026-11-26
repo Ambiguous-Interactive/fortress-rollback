@@ -20,6 +20,12 @@ One sentence describing the observable result.
 2. [Step, owned paths, expected observation]
 3. [Stop condition or decision point]
 
+## Model Impact
+
+- Manifest components from `python3 scripts/verification/model-impact.py affected --base origin/main`:
+- Model/proof/test update, or waiver (reason + named approver + expiry):
+- Proof control: RED mutation or non-vacuity witness:
+
 ## Red
 
 - Behavior change: failing test or reproduction command:

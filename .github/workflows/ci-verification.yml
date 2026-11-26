@@ -19,6 +19,23 @@ on:
       - '.github/actions/install-pinned-nightly/**'
       - '.github/actions/setup-kani/**'
       - '.github/workflows/ci-verification.yml'
+  pull_request:
+    paths:
+      - '**.rs'
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.cargo/config.toml'
+      - 'specs/**'
+      - 'docs/specs/verification-manifest.toml'
+      - 'docs/specs/spec-divergences.md'
+      - 'scripts/verification/model-impact.py'
+      - 'scripts/tests/test_model_impact.py'
+      - 'scripts/verification/verify-*.sh'
+      - '.kani-version'
+      - '.tla-tools-version'
+      - '.github/actions/install-pinned-nightly/**'
+      - '.github/actions/setup-kani/**'
+      - '.github/workflows/ci-verification.yml'
   merge_group:
   schedule:
     - cron: '0 6 * * 0'
@@ -44,9 +61,34 @@ env:
   # the cache key never changes, so runners keep a stale cached binary forever.
 
 jobs:
+  # Fast PR gate: validate the executable code-to-verification manifest and
+  # the generated alignment table. The expensive TLA+/Kani/Z3/Loom lanes stay
+  # on merge_group, main, and the nightly schedule.
+  model-impact:
+    name: Model-Impact Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Validate manifest and generated alignment table
+        run: |
+          python3 scripts/verification/model-impact.py check
+          python3 scripts/verification/model-impact.py render --check
+
+      - name: Check PR verification impact
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python3 scripts/verification/model-impact.py affected --base "origin/${{ github.base_ref }}"
+
   # Validate Kani proof coverage before running actual proofs
   kani-coverage-check:
     name: Kani Proof Coverage
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 5
 
@@ -60,6 +102,7 @@ jobs:
   # TLA+ Model Checking
   tla-verification:
     name: TLA+ Model Checking
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     # Job budget must exceed the verification step plus Java/TLA setup.
     timeout-minutes: 45
@@ -107,6 +150,7 @@ jobs:
   # Z3 SMT Solver Verification
   z3-verification:
     name: Z3 SMT Verification
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -152,6 +196,7 @@ jobs:
   # Kani Formal Verification (Tier 1 - Fast proofs)
   kani-tier1:
     name: Kani Tier 1 (Fast)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
@@ -183,6 +228,7 @@ jobs:
   # Kani Formal Verification (Tier 2 - Medium proofs, split into 6 parallel jobs)
   kani-tier2:
     name: Kani Tier 2 (${{ matrix.part }}/6)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -217,6 +263,7 @@ jobs:
   # Kani Formal Verification (Tier 3 - Slow proofs, split into 5 parallel jobs)
   kani-tier3:
     name: Kani Tier 3 (${{ matrix.part }}/5)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -249,6 +296,7 @@ jobs:
   # Loom Concurrency Testing (cross-platform)
   loom-tests:
     name: Loom Concurrency Tests (${{ matrix.os }})
+    if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
