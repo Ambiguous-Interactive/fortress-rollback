@@ -1700,11 +1700,20 @@ fn z3_proof_different_basis_is_never_compared() {
             "Z3 should prove different basis tokens are never compared"
         );
 
-        // A cross-basis report therefore cannot detect a desync
-        let desync_detected = &comparison_runs & &local_checksum.ne(&remote_checksum);
-        solver.assert(&desync_detected);
+        // A cross-basis report therefore cannot latch a desync. Use a fresh
+        // solver: the one above is already UNSAT after the gate assertion, so a
+        // second check there would pass even if the latch expression were wrong.
+        let latch_solver = Solver::new();
+        latch_solver.assert(local_checksum.ge(0));
+        latch_solver.assert(remote_checksum.ge(0));
+        latch_solver.assert(local_basis.ge(0));
+        latch_solver.assert(remote_basis.ge(0));
+        latch_solver.assert(local_basis.ne(&remote_basis));
+        let latch_gate = local_basis.eq(&remote_basis);
+        let desync_detected = &latch_gate & &local_checksum.ne(&remote_checksum);
+        latch_solver.assert(&desync_detected);
         assert_eq!(
-            solver.check(),
+            latch_solver.check(),
             SatResult::Unsat,
             "Z3 should prove a cross-basis report cannot latch a desync"
         );
