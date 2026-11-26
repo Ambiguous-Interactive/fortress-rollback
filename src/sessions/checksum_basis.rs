@@ -274,6 +274,7 @@ impl ChecksumBasisTracker {
 }
 
 #[cfg(kani)]
+#[cfg_attr(any(), mutants::skip)]
 mod kani_proofs {
     use super::*;
 
