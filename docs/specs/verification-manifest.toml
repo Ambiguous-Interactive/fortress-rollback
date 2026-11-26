@@ -159,3 +159,9 @@ residuals = [{ id = "cross-cycle-high-water", description = "a cross-cycle high-
 # A waiver is a named, time-boxed approval to change mapped code without a
 # matching model/proof update. Keep this list empty unless a maintainer records
 # the approval in the tracked PR or issue.
+
+[[waiver]]
+component = "double-failure-relay"
+reason = "doc-only clarification of ChecksumReport::basis_token for #572; no behavior or wire change"
+approver = "wallstop"
+expires = "2026-12-31"

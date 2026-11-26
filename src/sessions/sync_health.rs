@@ -40,8 +40,11 @@ pub enum SyncHealth {
     /// This indicates that every checksum compared so far matched, so both
     /// peers had identical game state at the last comparison. A confirmed-frame
     /// mismatch is latched and keeps this peer reporting
-    /// [`SyncHealth::DesyncDetected`] instead. Note that this does not guarantee
-    /// synchronization at the current frame - only at the last compared frame.
+    /// [`SyncHealth::DesyncDetected`] instead. A confirmed-history rewrite at or
+    /// above the mismatched frame clears that latch, so the peer can report
+    /// `InSync` again for the recomputed history. Note that this does not
+    /// guarantee synchronization at the current frame - only at the last
+    /// compared frame.
     InSync,
 
     /// Waiting for checksum data from peer (no comparison possible yet).

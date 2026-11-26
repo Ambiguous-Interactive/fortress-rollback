@@ -205,15 +205,24 @@ pub(crate) struct ChecksumReport {
     /// The bounded wire decoder accepts every non-negative [`Frame`] through
     /// `i32::MAX`; unlike status and floor fields, the null sentinel is invalid.
     pub frame: Frame,
-    /// Additive multiset token of the applied confirmed-history rewrite floors
-    /// at or below `frame`, or `0` when no rewrite has affected this basis.
+    /// Additive token of each frozen slot's converged boundary at or below
+    /// `frame`, or `0` when no frozen slot affects this frame.
+    ///
+    /// The boundary is the first frame whose confirmed input repeats the slot's
+    /// frozen value. A slot contributes exactly one term, so survivors that
+    /// converged to the same frozen history derive the same token even when they
+    /// reached it through different intermediate rewrite floors. A lower
+    /// convergence replaces the term; a higher re-detection is idempotent;
+    /// reactivation removes it.
     ///
     /// A checksum is only comparable with a local history entry carrying the
     /// same token. A delayed report sent before a rewrite carries the previous
     /// token and describes a basis the receiver has already replaced, so it must
-    /// not relatch a mismatch. The token is a fixed 64-bit summary; every peer
-    /// derives it locally from its applied rewrite floors, with no authority
-    /// handshake and no per-report floor history.
+    /// not relatch a mismatch. The token is a fixed 64-bit summary, so distinct
+    /// bases can collide; the collision bound is the usual 64-bit birthday bound
+    /// over the number of distinct bases compared in a session. Every peer
+    /// derives it locally with no authority handshake and no per-report floor
+    /// history.
     pub basis_token: u64,
 }
 
