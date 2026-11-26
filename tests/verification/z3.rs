@@ -1564,14 +1564,39 @@ fn z3_proof_desync_detection_no_false_positives() {
     });
 }
 
-/// Z3 Proof: No false negative desync detection when detection runs
+/// Z3 Proof: No false negative when a same-basis comparison runs
 ///
-/// Proves that when checksums differ and comparison is performed,
-/// the desync IS detected. This models the comparison logic in
-/// `compare_local_checksums_against_peers()`.
+/// Proves that when two peers compare at the same basis (equal protocol-v6
+/// basis tokens) and their checksums differ, the desync IS detected. This
+/// models the comparison primitive in
+/// `compare_local_checksums_against_peers()`: the basis-token gate admits the
+/// comparison, then the primitive compares the checksums.
 ///
-/// Property: If local_checksum != remote_checksum and the comparison executes,
-/// then desync_detected == true.
+/// # Model
+/// - `local_checksum`, `remote_checksum`: per-frame checksums
+/// - `local_basis`, `remote_basis`: per-frame basis tokens
+///
+/// # Preconditions
+/// - Both checksums and basis tokens are valid (non-negative)
+/// - `local_basis == remote_basis` (the comparison gate admitted the report)
+/// - The checksums DIFFER (a real desync)
+///
+/// # Property
+/// A same-basis comparison of differing checksums always detects the desync.
+///
+/// # Relationship to Production Code
+/// Models the comparison primitive of
+/// `P2PSession::compare_local_checksums_against_peers()`:
+/// ```ignore
+/// if local_token != remote_token { continue; }  // basis gate
+/// if local_checksum != remote_checksum { /* DesyncDetected */ }
+/// ```
+///
+/// # Limitations
+/// - Model-only: does not execute the Rust gate; it assumes the gate admitted
+///   the report. A different basis is never compared, proved separately by
+///   `z3_proof_different_basis_is_never_compared`.
+/// - Does not model the frame confirmation guard.
 #[test]
 fn z3_proof_desync_detection_no_false_negatives_on_comparison() {
     let cfg = Config::new();
@@ -1580,15 +1605,22 @@ fn z3_proof_desync_detection_no_false_negatives_on_comparison() {
 
         let local_checksum = Int::fresh_const("local_checksum");
         let remote_checksum = Int::fresh_const("remote_checksum");
+        let local_basis = Int::fresh_const("local_basis");
+        let remote_basis = Int::fresh_const("remote_basis");
 
-        // Checksums are valid
+        // Checksums and basis tokens are valid
         solver.assert(local_checksum.ge(0));
         solver.assert(remote_checksum.ge(0));
+        solver.assert(local_basis.ge(0));
+        solver.assert(remote_basis.ge(0));
+
+        // Precondition: the basis gate admitted the report
+        solver.assert(local_basis.eq(&remote_basis));
 
         // Precondition: checksums DIFFER (actual desync exists)
         solver.assert(local_checksum.ne(&remote_checksum));
 
-        // Model the detection logic:
+        // Model the detection primitive after the gate:
         // desync_detected = (local_checksum != remote_checksum)
         let desync_detected = local_checksum.ne(&remote_checksum);
 
@@ -1599,7 +1631,96 @@ fn z3_proof_desync_detection_no_false_negatives_on_comparison() {
         assert_eq!(
             check_result,
             SatResult::Unsat,
-            "Z3 should prove no false negatives: differing checksums always trigger detection"
+            "Z3 should prove no false negatives within one basis: \
+             a compared differing checksum is detected"
+        );
+    });
+}
+
+/// Z3 Proof: A different basis token is never compared
+///
+/// Proves that the protocol-v6 basis-token gate skips comparison whenever the
+/// local and remote tokens differ, regardless of the checksums. A report from a
+/// different basis cannot be compared with the receiver's recomputed local
+/// history and must not latch a mismatch (#562/#532).
+///
+/// # Model
+/// - `local_checksum`, `remote_checksum`: per-frame checksums
+/// - `local_basis`, `remote_basis`: per-frame basis tokens
+///
+/// # Preconditions
+/// - Both checksums and basis tokens are valid (non-negative)
+/// - `local_basis != remote_basis`
+///
+/// # Property
+/// The gate never admits the comparison, so no desync is detected from a
+/// cross-basis report.
+///
+/// # Relationship to Production Code
+/// Models the gate in `P2PSession::compare_local_checksums_against_peers()`:
+/// ```ignore
+/// if local_token != remote_token { continue; }  // different basis: skip
+/// ```
+///
+/// # Limitations
+/// - Model-only: does not execute the Rust gate. The production gate is
+///   exercised by the Rust tests
+///   `delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite`
+///   (different known tokens) and `unknown_basis_tokens_are_never_compared`
+///   (unknown tokens).
+/// - The cost is availability, not safety: a real desync reported with a
+///   different basis is not detected until a same-basis report arrives. The
+///   input-exchange posture is AP/EL by design.
+/// - The 64-bit token collision bound is not proved here.
+#[test]
+fn z3_proof_different_basis_is_never_compared() {
+    let cfg = Config::new();
+    with_z3_config(&cfg, || {
+        let solver = Solver::new();
+
+        let local_checksum = Int::fresh_const("local_checksum");
+        let remote_checksum = Int::fresh_const("remote_checksum");
+        let local_basis = Int::fresh_const("local_basis");
+        let remote_basis = Int::fresh_const("remote_basis");
+
+        // Checksums and basis tokens are valid
+        solver.assert(local_checksum.ge(0));
+        solver.assert(remote_checksum.ge(0));
+        solver.assert(local_basis.ge(0));
+        solver.assert(remote_basis.ge(0));
+
+        // Precondition: the peers sit on different rewrite bases
+        solver.assert(local_basis.ne(&remote_basis));
+
+        // Model the gate: comparison only runs for equal tokens
+        let comparison_runs = local_basis.eq(&remote_basis);
+
+        // Try to find a cross-basis comparison
+        solver.assert(&comparison_runs);
+
+        let check_result = solver.check();
+        assert_eq!(
+            check_result,
+            SatResult::Unsat,
+            "Z3 should prove different basis tokens are never compared"
+        );
+
+        // A cross-basis report therefore cannot latch a desync. Use a fresh
+        // solver: the one above is already UNSAT after the gate assertion, so a
+        // second check there would pass even if the latch expression were wrong.
+        let latch_solver = Solver::new();
+        latch_solver.assert(local_checksum.ge(0));
+        latch_solver.assert(remote_checksum.ge(0));
+        latch_solver.assert(local_basis.ge(0));
+        latch_solver.assert(remote_basis.ge(0));
+        latch_solver.assert(local_basis.ne(&remote_basis));
+        let latch_gate = local_basis.eq(&remote_basis);
+        let desync_detected = &latch_gate & &local_checksum.ne(&remote_checksum);
+        latch_solver.assert(&desync_detected);
+        assert_eq!(
+            latch_solver.check(),
+            SatResult::Unsat,
+            "Z3 should prove a cross-basis report cannot latch a desync"
         );
     });
 }
@@ -1699,15 +1820,19 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 
 /// # SyncHealth State Transitions
 ///
-/// Proves the correctness of the SyncHealth state machine. Most critically,
-/// it verifies that DesyncDetected is a terminal state - once detected, a
-/// desync cannot be "undone".
+/// Proves the correctness of the SyncHealth state machine. A detected desync
+/// stays latched until a confirmed-history rewrite clears it: production's
+/// `invalidate_checksum_mismatch_from` removes the latched mismatch frame at or
+/// above the rewritten floor (#532), so `DesyncDetected` is terminal only
+/// within one rewrite basis, not for the session lifetime.
 ///
 /// # Model
 ///
 /// - `current_state`: Integer encoding of SyncHealth (0=Pending, 1=InSync, 2=DesyncDetected)
 /// - `checksums_match`: Boolean (1=match, 0=differ) indicating checksum comparison result
 /// - `comparison_happened`: Boolean (1=yes, 0=no) indicating if comparison was performed
+/// - `rewrite_cleared`: Boolean (1=yes, 0=no) indicating a confirmed-history rewrite
+///   cleared the latched mismatch at this frame
 /// - `next_state`: The computed next state based on transition rules
 ///
 /// # Preconditions
@@ -1716,19 +1841,21 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 /// - `current_state` in {0, 1, 2} (valid state)
 /// - `comparison_happened` in {0, 1} (boolean)
 /// - `checksums_match` in {0, 1} (boolean, only meaningful when comparison happened)
+/// - `rewrite_cleared` in {0, 1} (boolean)
 ///
 /// # Property Verified
 ///
 /// The state transition from DesyncDetected (state 2) to InSync (state 1) is
-/// impossible. This proves that desync detection is permanent - a critical
-/// safety property for game state consistency.
+/// impossible without a rewrite that clears the latch. This proves a latched
+/// desync is durable within a basis, while a rewrite can retire a stale latch.
 ///
 /// Valid transitions modeled:
 /// - Pending -> InSync: comparison happened, checksums match
 /// - Pending -> DesyncDetected: comparison happened, checksums differ
 /// - InSync -> InSync: comparison happened, checksums match
 /// - InSync -> DesyncDetected: comparison happened, checksums differ
-/// - DesyncDetected -> DesyncDetected: always (terminal state)
+/// - DesyncDetected -> DesyncDetected: still latched within this basis
+/// - DesyncDetected -> Pending: a confirmed-history rewrite cleared the latch (#532)
 /// - Any -> Same: no comparison happened (state preserved)
 ///
 /// # Relationship to Production Code
@@ -1737,13 +1864,14 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 /// - `src/sessions/sync_health.rs` - `SyncHealth` enum definition
 /// - `src/sessions/p2p_session.rs` - `sync_health()` method
 /// - `src/sessions/p2p_session.rs` - `compare_local_checksums_against_peers()` method
+/// - `src/sessions/p2p_session.rs` - `invalidate_checksum_mismatch_from()` method
 ///
 /// Production state machine:
 /// ```ignore
 /// pub enum SyncHealth {
 ///     Pending,       // No comparison yet
 ///     InSync,        // Last comparison matched
-///     DesyncDetected { frame, local_checksum, remote_checksum }, // Permanent
+///     DesyncDetected { frame, local_checksum, remote_checksum }, // Latched within a basis
 /// }
 /// ```
 ///
@@ -1751,7 +1879,7 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 ///
 /// - Uses integer encoding instead of actual enum
 /// - Does not model the checksum values themselves
-/// - Does not model timing of when comparisons happen
+/// - Does not model timing of when comparisons or rewrites happen
 /// - See `z3_proof_desync_detection_no_false_positives` for checksum logic
 #[test]
 fn z3_proof_sync_health_state_transitions() {
@@ -1767,6 +1895,7 @@ fn z3_proof_sync_health_state_transitions() {
         let current_state = Int::fresh_const("current_state");
         let checksums_match = Int::fresh_const("checksums_match"); // 1 = match, 0 = differ
         let comparison_happened = Int::fresh_const("comparison_happened"); // 1 = yes, 0 = no
+        let rewrite_cleared = Int::fresh_const("rewrite_cleared"); // 1 = cleared, 0 = no
 
         // Current state is valid
         solver.assert(current_state.ge(state_pending));
@@ -1780,34 +1909,48 @@ fn z3_proof_sync_health_state_transitions() {
         solver.assert(checksums_match.ge(0));
         solver.assert(checksums_match.le(1));
 
-        // Model the next state based on current state and comparison result
-        // This mirrors the logic in sync_health() and compare_local_checksums_against_peers()
+        // A confirmed-history rewrite is a boolean event
+        solver.assert(rewrite_cleared.ge(0));
+        solver.assert(rewrite_cleared.le(1));
 
-        // If current state is DesyncDetected, it stays DesyncDetected (permanent)
-        // If comparison happened and checksums don't match -> DesyncDetected
-        // If comparison happened and checksums match -> InSync
-        // If no comparison -> stay in current state (Pending stays Pending, InSync stays InSync)
-
-        let next_state = current_state.eq(state_desync).ite(
-            &Int::from_i64(state_desync), // Desync is permanent
-            &comparison_happened.eq(1).ite(
-                &checksums_match.eq(1).ite(
-                    &Int::from_i64(state_in_sync), // Match -> InSync
-                    &Int::from_i64(state_desync),  // Mismatch -> DesyncDetected
+        // Model the next state based on current state and comparison result.
+        // A rewrite clears the latched mismatch at this frame (#532); otherwise
+        // DesyncDetected stays latched within the same basis.
+        let next_state = rewrite_cleared.eq(1).ite(
+            &Int::from_i64(state_pending),
+            &current_state.eq(state_desync).ite(
+                &Int::from_i64(state_desync),
+                &comparison_happened.eq(1).ite(
+                    &checksums_match.eq(1).ite(
+                        &Int::from_i64(state_in_sync), // Match -> InSync
+                        &Int::from_i64(state_desync),  // Mismatch -> DesyncDetected
+                    ),
+                    &current_state, // No comparison -> stay in current state
                 ),
-                &current_state, // No comparison -> stay in current state
             ),
         );
 
-        // Try to find invalid transition: DesyncDetected -> InSync
+        // Try to find invalid transition: DesyncDetected -> InSync without a rewrite
         solver.assert(current_state.eq(state_desync));
+        solver.assert(rewrite_cleared.eq(0));
         solver.assert(next_state.eq(state_in_sync));
 
         let check_result = solver.check();
         assert_eq!(
             check_result,
             SatResult::Unsat,
-            "Z3 should prove DesyncDetected cannot transition to InSync"
+            "Z3 should prove DesyncDetected cannot become InSync without a rewrite"
+        );
+
+        // Non-vacuity witness: a rewrite does clear the latched desync
+        let witness = Solver::new();
+        witness.assert(current_state.eq(state_desync));
+        witness.assert(rewrite_cleared.eq(1));
+        witness.assert(next_state.eq(state_pending));
+        assert_eq!(
+            witness.check(),
+            SatResult::Sat,
+            "Z3 should find the reachable rewrite-clears-latch transition"
         );
     });
 }
@@ -1956,15 +2099,16 @@ fn z3_desync_detection_proofs_summary() {
     println!(
         "Desync Detection Z3 Verification Summary:\n\
          - No false positives: DesyncDetected only fires when checksums differ\n\
-         - No false negatives: differing checksums always trigger detection when compared\n\
+         - No false negatives within one basis: a compared differing checksum is detected\n\
+         - Basis gate: different basis tokens are never compared or latched\n\
          - Comparison guard: only confirmed frames are compared\n\
          - Liveness: pending checksums become comparable after frame advancement\n\
-         - State transitions: DesyncDetected is a terminal state\n\
+         - State transitions: DesyncDetected is latched within one basis and cleared by a rewrite\n\
          - Monotonicity: last_verified_frame never decreases\n\
          - InvariantChecker soundness: no error when no desync\n\
          - InvariantChecker completeness: error always returned when desync exists\n\
          \n\
-         Total: 8 desync detection Z3 proofs"
+         Total: 9 desync detection Z3 proofs"
     );
 }
 
@@ -2023,10 +2167,11 @@ fn z3_verified_properties_summary() {
 
     // Desync Detection:
     // - No false positives (DesyncDetected requires checksums to differ)
-    // - No false negatives (differing checksums always trigger detection)
+    // - No false negatives within one basis (a compared differing checksum is detected)
+    // - Basis gate (different basis tokens are never compared)
     // - Comparison guard (only confirmed frames are compared)
     // - Liveness (pending checksums become comparable after advancement)
-    // - State transitions (DesyncDetected is terminal)
+    // - State transitions (latched within one basis; a rewrite clears it)
     // - Monotonicity (last_verified_frame never decreases)
     // - InvariantChecker soundness and completeness
 
@@ -2035,14 +2180,15 @@ fn z3_verified_properties_summary() {
          - 3 Frame arithmetic proofs\n\
          - 5 Circular buffer proofs\n\
          - 5 Rollback frame selection proofs\n\
-         - 2 Frame delay proofs\n\
+         - 7 Frame delay proofs\n\
          - 1 Input consistency proof\n\
          - 3 Comprehensive safety proofs\n\
+         - 6 Runtime delay and peer drop proofs\n\
          - 8 Internal component invariant proofs\n\
-         - 7 FNV-1a hash function proofs\n\
-         - 8 Desync detection proofs\n\
-         - 8 PCG32 RNG proofs\n\
-         Total: 54 Z3 proofs"
+         - 8 FNV-1a hash function proofs\n\
+         - 9 Desync detection proofs\n\
+         - 9 PCG32 RNG proofs\n\
+         Total: 64 Z3 proofs (plus 2 summary tests = 66 tests)"
     );
 }
 

@@ -12,7 +12,7 @@ _None._
 
 ## Future
 
-1. [ ] #572 Prove the checksum basis token over converged freeze history. Exit: the extracted tracker passes the listed Kani proofs; `verify-tla.sh ChecksumBasis` passes with `BasisBlind` enforced expected-fail and a non-vacuous witness; stale Z3 "always trigger"/"terminal" claims are removed; no wire change. Highest product risk.
+1. [ ] #572 Prove the checksum basis token over converged freeze history. The Z3 slice landed: the stale "always trigger"/"terminal" claims are retired, the comparison proof is basis-aware, and `formal-spec.md` SAFE-7a/7b/7c plus the version header are corrected (#586). Remaining: extract `ChecksumBasisTracker`, add the five Kani proofs, and add `ChecksumBasis.tla` with the `BasisBlind` enforced expected-fail and a non-vacuous witness. Exit: the extracted tracker passes the listed Kani proofs; `verify-tla.sh ChecksumBasis` passes with `BasisBlind` enforced expected-fail and a non-vacuous witness; no wire change. Highest product risk.
 2. [ ] #573 Model the provisional `Ready` digest gate. Exit: `CoordinatedReadyDigest` passes in `AuthorityLocked` mode; `ProvisionalCounts` reproduces the divergent-digest commit; witness shows promotion is reachable; docs and FIX_MODE prose checks pass.
 3. [ ] #574 Prove the coordinated-drop terminal epoch table invariants. Exit: the extracted table passes the listed Kani proofs; the old handles-only key fails the one-ahead case; `formal-spec.md` no longer claims "without a new model"; full tests pass.
 4. [ ] #575 Audit proof strength and retire non-binding Z3 claims. Exit: all `z3_*` tests are classified; a mutated basis gate leaves the stale desync tests green (recorded); stale claims are removed and at least one code-linked proof is added. Depends on #572.

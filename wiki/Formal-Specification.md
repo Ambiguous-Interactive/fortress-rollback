@@ -6,14 +6,17 @@
 
 # Fortress Rollback Formal Specification
 
-**Version:** 1.1
-**Date:** December 10, 2025
+**Version:** 1.5
+**Date:** November 26, 2026
 **Status:** Complete
 
 This document provides a formal specification of Fortress Rollback's core components, invariants, and correctness properties. It serves as the foundation for formal verification using TLA+, Z3, and Kani.
 
 ## Changelog
 
+- **v1.5 (2026-11-26):** Retired the stale Z3 desync claims and documented
+  SAFE-7a/7b/7c: the basis-token comparison gate, the converged-history token
+  property, and the confirmed-history rewrite that clears a latched mismatch.
 - **v1.1 (Session 47 - Dec 10, 2025):** FV-GAP-6 updates
   - Added INV-9: Rollback Target Guard
   - Strengthened `load_frame()` precondition: `frame < current_frame` (was ≤)
@@ -626,8 +629,62 @@ not alter the deterministic protocol-v1 message format.
 
 ```
 □(desync_detection = On →
-    checksum_compare(f) only when ∀p: confirmed(f, p))
+    checksum_compare(p, q, f) only when ∀r ∈ Peer: confirmed(f, r))
 ```
+
+### SAFE-7a: Same-basis comparison
+
+The desync comparison of a frame runs only when the two peers' basis tokens at
+that frame are equal. The receiver discards a report from a different basis
+rather than latching it, because the receiver cannot compare that report with
+its recomputed local checksum:
+
+```
+□(checksum_compare(p, q, f) → basis_token(p, f) = basis_token(q, f))
+```
+
+This is the AP/EL input-exchange posture: the receiver detects a genuine
+cross-basis divergence once a same-basis report arrives. The Z3 gate proofs are
+model-only (`z3_proof_different_basis_is_never_compared` and
+`z3_proof_desync_detection_no_false_negatives_on_comparison`). They prove the
+comparison primitive and the gate, not the Rust implementation.
+
+### SAFE-7b: Converged history shares a token
+
+The token is one additive term per frozen slot boundary at or below the frame,
+keyed by slot. Survivors that converged to the same frozen history derive the
+same token, even when they reached it through different intermediate
+freeze floors:
+
+```
+□(converged(p, f) ∧ converged(q, f) ∧ frozen_history(p) = frozen_history(q)
+    → basis_token(p, f) = basis_token(q, f))
+```
+
+A lower convergence replaces the slot's term; a higher re-detection is
+idempotent; reactivation removes it. The 64-bit token collision bound remains
+unproved: collisions follow the usual 64-bit birthday bound over the number of
+distinct bases compared in a session, and the claim is "same basis implies same
+token", not the converse. This property is the target of #572
+(`ChecksumBasis.tla` plus Kani on the extracted tracker) and is not yet a proved
+property.
+
+### SAFE-7c: Rewrite clears stale latch state
+
+A confirmed-history rewrite at floor `r` invalidates every comparison at or above
+`r`, because those reports describe the pre-rewrite trajectory:
+
+```
+□(rewrite(p, r) → ∀q, f: f ≥ r → ¬latched(p, q, f))
+□(rewrite(p, r) → ∀q, f: f ≥ r → ¬pending(p, q, f))
+```
+
+`SyncHealth::DesyncDetected` stays latched within one basis, not terminal for
+the session lifetime. The Rust tests
+`freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated` and
+`delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite` cover the
+behavior. `ChecksumExchange.tla` latches a verdict per pair and does not yet
+model the rewrite transition.
 
 ---
 
@@ -807,6 +864,7 @@ implementation/test obligations.
 | Concurrency (GameStateCell)   | Loom | ✅ Implemented (`loom-tests/`)                    |
 | Time synchronization          | TLA+ | ✅ Implemented (`specs/tla/TimeSync.tla`)         |
 | Checksum exchange             | TLA+ | ✅ Implemented (`specs/tla/ChecksumExchange.tla`) |
+| Checksum basis-token gate and rewrite latch clearing | Z3 (model-only) + Rust tests | ✅ Gate and clearing behavior implemented and tested; converged-token algebra (`ChecksumBasis.tla`, Kani) tracked on #572 |
 | Spectator session             | TLA+ | ✅ Implemented (`specs/tla/SpectatorSession.tla`) |
 | Concurrency model             | TLA+ | ✅ Implemented (`specs/tla/Concurrency.tla`)      |
 | Graceful-drop barrier model | TLA+ | ✅ Implemented (`specs/tla/CoordinatedPeerDrop.tla`) |
@@ -820,6 +878,7 @@ implementation/test obligations.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.5     | 2026-11-26 | Retired the stale Z3 "always trigger"/"terminal" desync claims; added SAFE-7a (basis-token gate), SAFE-7b (converged history shares a token; target of #572), and SAFE-7c (rewrite clears stale latch state); fixed the document version header |
 | 1.4     | 2026-11-25 | Checksum basis tokens derive from converged per-slot freeze boundaries, so survivors with the same frozen history share a token (and still change it on a lower boundary); negative event floors are rejected |
 | 1.3     | 2026-11-22 | Documented the protocol-v6 checksum basis token, which keeps delayed pre-rewrite reports incomparable with a recomputed basis |
 | 1.2     | 2026-11-21 | Documented the protocol-v5 terminal-attempt epoch admission guard and why it preserves `AtMostOneCommittedCut` |
