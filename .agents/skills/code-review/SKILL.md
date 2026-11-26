@@ -104,6 +104,9 @@ Tests are evidence only when they can fail for the right reason. Check the test 
 - Are expected values derived independently, or copied from the implementation's output?
 - Do user-visible and protocol/session changes have a boundary or end-to-end path, not only unit tests?
 - For refactors and rewrites, is there characterization or differential evidence that behavior did not change?
+- Did `python3 scripts/verification/model-impact.py affected --base origin/main` flag a mapped component? If so, is there a spec/proof/test update or a named maintainer waiver, and does the rendered table in `docs/specs/spec-divergences.md` match the manifest?
+- Does every new or changed proof have a RED mutation or a non-vacuity witness that shows it can fail? Is it labeled `code_linked`, `model_only`, `bounded`, or `witness_only` rather than presented as a code proof?
+- Are "always", "terminal", "no false negatives", or "without a new model" claims still true for the current production behavior?
 
 A test that cannot fail is not evidence. A rerun is not a fix for a flaky test.
 

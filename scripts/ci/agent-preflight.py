@@ -889,6 +889,28 @@ def plan_checks(
                 ],
             )
         )
+        checks.append(
+            PlannedCheck(
+                check_id="model-impact-affected",
+                description=(
+                    "fail when uncommitted changes touch a mapped symbol without "
+                    "a model/proof update or an active waiver"
+                ),
+                command=[
+                    PYTHON_EXECUTABLE,
+                    "scripts/verification/model-impact.py",
+                    "affected",
+                    "--base",
+                    "HEAD",
+                ],
+                fix_hint=(
+                    "Update the mapped spec/proof/test in the same change, add a "
+                    "named maintainer waiver with a short expiry to "
+                    "docs/specs/verification-manifest.toml, or narrow the mapping."
+                ),
+            )
+        )
+
     if run_all or network_timing_changed:
         checks.append(
             PlannedCheck(

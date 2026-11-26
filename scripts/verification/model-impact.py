@@ -6,6 +6,10 @@ path, symbol, TLA spec/check, Kani harness, Z3 proof, and Rust test exists,
 residual review dates are current, and the generated alignment table in
 ``docs/specs/spec-divergences.md`` is fresh.
 
+``affected --base <rev>`` maps a git diff to manifest components. A mapped
+symbol (or a mapped path with no symbol mapping) that changed without a mapped
+spec/proof/test update in the same diff or an unexpired waiver exits 1.
+
 ``render`` regenerates the table between the generated-block markers.
 
 Missing files, specs, checks, harnesses, and tests fail closed. Symbol regex
@@ -18,6 +22,7 @@ import argparse
 import datetime as dt
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, NamedTuple, cast
@@ -46,6 +51,10 @@ FN_RE = re.compile(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?
 
 class ManifestError(Exception):
     """A manifest file is missing, unparsable, or structurally invalid."""
+
+
+class GitError(Exception):
+    """A git command needed for the impact query failed."""
 
 
 class Residual(NamedTuple):
@@ -89,6 +98,35 @@ class Report(NamedTuple):
     @property
     def ok(self) -> bool:
         return not self.errors
+
+
+class FileDiff(NamedTuple):
+    path: str
+    new_lines: frozenset[int]
+    added_text: tuple[str, ...]
+    removed_text: tuple[str, ...]
+    deleted: bool
+
+
+class ComponentImpact(NamedTuple):
+    component: Component
+    reasons: tuple[str, ...]
+    commands: tuple[str, ...]
+    verification_updated: bool
+    waiver: Waiver | None
+
+    @property
+    def drifted(self) -> bool:
+        return bool(self.reasons) and not self.verification_updated and self.waiver is None
+
+
+class ImpactReport(NamedTuple):
+    base: str
+    impacts: tuple[ComponentImpact, ...]
+
+    @property
+    def drifted(self) -> tuple[ComponentImpact, ...]:
+        return tuple(impact for impact in self.impacts if impact.drifted)
 
 
 def _table(value: Any, where: str) -> dict[str, Any]:
@@ -414,6 +452,197 @@ def write_render(manifest: Manifest, root: Path) -> bool:
     return True
 
 
+def parse_git_diff(text: str) -> dict[str, FileDiff]:
+    """Parse ``git diff -U0`` output into per-file changed lines."""
+    raw: dict[str, list[Any]] = {}
+    current: list[Any] | None = None
+    old_path = ""
+    new_line = 0
+    in_hunk = False
+    for line in text.splitlines():
+        if line.startswith("diff --git "):
+            current, in_hunk, old_path = None, False, ""
+        elif line.startswith("--- "):
+            old = line[4:].strip()
+            old_path = old[2:] if old.startswith("a/") else old
+        elif line.startswith("+++ "):
+            new = line[4:].strip()
+            deleted = new == "/dev/null"
+            path = old_path if deleted else (new[2:] if new.startswith("b/") else new)
+            current = raw.setdefault(path, [set(), [], [], False])
+            current[3] = deleted
+        elif current is not None and line.startswith("@@"):
+            match = re.match(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@", line)
+            new_line = int(match.group(1)) if match else 0
+            in_hunk = True
+        elif current is not None and in_hunk:
+            if line.startswith("+"):
+                current[0].add(new_line)
+                current[1].append(line[1:])
+                new_line += 1
+            elif line.startswith("-"):
+                current[2].append(line[1:])
+            elif line.startswith(" "):
+                new_line += 1
+    return {
+        path: FileDiff(path, frozenset(lines), tuple(added), tuple(removed), bool(deleted))
+        for path, (lines, added, removed, deleted) in raw.items()
+    }
+
+
+def _git(root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(root), *args], capture_output=True, text=True, check=False
+    )
+    if result.returncode != 0:
+        raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
+def _fn_range(path: Path, name: str) -> tuple[int, int] | None:
+    lines = (_read(path) or "").splitlines()
+    for start, line in enumerate(lines):
+        if not re.search(rf"\bfn\s+{re.escape(name)}\b", line):
+            continue
+        depth = 0
+        seen = False
+        for end in range(start, len(lines)):
+            depth += lines[end].count("{") - lines[end].count("}")
+            seen = seen or "{" in lines[end]
+            if seen and depth <= 0:
+                return start + 1, end + 1
+        return start + 1, len(lines)
+    return None
+
+
+def _range_hit(diff: FileDiff | None, span: tuple[int, int] | None) -> bool:
+    return bool(diff and span and any(span[0] <= line <= span[1] for line in diff.new_lines))
+
+
+def _symbol_hits(
+    root: Path, component: Component, changed: set[str], diffs: dict[str, FileDiff]
+) -> list[str]:
+    reasons: list[str] = []
+    symbol_paths = {symbol.partition("::")[0] for symbol in component.symbols}
+    for path_text in sorted(changed & (set(component.paths) | symbol_paths)):
+        names = [
+            symbol.partition("::")[2]
+            for symbol in component.symbols
+            if symbol.partition("::")[0] == path_text
+        ]
+        diff = diffs.get(path_text)
+        if not names:
+            reasons.append(f"{path_text} (mapped path)")
+            continue
+        if diff is not None and diff.deleted:
+            reasons.append(f"{path_text} (deleted)")
+            continue
+        hit = [
+            name
+            for name in names
+            if _range_hit(diff, _fn_range(root / path_text, name))
+            or (diff is not None and any(name in line for line in diff.added_text + diff.removed_text))
+        ]
+        if hit:
+            reasons.append(f"{path_text} ({', '.join(hit)})")
+        elif not any(_fn_range(root / path_text, name) for name in names):
+            reasons.append(f"{path_text} (mapped path; symbol ranges not found)")
+    return reasons
+
+
+def _verification_updated(
+    root: Path,
+    component: Component,
+    changed: set[str],
+    diffs: dict[str, FileDiff],
+    fn_index: dict[str, Path],
+) -> bool:
+    if any(spec in changed for spec in component.specs):
+        return True
+    z3_rel = Z3_REL.as_posix()
+    if any(_range_hit(diffs.get(z3_rel), _fn_range(root / Z3_REL, proof)) for proof in component.z3):
+        return True
+    for name in (*component.kani, *(test.rsplit("::", 1)[-1] for test in component.tests)):
+        location = fn_index.get(name)
+        if location is not None and _range_hit(
+            diffs.get(location.relative_to(root).as_posix()), _fn_range(location, name)
+        ):
+            return True
+    return False
+
+
+def _commands(component: Component) -> tuple[str, ...]:
+    commands = [f"./scripts/verification/verify-tla.sh {check}" for check in tla_checks(component)]
+    commands.extend(f"cargo kani --harness {proof}" for proof in component.kani)
+    if component.z3:
+        commands.append("cargo test --features z3-verification --test verification z3")
+    commands.extend(f"cargo nextest run {test.rsplit('::', 1)[-1]}" for test in component.tests)
+    return tuple(commands)
+
+
+def affected_components(
+    manifest: Manifest, root: Path, base: str = "origin/main", today: dt.date | None = None
+) -> ImpactReport:
+    """Map the diff from *base* to components and detect missing updates."""
+    today = today or dt.date.today()
+    changed = {line.strip() for line in _git(root, "diff", "--name-only", "--no-color", base).splitlines() if line.strip()}
+    diffs = parse_git_diff(_git(root, "diff", "-U0", "--no-color", base))
+    fn_index = function_index(root)
+    impacts: list[ComponentImpact] = []
+    for component in manifest.components:
+        reasons = _symbol_hits(root, component, changed, diffs)
+        if not reasons:
+            continue
+        waiver = next(
+            (
+                item
+                for item in manifest.waivers
+                if item.component == component.component_id and item.expires >= today
+            ),
+            None,
+        )
+        impacts.append(
+            ComponentImpact(
+                component,
+                tuple(reasons),
+                _commands(component),
+                _verification_updated(root, component, changed, diffs, fn_index),
+                waiver,
+            )
+        )
+    return ImpactReport(base, tuple(impacts))
+
+
+def format_impact(report: ImpactReport) -> str:
+    """Format an impact report for humans."""
+    if not report.impacts:
+        return f"No mapped verification impact (base {report.base})."
+    lines = [f"Verification impact (base {report.base}):"]
+    for impact in report.impacts:
+        lines.append(f"  {impact.component.component_id} [{impact.component.status}]")
+        lines.extend(f"    changed: {reason}" for reason in impact.reasons)
+        if impact.verification_updated:
+            lines.append("    verification update: present")
+        elif impact.waiver is not None:
+            lines.append(
+                f"    verification update: waived by {impact.waiver.approver} "
+                f"until {impact.waiver.expires} ({impact.waiver.reason})"
+            )
+        else:
+            lines.append("    verification update: MISSING (update a model/proof or add a waiver)")
+        if impact.commands:
+            lines.append("    commands:")
+            lines.extend(f"      {command}" for command in impact.commands)
+        else:
+            lines.append("    commands: none mapped")
+    if report.drifted:
+        lines.append(
+            f"ERROR: {len(report.drifted)} component(s) changed without a model/proof "
+            "update or active waiver."
+        )
+    return "\n".join(lines)
+
+
 def _manifest_path(root: Path, argument: str | None) -> Path:
     return Path(argument) if argument else root / MANIFEST_REL
 
@@ -435,6 +664,41 @@ def _cmd_check(args: argparse.Namespace) -> int:
     if report.ok:
         print(f"model-impact check: OK ({len(report.errors)} errors, {len(report.warnings)} warnings)")
     return 0 if report.ok else 1
+
+
+def _cmd_affected(args: argparse.Namespace) -> int:
+    root = Path(args.root).resolve()
+    try:
+        report = affected_components(
+            load_manifest(_manifest_path(root, args.manifest)), root, base=args.base
+        )
+    except (ManifestError, GitError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "base": report.base,
+                    "components": [
+                        {
+                            "id": impact.component.component_id,
+                            "status": impact.component.status,
+                            "reasons": list(impact.reasons),
+                            "commands": list(impact.commands),
+                            "verification_updated": impact.verification_updated,
+                            "waived": impact.waiver is not None,
+                            "drifted": impact.drifted,
+                        }
+                        for impact in report.impacts
+                    ],
+                    "drifted": [impact.component.component_id for impact in report.drifted],
+                }
+            )
+        )
+    else:
+        print(format_impact(report))
+    return 1 if report.drifted and not args.advisory else 0
 
 
 def _cmd_render(args: argparse.Namespace) -> int:
@@ -464,6 +728,13 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--manifest")
     check.add_argument("--json", action="store_true")
     check.set_defaults(func=_cmd_check)
+    affected = sub.add_parser("affected")
+    affected.add_argument("--root", default=str(ROOT))
+    affected.add_argument("--manifest")
+    affected.add_argument("--base", default="origin/main")
+    affected.add_argument("--advisory", action="store_true")
+    affected.add_argument("--json", action="store_true")
+    affected.set_defaults(func=_cmd_affected)
     render = sub.add_parser("render")
     render.add_argument("--root", default=str(ROOT))
     render.add_argument("--manifest")

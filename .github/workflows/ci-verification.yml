@@ -72,6 +72,12 @@ jobs:
           python3 scripts/verification/model-impact.py check
           python3 scripts/verification/model-impact.py render --check
 
+      - name: Check PR verification impact
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          python3 scripts/verification/model-impact.py affected --base "origin/${{ github.base_ref }}"
+
   # Validate Kani proof coverage before running actual proofs
   kani-coverage-check:
     name: Kani Proof Coverage

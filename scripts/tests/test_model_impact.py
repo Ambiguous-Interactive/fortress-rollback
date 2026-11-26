@@ -4,13 +4,15 @@
 Each test builds a tiny synthetic repository (Rust sources, fake verification
 registration scripts, a manifest, and the generated docs block) so the checker
 is exercised on the failure modes that matter: missing artifacts, stale
-residual reviews, expired waivers, advisory symbols, and a non-stable render.
+residual reviews, code drift without a model/proof update, waivers, and a
+non-stable render.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -59,21 +61,32 @@ residuals = [{residual}]
 """
 
 
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def build_repo(tmp_path: Path, manifest: str | None = None) -> Path:
-    """Create a consistent synthetic repository."""
+    """Create a consistent synthetic repository and commit it."""
     repo = tmp_path / "repo"
-    for directory in (
-        "src",
-        "specs/tla",
-        "scripts/verification",
-        "tests/verification",
-        "docs/specs",
-    ):
-        (repo / directory).mkdir(parents=True)
+    (repo / "src").mkdir(parents=True)
+    (repo / "specs" / "tla").mkdir(parents=True)
+    (repo / "scripts" / "verification").mkdir(parents=True)
+    (repo / "tests" / "verification").mkdir(parents=True)
+    (repo / "docs" / "specs").mkdir(parents=True)
+
     (repo / "src" / "demo.rs").write_text(
         "pub fn mapped_fn() -> u32 {\n    1\n}\n\n"
-        "#[cfg(test)]\nmod tests {\n    #[test]\n"
-        "    fn demo_test() {\n        assert_eq!(super::mapped_fn(), 1);\n    }\n}\n",
+        "#[cfg(test)]\nmod tests {\n"
+        "    #[test]\n"
+        "    fn demo_test() {\n"
+        "        assert_eq!(super::mapped_fn(), 1);\n"
+        "    }\n"
+        "}\n",
         encoding="utf-8",
     )
     (repo / "src" / "other.rs").write_text("pub fn other() {}\n", encoding="utf-8")
@@ -82,7 +95,9 @@ def build_repo(tmp_path: Path, manifest: str | None = None) -> Path:
     )
     (repo / "scripts" / "verification" / "verify-tla.sh").write_text(
         '#!/bin/bash\nSPECS=(\n    "Demo"\n)\n'
-        "EXPECTED_FAILURE_CHECKS=()\nADDITIONAL_CHECKS=()\nTRACE_CHECKS=()\n",
+        "EXPECTED_FAILURE_CHECKS=()\n"
+        "ADDITIONAL_CHECKS=()\n"
+        "TRACE_CHECKS=()\n",
         encoding="utf-8",
     )
     (repo / "scripts" / "verification" / "verify-kani.sh").write_text(
@@ -93,22 +108,39 @@ def build_repo(tmp_path: Path, manifest: str | None = None) -> Path:
     (repo / "tests" / "verification" / "z3.rs").write_text(
         "fn z3_proof_demo() {}\n", encoding="utf-8"
     )
+    manifest_text = manifest if manifest is not None else _manifest()
     (repo / "docs" / "specs" / "verification-manifest.toml").write_text(
-        manifest if manifest is not None else _manifest(), encoding="utf-8"
+        manifest_text, encoding="utf-8"
     )
     (repo / "docs" / "specs" / "spec-divergences.md").write_text(
-        f"# Divergences\n\n{model_impact.BEGIN_MARKER}\n{model_impact.END_MARKER}\n",
+        "# Divergences\n\n"
+        f"{model_impact.BEGIN_MARKER}\n"
+        f"{model_impact.END_MARKER}\n",
         encoding="utf-8",
     )
+
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Fixture")
+    _git(repo, "config", "user.email", "fixture@example.invalid")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "fixture baseline")
+
+    # The generated block must match the committed manifest.
     parsed = model_impact.load_manifest(repo / model_impact.MANIFEST_REL)
     model_impact.write_render(parsed, repo)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "render fixture table")
     return repo
 
 
 def run_check(repo: Path) -> model_impact.Report:
-    return model_impact.check_manifest(
-        model_impact.load_manifest(repo / model_impact.MANIFEST_REL), repo
-    )
+    manifest = model_impact.load_manifest(repo / model_impact.MANIFEST_REL)
+    return model_impact.check_manifest(manifest, repo)
+
+
+def run_affected(repo: Path) -> model_impact.ImpactReport:
+    manifest = model_impact.load_manifest(repo / model_impact.MANIFEST_REL)
+    return model_impact.affected_components(manifest, repo, base="HEAD")
 
 
 # --- check: valid baseline -------------------------------------------------
@@ -122,7 +154,8 @@ def test_complete_manifest_passes(tmp_path: Path) -> None:
 
 def test_missing_mapped_path_fails_closed(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest().replace("src/other.rs", "src/missing.rs"))
-    assert any("mapped path does not exist: src/missing.rs" in error for error in run_check(repo).errors)
+    report = run_check(repo)
+    assert any("mapped path does not exist: src/missing.rs" in error for error in report.errors)
 
 
 # --- check: missing artifacts fail closed ----------------------------------
@@ -130,22 +163,26 @@ def test_missing_mapped_path_fails_closed(tmp_path: Path) -> None:
 
 def test_missing_spec_fails_closed(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(specs='["specs/tla/Missing.tla"]'))
-    assert any("TLA spec does not exist" in error for error in run_check(repo).errors)
+    report = run_check(repo)
+    assert any("TLA spec does not exist" in error for error in report.errors)
 
 
 def test_unregistered_kani_harness_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(kani='["proof_missing"]'))
-    assert any("Kani harness 'proof_missing' is not registered" in error for error in run_check(repo).errors)
+    report = run_check(repo)
+    assert any("Kani harness 'proof_missing' is not registered" in error for error in report.errors)
 
 
 def test_missing_rust_test_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(tests='["demo::tests::missing_test"]'))
-    assert any("has no definition" in error for error in run_check(repo).errors)
+    report = run_check(repo)
+    assert any("has no definition" in error for error in report.errors)
 
 
 def test_missing_z3_proof_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(z3='["z3_proof_missing"]'))
-    assert any("is not defined in tests/verification/z3.rs" in error for error in run_check(repo).errors)
+    report = run_check(repo)
+    assert any("is not defined in tests/verification/z3.rs" in error for error in report.errors)
 
 
 def test_unregistered_tla_check_fails(tmp_path: Path) -> None:
@@ -153,35 +190,122 @@ def test_unregistered_tla_check_fails(tmp_path: Path) -> None:
     (repo / "scripts" / "verification" / "verify-tla.sh").write_text(
         '#!/bin/bash\nSPECS=(\n    "Other"\n)\n', encoding="utf-8"
     )
-    assert any("is not registered in scripts/verification/verify-tla.sh" in error for error in run_check(repo).errors)
+    report = run_check(repo)
+    assert any("is not registered in scripts/verification/verify-tla.sh" in error for error in report.errors)
 
 
-# --- check: stale dates and waivers ----------------------------------------
+# --- check: stale residual review fails ------------------------------------
 
 
 def test_stale_residual_review_by_fails(tmp_path: Path) -> None:
-    residual = f'{{ id = "gap", description = "known gap", review_by = "{PAST}" }}'
-    repo = build_repo(tmp_path, _manifest(residual=residual))
-    assert any("has expired" in error for error in run_check(repo).errors)
-
-
-def test_expired_waiver_fails_check(tmp_path: Path) -> None:
-    waiver = (
-        '[[waiver]]\ncomponent = "demo"\nreason = "fixture"\n'
-        f'approver = "named-maintainer"\nexpires = "{PAST}"\n'
+    residual = (
+        '{ id = "gap", description = "known gap", '
+        f'review_by = "{PAST}" }}'
     )
-    repo = build_repo(tmp_path, _manifest(waiver=waiver))
-    assert any("expired on" in error for error in run_check(repo).errors)
+    repo = build_repo(tmp_path, _manifest(residual=residual))
+    report = run_check(repo)
+    assert any("review_by" in error and "has expired" in error for error in report.errors)
 
 
 # --- check: symbol regex is advisory ---------------------------------------
 
 
 def test_unknown_symbol_warns_but_does_not_fail(tmp_path: Path) -> None:
-    repo = build_repo(tmp_path, _manifest().replace("mapped_fn", "not_a_symbol"))
+    repo = build_repo(
+        tmp_path,
+        _manifest().replace("mapped_fn", "not_a_symbol"),
+    )
     report = run_check(repo)
     assert report.errors == [], report.errors
     assert any("advisory" in warning for warning in report.warnings)
+
+
+# --- affected: mapped symbol drift -----------------------------------------
+
+
+def test_mapped_symbol_change_without_update_is_flagged(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert [impact.component.component_id for impact in report.impacts] == ["demo"]
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+    impact = report.impacts[0]
+    assert impact.verification_updated is False
+    assert "./scripts/verification/verify-tla.sh Demo" in impact.commands
+    assert "cargo kani --harness proof_demo" in impact.commands
+    assert "cargo test --features z3-verification --test verification z3" in impact.commands
+    assert "MISSING" in model_impact.format_impact(report)
+
+
+def test_test_only_change_does_not_trigger_symbol_drift(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace(
+            "assert_eq!(super::mapped_fn(), 1);",
+            "assert_eq!(super::mapped_fn(), 1);\n        assert!(true);",
+        ),
+        encoding="utf-8",
+    )
+    report = run_affected(repo)
+    assert report.impacts == ()
+    assert report.drifted == ()
+
+
+def test_changed_path_without_symbol_mapping_is_flagged(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    (repo / "src" / "other.rs").write_text("pub fn other() { let _ = 1; }\n", encoding="utf-8")
+    report = run_affected(repo)
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+    assert any("mapped path" in reason for reason in report.impacts[0].reasons)
+
+
+def test_active_waiver_suppresses_drift(tmp_path: Path) -> None:
+    waiver = (
+        "[[waiver]]\n"
+        'component = "demo"\n'
+        'reason = "fixture approval"\n'
+        'approver = "named-maintainer"\n'
+        f'expires = "{FUTURE}"\n'
+    )
+    repo = build_repo(tmp_path, _manifest(waiver=waiver))
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.drifted == ()
+    assert report.impacts[0].waiver is not None
+    assert "waived by named-maintainer" in model_impact.format_impact(report)
+
+
+def test_expired_waiver_does_not_suppress_drift(tmp_path: Path) -> None:
+    waiver = (
+        "[[waiver]]\n"
+        'component = "demo"\n'
+        'reason = "fixture approval"\n'
+        'approver = "named-maintainer"\n'
+        f'expires = "{PAST}"\n'
+    )
+    repo = build_repo(tmp_path, _manifest(waiver=waiver))
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_spec_update_in_same_diff_satisfies_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    spec = repo / "specs" / "tla" / "Demo.tla"
+    spec.write_text(spec.read_text(encoding="utf-8") + "\n\\* reviewed\n", encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is True
+    assert report.drifted == ()
 
 
 # --- render: stable and checked --------------------------------------------
@@ -194,18 +318,22 @@ def test_render_is_stable_and_check_matches(tmp_path: Path) -> None:
     assert run_check(repo).errors == []
 
     docs = repo / model_impact.DIVERGENCES_REL
-    docs.write_text(docs.read_text(encoding="utf-8").replace("| modeled |", "| stale |"), encoding="utf-8")
+    docs.write_text(
+        docs.read_text(encoding="utf-8").replace("| modeled |", "| stale |"),
+        encoding="utf-8",
+    )
     assert any("stale" in error for error in run_check(repo).errors)
 
 
 def test_render_block_is_deterministic(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     manifest = model_impact.load_manifest(repo / model_impact.MANIFEST_REL)
-    assert model_impact.render_block(manifest) == model_impact.render_block(manifest)
-    block = model_impact.render_block(manifest)
-    assert model_impact.BEGIN_MARKER in block
-    assert model_impact.END_MARKER in block
-    assert "| `demo` | modeled |" in block
+    first = model_impact.render_block(manifest)
+    second = model_impact.render_block(manifest)
+    assert first == second
+    assert model_impact.BEGIN_MARKER in first
+    assert model_impact.END_MARKER in first
+    assert "| `demo` | modeled |" in first
 
 
 # --- CLI smoke -------------------------------------------------------------

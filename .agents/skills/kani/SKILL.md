@@ -336,6 +336,25 @@ and exclusions for `Frame::buffer_index` and the RLE varint are recorded in
 before adding or re-baselining those harnesses; a symbolic 64-bit modulus is
 explicitly outside the Kani budget.
 
+## Pair Every Proof With a Control
+
+A Kani harness that stays green when the guard it claims to verify is deleted is not evidence.
+Every new or changed harness needs one of:
+
+- a **RED mutation**: delete or flip the production guard and record the harness failing, then
+  restore it; or
+- a **non-vacuity witness**: a reachable-state test (or a sibling harness) that shows the
+  precondition can hold and the interesting branch is exercised.
+
+Label the proof strength in the PR and manifest: `code_linked` (actual Rust kernel),
+`model_only` (copied/re-implemented predicate), `bounded` (small configuration), or
+`witness_only` (reachability). See
+[../verification/references/model-impact.md](../verification/references/model-impact.md).
+
+Prefer extracting a pure, `pub(crate)` decision kernel over proving a whole session: Kani cannot
+construct a `P2PSession`, but it can exhaust a small state machine. Do not change production
+semantics to make the proof easier.
+
 ## Checklist for New Kani Proofs
 
 - [ ] Identify ALL loops (including nested/called functions) and add `#[kani::unwind(N)]` (N = max + 1)

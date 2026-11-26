@@ -14,7 +14,7 @@ Concrete gate between implementation and external review. Use this after `dev-pi
 - [ ] Fast tier passes: `cargo fmt --all -- --check && cargo c && cargo tf`
 - [ ] Full tier passes before handoff: `cargo fmt --all -- --check && cargo c && cargo tfull && cargo test --doc && RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features hot-join,tokio,json,sync-send --document-private-items`
 - [ ] WASM check passes when portability-sensitive: `cargo check --target wasm32-unknown-unknown --no-default-features` and `cargo check -p wasm-browser-smoke --features hot-join --target wasm32-unknown-unknown --lib --tests`
-- [ ] Deep lane (Kani/Z3/feature matrix) run when proofs, protocol invariants, or feature-gated code are touched
+- [ ] Deep lane (Kani/Z3/feature matrix) run when proofs, protocol invariants, or feature-gated code are touched; mandatory when `python3 scripts/verification/model-impact.py affected --base origin/main` reports a component
 - [ ] Zero-panic scan has no new production hits
 - [ ] Determinism scan has no risky additions in simulation paths
 - [ ] Determinism-sensitive changes repeat a seeded scenario and compare state hashes or transcripts

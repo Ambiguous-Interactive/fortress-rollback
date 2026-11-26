@@ -12,13 +12,15 @@ Kani harnesses, Z3 proofs, and Rust tests. Treat it as the review gate, not docu
 
 ```bash
 python3 scripts/verification/model-impact.py check                 # manifest integrity + fresh table
+python3 scripts/verification/model-impact.py affected --base origin/main
 python3 scripts/verification/model-impact.py render                # regenerate the alignment table
 ```
 
-The manifest is the review map: a mapped change should update the listed spec, proof, or test (or
-carry an explicit `[[waiver]]`). A waiver needs a named maintainer approval recorded in the tracked
-PR or issue. Every new or changed proof also needs a RED mutation or a non-vacuity witness; a proof
-that stays green when its guard is removed is not evidence.
+`affected` exits non-zero when a mapped symbol (or a mapped path with no symbol mapping) changed
+without a mapped spec/proof/test update in the same diff or an unexpired `[[waiver]]`. Add the
+waiver only with a named maintainer approval recorded in the tracked PR or issue. See
+[references/model-impact.md](references/model-impact.md) for the drift taxonomy, proof-strength
+levels, and the "verify what executes" rule.
 
 ## TLA+ Quick Start
 

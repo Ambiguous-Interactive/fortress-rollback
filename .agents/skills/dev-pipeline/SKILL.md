@@ -207,6 +207,11 @@ All readiness checks should pass before opening a PR.
 ### Verification Levels (run in order, stop at first failure)
 
 ```bash
+# Level 0: Model-impact gate (any src/ or specs/ change; see
+# ../verification/references/model-impact.md)
+python3 scripts/verification/model-impact.py check
+python3 scripts/verification/model-impact.py affected --base origin/main
+
 # Level 1: Format + lint + unit tests (always)
 cargo c && cargo tf
 
@@ -234,6 +239,20 @@ If your change affects code covered by a Kani proof:
 2. If the proof fails, fix the code OR update the proof (with justification)
 3. If you add new invariants, add new proofs
 4. Register new proofs in `scripts/verification/verify-kani.sh`
+
+### Model-Impact Check
+
+Before Level 1, run the executable manifest gate:
+
+```bash
+python3 scripts/verification/model-impact.py check
+python3 scripts/verification/model-impact.py affected --base origin/main
+```
+
+A nonzero `affected` means the diff changed a mapped symbol or path without a mapped
+spec/proof/test update or an active `[[waiver]]`. Update the model/proof, add a named
+maintainer waiver, or narrow the mapping. See
+[references/model-impact.md](../verification/references/model-impact.md).
 
 ---
 
