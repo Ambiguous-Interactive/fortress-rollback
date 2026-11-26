@@ -341,6 +341,10 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
         seen.add(cid)
         if component.status not in STATUSES:
             errors.append(f"{cid}: status '{component.status}' is not one of {sorted(STATUSES)}")
+        if component.status in {"modeled", "bounded"} and not (
+            component.specs or component.kani or component.z3 or component.tests
+        ):
+            errors.append(f"{cid}: status '{component.status}' requires a mapped verification artifact")
         if component.last_reviewed > today:
             errors.append(f"{cid}: last_reviewed {component.last_reviewed} is in the future")
         if not component.paths:

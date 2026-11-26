@@ -197,6 +197,11 @@ def test_unregistered_tla_check_fails(tmp_path: Path) -> None:
 # --- check: stale residual review fails ------------------------------------
 
 
+def test_modeled_component_without_artifacts_fails(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path, _manifest(specs="[]", kani="[]", z3="[]", tests="[]"))
+    assert any("requires a mapped verification artifact" in error for error in run_check(repo).errors)
+
+
 def test_stale_residual_review_by_fails(tmp_path: Path) -> None:
     residual = (
         '{ id = "gap", description = "known gap", '
