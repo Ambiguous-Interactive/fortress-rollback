@@ -1564,13 +1564,14 @@ fn z3_proof_desync_detection_no_false_positives() {
     });
 }
 
-/// Z3 Proof: No false negative when a same-basis comparison runs
+/// Z3 model: the comparison primitive under a same-basis precondition
 ///
-/// Proves that when two peers compare at the same basis (equal protocol-v6
-/// basis tokens) and their checksums differ, the desync IS detected. This
-/// models the comparison primitive in
-/// `compare_local_checksums_against_peers()`: the basis-token gate admits the
-/// comparison, then the primitive compares the checksums.
+/// **Proof strength: `model_only`.** This is a definitional check of the
+/// comparison primitive: it assumes the basis gate already admitted the report
+/// and shows the primitive's `differ => detect` implication. It does not execute
+/// or prove the Rust gate. The production gate is code-linked by
+/// `delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite` and
+/// `unknown_basis_tokens_are_never_compared`.
 ///
 /// # Model
 /// - `local_checksum`, `remote_checksum`: per-frame checksums
@@ -1582,7 +1583,9 @@ fn z3_proof_desync_detection_no_false_positives() {
 /// - The checksums DIFFER (a real desync)
 ///
 /// # Property
-/// A same-basis comparison of differing checksums always detects the desync.
+/// Under the same-basis precondition, a compared differing checksum detects the
+/// desync. The basis variables scope the claim; the query is the primitive
+/// alone, so this test does not prove that the production gate is basis-aware.
 ///
 /// # Relationship to Production Code
 /// Models the comparison primitive of
@@ -1594,7 +1597,7 @@ fn z3_proof_desync_detection_no_false_positives() {
 ///
 /// # Limitations
 /// - Model-only: does not execute the Rust gate; it assumes the gate admitted
-///   the report. A different basis is never compared, proved separately by
+///   the report. A different basis is never compared, modeled separately by
 ///   `z3_proof_different_basis_is_never_compared`.
 /// - Does not model the frame confirmation guard.
 #[test]
@@ -1637,12 +1640,15 @@ fn z3_proof_desync_detection_no_false_negatives_on_comparison() {
     });
 }
 
-/// Z3 Proof: A different basis token is never compared
+/// Z3 model: the basis-gate decision rejects different tokens
 ///
-/// Proves that the protocol-v6 basis-token gate skips comparison whenever the
-/// local and remote tokens differ, regardless of the checksums. A report from a
-/// different basis cannot be compared with the receiver's recomputed local
-/// history and must not latch a mismatch (#562/#532).
+/// **Proof strength: `model_only`.** The gate decision is defined in this model
+/// as `local_token == remote_token`; the test shows the cross-basis branch is
+/// never taken *by that definition*. It cannot detect a production gate that
+/// removes or reverses the check. The production gate is code-linked by the Rust
+/// tests `delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite`
+/// (known-but-different tokens) and `unknown_basis_tokens_are_never_compared`
+/// (unknown tokens).
 ///
 /// # Model
 /// - `local_checksum`, `remote_checksum`: per-frame checksums
@@ -1653,21 +1659,17 @@ fn z3_proof_desync_detection_no_false_negatives_on_comparison() {
 /// - `local_basis != remote_basis`
 ///
 /// # Property
-/// The gate never admits the comparison, so no desync is detected from a
-/// cross-basis report.
+/// The modeled gate never admits the comparison, so the model detects no desync
+/// from a cross-basis report.
 ///
 /// # Relationship to Production Code
-/// Models the gate in `P2PSession::compare_local_checksums_against_peers()`:
+/// Documents the gate contract in
+/// `P2PSession::compare_local_checksums_against_peers()`:
 /// ```ignore
 /// if local_token != remote_token { continue; }  // different basis: skip
 /// ```
 ///
 /// # Limitations
-/// - Model-only: does not execute the Rust gate. The production gate is
-///   exercised by the Rust tests
-///   `delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite`
-///   (different known tokens) and `unknown_basis_tokens_are_never_compared`
-///   (unknown tokens).
 /// - The cost is availability, not safety: a real desync reported with a
 ///   different basis is not detected until a same-basis report arrives. The
 ///   input-exchange posture is AP/EL by design.
@@ -1833,6 +1835,8 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 /// - `comparison_happened`: Boolean (1=yes, 0=no) indicating if comparison was performed
 /// - `rewrite_cleared`: Boolean (1=yes, 0=no) indicating a confirmed-history rewrite
 ///   cleared the latched mismatch at this frame
+/// - `has_verified_frame`: Boolean (1=yes, 0=no) indicating the endpoint has a
+///   previously verified frame; production returns `InSync` in that case
 /// - `next_state`: The computed next state based on transition rules
 ///
 /// # Preconditions
@@ -1842,6 +1846,7 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 /// - `comparison_happened` in {0, 1} (boolean)
 /// - `checksums_match` in {0, 1} (boolean, only meaningful when comparison happened)
 /// - `rewrite_cleared` in {0, 1} (boolean)
+/// - `has_verified_frame` in {0, 1} (boolean)
 ///
 /// # Property Verified
 ///
@@ -1855,7 +1860,8 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 /// - InSync -> InSync: comparison happened, checksums match
 /// - InSync -> DesyncDetected: comparison happened, checksums differ
 /// - DesyncDetected -> DesyncDetected: still latched within this basis
-/// - DesyncDetected -> Pending: a confirmed-history rewrite cleared the latch (#532)
+/// - DesyncDetected -> InSync: a rewrite cleared the latch and a prior frame was verified
+/// - DesyncDetected -> Pending: a rewrite cleared the latch with no prior verified frame
 /// - Any -> Same: no comparison happened (state preserved)
 ///
 /// # Relationship to Production Code
@@ -1865,6 +1871,10 @@ fn z3_proof_pending_checksum_becomes_comparable() {
 /// - `src/sessions/p2p_session.rs` - `sync_health()` method
 /// - `src/sessions/p2p_session.rs` - `compare_local_checksums_against_peers()` method
 /// - `src/sessions/p2p_session.rs` - `invalidate_checksum_mismatch_from()` method
+///
+/// `sync_health()` returns `InSync` when `last_verified_frame` is `Some` and
+/// `Pending` otherwise, so the rewrite target is one of those two unlatched
+/// states rather than always `Pending`.
 ///
 /// Production state machine:
 /// ```ignore
@@ -1896,6 +1906,7 @@ fn z3_proof_sync_health_state_transitions() {
         let checksums_match = Int::fresh_const("checksums_match"); // 1 = match, 0 = differ
         let comparison_happened = Int::fresh_const("comparison_happened"); // 1 = yes, 0 = no
         let rewrite_cleared = Int::fresh_const("rewrite_cleared"); // 1 = cleared, 0 = no
+        let has_verified_frame = Int::fresh_const("has_verified_frame"); // 1 = prior match
 
         // Current state is valid
         solver.assert(current_state.ge(state_pending));
@@ -1913,11 +1924,18 @@ fn z3_proof_sync_health_state_transitions() {
         solver.assert(rewrite_cleared.ge(0));
         solver.assert(rewrite_cleared.le(1));
 
+        // A prior verified frame is a boolean fact
+        solver.assert(has_verified_frame.ge(0));
+        solver.assert(has_verified_frame.le(1));
+
         // Model the next state based on current state and comparison result.
-        // A rewrite clears the latched mismatch at this frame (#532); otherwise
-        // DesyncDetected stays latched within the same basis.
+        // A rewrite clears the latched mismatch at this frame (#532); the
+        // endpoint then reports InSync if a prior frame verified, else Pending.
+        let unlatched = has_verified_frame
+            .eq(1)
+            .ite(&Int::from_i64(state_in_sync), &Int::from_i64(state_pending));
         let next_state = rewrite_cleared.eq(1).ite(
-            &Int::from_i64(state_pending),
+            &unlatched,
             &current_state.eq(state_desync).ite(
                 &Int::from_i64(state_desync),
                 &comparison_happened.eq(1).ite(
@@ -1942,15 +1960,29 @@ fn z3_proof_sync_health_state_transitions() {
             "Z3 should prove DesyncDetected cannot become InSync without a rewrite"
         );
 
-        // Non-vacuity witness: a rewrite does clear the latched desync
+        // Non-vacuity witness: a rewrite with a prior verified frame clears the
+        // latched desync and returns InSync.
         let witness = Solver::new();
         witness.assert(current_state.eq(state_desync));
         witness.assert(rewrite_cleared.eq(1));
-        witness.assert(next_state.eq(state_pending));
+        witness.assert(has_verified_frame.eq(1));
+        witness.assert(next_state.eq(state_in_sync));
         assert_eq!(
             witness.check(),
             SatResult::Sat,
-            "Z3 should find the reachable rewrite-clears-latch transition"
+            "Z3 should find the reachable rewrite-clears-latch-to-InSync transition"
+        );
+
+        // A rewrite with no prior verified frame clears to Pending.
+        let pending_witness = Solver::new();
+        pending_witness.assert(current_state.eq(state_desync));
+        pending_witness.assert(rewrite_cleared.eq(1));
+        pending_witness.assert(has_verified_frame.eq(0));
+        pending_witness.assert(next_state.eq(state_pending));
+        assert_eq!(
+            pending_witness.check(),
+            SatResult::Sat,
+            "Z3 should find the reachable rewrite-clears-latch-to-Pending transition"
         );
     });
 }
