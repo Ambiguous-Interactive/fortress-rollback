@@ -35,8 +35,8 @@
 (*   - NoFalseLatchAcrossBasis: every latched mismatch was compared on the *)
 (*     same token.                                                         *)
 (*   - LatchClearedAtRewrite: every latched pair carries the current       *)
-(*     rewrite epoch of its frame, so a boundary change at or above it     *)
-(*     retires the pair.                                                   *)
+(*     rewrite epoch of its frame, so a boundary change at or below the    *)
+(*     latch frame retires the pair.                                       *)
 (*   - WitnessGoal (witness cfg, deliberately falsifiable): a latch, a    *)
 (*     discard, and an actual rewrite clear are all reachable.             *)
 (***************************************************************************)
@@ -229,7 +229,7 @@ TypeInvariant ==
 ReportBound ==
     \A p, q \in PEERS:
         (IF network[p][q].present THEN 1 ELSE 0)
-      + (IF pending[p][q].present THEN 1 ELSE 0) <= 1
+      + (IF pending[q][p].present THEN 1 ELSE 0) <= 1
 
 LatchBound ==
     \A p, q \in PEERS: Cardinality(latched[p][q]) <= 1

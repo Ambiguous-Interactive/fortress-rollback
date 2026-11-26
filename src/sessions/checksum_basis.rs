@@ -158,7 +158,10 @@ impl ChecksumBasisTracker {
             FreezeAction::Ignore => {},
             FreezeAction::Fold => {
                 // Only an adopted, non-conforming fold reaches this branch: the
-                // event list must stay strictly above the fold floor.
+                // event list must stay strictly above the fold floor. Remove the
+                // superseded explicit boundary before folding the new term, or
+                // the token would count both terms.
+                self.freeze_floors.remove(&player_handle);
                 self.base = self
                     .base
                     .wrapping_add(checksum_freeze_floor_term(floor, player_handle));
@@ -387,8 +390,14 @@ mod kani_proofs {
         assert_eq!(fold_token(0, Frame::NULL, [], Frame::new(frame)), Some(0));
     }
 
-    /// Adopting a snapshot basis preserves retained per-frame tokens and folds
-    /// the snapshot events into the token above the snapshot frame.
+    /// Adopting a snapshot basis preserves retained per-frame tokens and the
+    /// adopted base above the snapshot frame.
+    ///
+    /// The nonempty-event copy is covered by the Rust test
+    /// `adopting_a_snapshot_basis_preserves_tokens_above_the_snapshot_frame`;
+    /// the Kani budget does not support the BTreeMap collect for symbolic event
+    /// lists, so this harness uses the empty map and checks the retained token
+    /// and base paths.
     #[kani::proof]
     #[kani::unwind(4)]
     fn proof_checksum_basis_adopt_preserves_tokens_above_snapshot() {
@@ -412,6 +421,31 @@ mod kani_proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lowering a slot below an adopted fold floor folds the new term and must
+    /// remove the superseded explicit boundary; otherwise the token counts both
+    /// terms (review finding on the extraction).
+    #[test]
+    fn folding_a_lowered_boundary_removes_the_explicit_slot() {
+        let handle = PlayerHandle::new(1);
+        let mut tracker = ChecksumBasisTracker {
+            fold_floor: Frame::new(4),
+            ..ChecksumBasisTracker::default()
+        };
+        tracker.freeze_floors.insert(handle, Frame::new(6));
+
+        tracker.record_freeze(handle, Frame::new(3));
+
+        assert!(
+            !tracker.freeze_floors.contains_key(&handle),
+            "the superseded explicit boundary must be removed"
+        );
+        assert_eq!(
+            tracker.token_at(Frame::new(6)),
+            Some(checksum_freeze_floor_term(Frame::new(3), handle)),
+            "the token must count only the folded term"
+        );
+    }
 
     /// The pre-#563 token was an additive multiset of every applied rewrite
     /// floor. Two survivors that converged to the same single boundary kept
