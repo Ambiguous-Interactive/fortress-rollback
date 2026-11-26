@@ -301,7 +301,13 @@ def _symbol_state(root: Path, symbol: str, cache: dict[Path, str | None]) -> tup
 
 
 def _covers(check: str, stem: str) -> bool:
-    return check in {stem, f"{stem}Contract"} or check.startswith(stem) or stem.startswith(check)
+    """Return True when a registered check name covers a spec stem.
+
+    Trace specs are generated and registered as ``<stem>Contract``; every
+    other spec must match its registered check exactly. A prefix match would
+    let a variant companion satisfy an unregistered base spec.
+    """
+    return check in {stem, f"{stem}Contract"}
 
 
 def tla_checks(component: Component) -> tuple[str, ...]:

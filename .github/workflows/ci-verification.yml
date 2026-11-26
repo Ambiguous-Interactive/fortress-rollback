@@ -28,6 +28,10 @@ on:
       - 'scripts/verification/model-impact.py'
       - 'scripts/tests/test_model_impact.py'
       - 'scripts/verification/verify-*.sh'
+      - '.kani-version'
+      - '.tla-tools-version'
+      - '.github/actions/install-pinned-nightly/**'
+      - '.github/actions/setup-kani/**'
       - '.github/workflows/ci-verification.yml'
   merge_group:
   schedule:
