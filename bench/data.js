@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795644545303,
+  "lastUpdate": 1795719503396,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "cf60d1c9d57a28909351e1a52d9a981b28f2304b",
-          "message": "test: kill the coordinator commit-gate boundary mutant (#459)\n\n## Description\n\nFollow-up to #458. The local diff-scoped mutation run reported one\nmissed boundary mutant in the new coordinator commit gate\n(`drive_coordinated_drop` all-ready `<`/`==`). The production check is\nrestructured to an explicit `may_commit` branch, and a regression pins\nthe intended CAP behavior:\n\n- with a bare Ready quorum but a still-reachable omitted witness, the\ncoordinator must **not** commit;\n- once the omitted witness is locally unresponsive, the coordinator may\ncommit.\n\nVerified the mutant (`==` → `!=`) fails the new test (`a reachable\nmissing witness must be awaited`). No user-observable behavior change.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n## Testing\n\n- new test + mutant check: pass/fail as intended\n- `cargo clippy --workspace --all-targets --features tokio,json -D\nwarnings`: clean\n- `cargo tf`: 2783 passed / 493 skipped\n\n## Related Issues\n\nRelates to #445",
-          "timestamp": "2026-11-17T10:03:48Z",
-          "tree_id": "2320d7474d93613bdd213b074309ac1a5f93c021",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/cf60d1c9d57a28909351e1a52d9a981b28f2304b"
-        },
-        "date": 1794910588673,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 60757,
-            "range": "± 630",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 33358,
-            "range": "± 104",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1862,
-            "range": "± 107",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1556,
-            "range": "± 85",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3142,
-            "range": "± 185",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 2762,
             "range": "± 172",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4e400ee30f63052052c18513a8a46d384a5aa223",
+          "message": "test: retire the stale desync Z3 claims and gate the comparison (#572) (#586)\n\n<!-- session: ses_de6fd17caffetszqvtSz73umoT started:\n2026-11-26T17:59:10Z -->\n\n## Description\n\nPart (b), Z3 slice of #572 (the issue authorizes splitting into\nextraction+Kani\nand TLA/Z3/docs). This removes the two stale desync claims that no\nlonger match\nproduction and replaces them with basis-aware models:\n\n1. **`z3_proof_desync_detection_no_false_negatives_on_comparison` is now\nbasis-aware.** Production skips a checksum comparison unless the\nprotocol-v6\nbasis tokens match\n(`p2p_session.rs::compare_local_checksums_against_peers`).\n   The proof now assumes the gate admitted the report (`local_basis ==\n   remote_basis`) and proves the comparison primitive detects differing\nchecksums. The old message claimed \"differing checksums always trigger\n   detection\" across every basis, which is false.\n2. **New `z3_proof_different_basis_is_never_compared`.** Models the gate\nitself:\ndifferent tokens never admit a comparison and therefore cannot latch a\ndesync.\n   This is the cross-basis half the old proof silently assumed.\n3. **`z3_proof_sync_health_state_transitions` models the rewrite\nclearing.**\n`invalidate_checksum_mismatch_from` clears the latched mismatch at or\nabove a\nconfirmed-history rewrite floor (#532), so `DesyncDetected` is latched\nwithin\none basis, not terminal for the session. The proof keeps the\nno-latch-clear\ntransition UNSAT-safety check and adds a SAT non-vacuity witness for the\n   rewrite-clears edge.\n4. **Summaries and counts are corrected.** The desync summary and the\nmodule\nsummary no longer say \"always trigger detection\" or \"terminal\"; the\nstale\ngroup counts were audited against the 65 `#[test]` functions and updated\n(the aggregate total now reports 64 proofs plus 2 summary tests = 66\ntests).\n5. **`docs/specs/formal-spec.md`**: the header was stuck at 1.1 while\nthe\nrevision table was at 1.4. It is now 1.5 with a 2026-11-26 row, and\nSAFE-7a\n(same-basis gate), SAFE-7b (converged history shares a token; target of\n#572,\nexplicitly not yet proved) and SAFE-7c (rewrite clears stale latch\nstate) are\ndocumented. The generated wiki mirror and the alignment table are\nregenerated.\n6. **Manifest:** `z3_proof_different_basis_is_never_compared` is mapped\nto the\n`checksum-basis` component so the gate proof is tracked as its\nverification\n   artifact.\n\nNo production code, wire format, or test was deleted, skipped, or\nweakened. The\none narrowed proof gained a precondition that mirrors the production\ngate; its\ncross-basis complement is a new proof.\n\nRemaining on #572: extraction of `ChecksumBasisTracker` + the five Kani\nharnesses (part a), and `specs/tla/ChecksumBasis.tla` with the\n`BasisBlind`\nexpected-fail and witness (rest of part b). The manifest residuals\n`basis-token-model` and `latch-model` correctly stay open.\n\n## Type of Change\n\n- [x] 🧪 Test (adding or updating tests)\n- [x] 📚 Documentation (changes to documentation only)\n\n## Verification Impact\n\n- [x] `updated: docs/specs/verification-manifest.toml` — maps the new\n`z3_proof_different_basis_is_never_compared` proof to `checksum-basis`\n- [x] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (see\n      Testing)\n\n`model-impact.py affected --base origin/main` reports no mapped\nproduction\nimpact; no production path or symbol changed.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] Zero-panic policy: no production code changed; the Z3 file is\ntest-only.\n- [x] I have added tests that prove the change (new gate proof + rewrite\nwitness)\n- [x] `cargo fmt --all -- --check` passes\n- [x] I have run the full nextest suite (`cargo tfull`, see Testing)\n\n### If Applicable\n\n- [x] Documentation updated (`docs/specs/formal-spec.md` + wiki mirror +\n      regenerated alignment table)\n- [ ] `CHANGELOG.md` not changed: test/doc-only, no user-visible crate\nbehavior\n- [ ] Examples not applicable\n- [x] No new compiler warnings\n\n## Testing\n\n```bash\n# Pinned Z3 5.1.0 library, matching ci-verification.yml's z3-verification job\nexport Z3_LIBRARY_PATH_OVERRIDE=/usr/local/lib/python3.13/dist-packages/z3/lib\nexport LD_LIBRARY_PATH=\"$Z3_LIBRARY_PATH_OVERRIDE:$LD_LIBRARY_PATH\"\nexport Z3_SYS_Z3_VERSION=5.1.0\n\ncargo test --features z3-verification --test verification z3\n# test result: ok. 66 passed; 0 failed; 0 ignored; 0 measured; 226 filtered out\n\ncargo clippy --test verification --features z3-verification,tokio,json\n# Finished, no warnings\n\ncargo tfull\n# 3788 tests run: 3788 passed, 77 skipped (42.55s)\ncargo test --doc\n# 160 passed, 0 failed, 51 ignored\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features hot-join,tokio,json,sync-send --document-private-items\n# clean\n\npython3 scripts/ci/agent-preflight.py --full --auto-fix\n# All agent preflight checks passed.\npython3 scripts/verification/model-impact.py check\n# OK (11 components, 31 symbols, 42 artifacts)\npython3 scripts/verification/model-impact.py affected --base origin/main\n# No mapped verification impact (base HEAD).\npython3 scripts/hooks/check-plan-hygiene.py         # clean\npython3 scripts/docs/check-links.py                 # 0 errors, 0 warnings\nbash scripts/ci/check-doc-claims.sh                 # SUCCESS\npython3 scripts/docs/check-tla-config-consistency.py  # SUCCESS\nnpx markdownlint <changed markdown> --config .markdownlint.json  # clean\ntypos <changed files>                                # clean\n```\n\n**Red mutations (restored byte-for-byte after each run):**\n\n1. Replaced the new gate model's `comparison_runs = local_basis ==\nremote_basis`\n   with `Bool::from_bool(true)`:\n   `z3_proof_different_basis_is_never_compared` FAILED with\n`Z3 should prove different basis tokens are never compared` (SAT found).\n2. Made the rewrite branch return `DesyncDetected` instead of `Pending`:\n   `z3_proof_sync_health_state_transitions` FAILED with\n`Z3 should find the reachable rewrite-clears-latch transition` (UNSAT).\n3. Restored both; the full 66-test Z3 suite passed again.\n\n**Tests added/modified:**\n\n- Added `z3_proof_different_basis_is_never_compared`.\n- Narrowed `z3_proof_desync_detection_no_false_negatives_on_comparison`\nto the\nsame-basis comparison primitive (the production gate is its\nprecondition).\n- Extended `z3_proof_sync_health_state_transitions` with\n`rewrite_cleared` and a\nSAT witness; the old \"DesyncDetected -> InSync\" UNSAT check is\npreserved.\n- Updated the two summary tests (text + audited counts).\n\n## Risks and Rollback\n\n- **Risk:** the narrowed proof could hide a real false negative across\nbases.\nMitigated by the separate cross-basis proof and by SAFE-7b being\nexplicitly\n  marked \"not yet proved\" in the formal spec rather than claimed.\n- **Risk:** the model's `Pending` post-rewrite state is an abstraction;\nthe\n  production tests named in SAFE-7c are the code-level evidence.\n- **Rollback:** revert this PR; the Z3 file returns to the previous\nmodels and\n  the formal-spec header returns to 1.1. No runtime or wire change.\n\n## Related Issues\n\n- #572 (part b, Z3 slice; extraction+Kani and `ChecksumBasis.tla`\nremain)\n- Tracking: #580\n- Session-budget blocker fixed in #585",
+          "timestamp": "2026-11-26T18:47:07Z",
+          "tree_id": "07ba67b84cc72e752dbee3187829645bc8b93057",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/4e400ee30f63052052c18513a8a46d384a5aa223"
+        },
+        "date": 1795719502285,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 24449,
+            "range": "± 433",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 15145,
+            "range": "± 205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 451,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 562,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 5289,
+            "range": "± 149",
             "unit": "ns/iter"
           }
         ]
