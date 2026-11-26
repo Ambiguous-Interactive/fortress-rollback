@@ -635,9 +635,9 @@ not alter the deterministic protocol-v1 message format.
 ### SAFE-7a: Same-basis comparison
 
 The desync comparison of a frame runs only when the two peers' basis tokens at
-that frame are equal. A report from a different basis describes a pre-rewrite
-trajectory and is discarded rather than latched, because it cannot be compared
-with a recomputed local checksum:
+that frame are equal. A report from a different basis describes a history the
+receiver cannot compare with its recomputed local checksum, so it is discarded
+rather than latched:
 
 ```
 □(checksum_compare(p, q, f) → basis_token(p, f) = basis_token(q, f))

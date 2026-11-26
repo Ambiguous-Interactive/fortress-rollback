@@ -1640,9 +1640,9 @@ fn z3_proof_desync_detection_no_false_negatives_on_comparison() {
 /// Z3 Proof: A different basis token is never compared
 ///
 /// Proves that the protocol-v6 basis-token gate skips comparison whenever the
-/// local and remote tokens differ, regardless of the checksums. A report from
-/// a different rewrite basis describes a different frozen history and must not
-/// latch a mismatch (#562/#532).
+/// local and remote tokens differ, regardless of the checksums. A report from a
+/// different basis cannot be compared with the receiver's recomputed local
+/// history and must not latch a mismatch (#562/#532).
 ///
 /// # Model
 /// - `local_checksum`, `remote_checksum`: per-frame checksums
