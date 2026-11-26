@@ -1928,6 +1928,15 @@ fn z3_proof_sync_health_state_transitions() {
         solver.assert(has_verified_frame.ge(0));
         solver.assert(has_verified_frame.le(1));
 
+        // Production cannot report Pending once a frame has verified: sync_health
+        // returns InSync in that case. Keep the model's inputs consistent with
+        // that coupling so the transition table cannot claim Pending + verified.
+        solver.assert(
+            current_state
+                .eq(state_pending)
+                .implies(&has_verified_frame.eq(0)),
+        );
+
         // Model the next state based on current state and comparison result.
         // A rewrite clears the latched mismatch at this frame (#532); the
         // endpoint then reports InSync if a prior frame verified, else Pending.
