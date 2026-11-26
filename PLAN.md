@@ -8,7 +8,7 @@
 
 ## In progress
 
-1. [ ] #579 Add a model-impact manifest and proof-drift gate. Claimed: ses_de99bad28ffe7JbX23Bg5FbZge 2026-11-26T05:50Z. Expires: 2026-11-26T08:46Z. Exit: `model-impact.py check` passes; `affected --base` prints the correct components and commands for a fixture diff; `render` is stable; checker tests and agent preflight pass.
+_None._
 
 ## Future
 
