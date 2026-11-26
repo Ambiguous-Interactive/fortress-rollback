@@ -183,6 +183,13 @@ def _state_lock(
         except FileExistsError:
             time.sleep(0.01)
             continue
+        except FileNotFoundError:
+            # A reaper can rename the directory between our mkdir and owner
+            # publication. Retry the acquisition within the deadline instead
+            # of failing the budget update; the JS lock retries ENOENT for
+            # the same window.
+            time.sleep(0.01)
+            continue
         except OSError:
             # Do not remove lock_dir here: a reaper may have moved our
             # directory and a replacement owner may now occupy the path.

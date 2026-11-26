@@ -267,6 +267,72 @@ def test_lock_does_not_steal_a_live_owner(tmp_path: Path) -> None:
     assert (lock_dir / "owner").read_text(encoding="utf-8") == "other"
 
 
+def test_lock_retries_when_a_reaper_moves_the_directory_before_owner_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    owner = lock_dir / "owner"
+    real_open = os.open
+    reaped = False
+
+    def reaping_open(
+        target: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal reaped
+        if Path(target) == owner and not reaped:
+            reaped = True
+            # A reaper observed the previous stale lock and renames the
+            # directory after this writer's mkdir but before its owner
+            # publication. The fresh directory disappears under us.
+            shutil.rmtree(lock_dir)
+            raise FileNotFoundError(2, "No such file or directory", str(target))
+        return real_open(target, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(session_budget.os, "open", reaping_open)
+
+    with session_budget._state_lock(path) as fence:
+        fence()
+        assert owner.read_text(encoding="utf-8")
+
+    assert reaped
+    assert not lock_dir.exists()
+
+
+def test_lock_owner_publication_retry_is_deadline_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    owner = lock_dir / "owner"
+    real_open = os.open
+
+    def always_reaped_open(
+        target: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(target) == owner:
+            shutil.rmtree(lock_dir, ignore_errors=True)
+            raise FileNotFoundError(2, "No such file or directory", str(target))
+        return real_open(target, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(session_budget.os, "open", always_reaped_open)
+
+    try:
+        with pytest.raises(session_budget.BudgetError, match="another session"):
+            with session_budget._state_lock(path, timeout=0.1):
+                pass
+    finally:
+        shutil.rmtree(lock_dir, ignore_errors=True)
+
+
 def test_write_state_fence_rejects_a_lost_lock(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     lock_dir = path.with_name(f"{path.name}.lock")

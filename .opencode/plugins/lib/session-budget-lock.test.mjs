@@ -145,6 +145,28 @@ test("does not steal a lock directory whose owner is not published yet", async (
   assert.equal(await exists(path.join(lockPath, "owner")), false)
 })
 
+test("reaps a stale directory left before owner publication", async (t) => {
+  const { lockPath } = await setup(t)
+  // A crash between mkdir(lockPath) and publishing owner leaves an ownerless
+  // directory. Once it is stale, a contender must reap it instead of waiting
+  // forever.
+  await mkdir(lockPath)
+  const old = new Date(Date.now() - 120_000)
+  await utimes(lockPath, old, old)
+
+  const result = await withBudgetLock(
+    lockPath,
+    async ({ fence }) => {
+      await fence()
+      return "recovered"
+    },
+    { staleMs: 50 },
+  )
+
+  assert.equal(result, "recovered")
+  assert.equal(await exists(lockPath), false)
+})
+
 test("retries when the held directory is released while waiting", async (t) => {
   const { lockPath } = await setup(t)
   const ownerPath = path.join(lockPath, "owner")
