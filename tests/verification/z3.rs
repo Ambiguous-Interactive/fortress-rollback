@@ -1666,8 +1666,7 @@ fn z3_proof_desync_detection_no_false_negatives_on_comparison() {
 /// - The cost is availability, not safety: a real desync reported with a
 ///   different basis is not detected until a same-basis report arrives. The
 ///   input-exchange posture is AP/EL by design.
-/// - Model-only: the 64-bit token collision bound is documented on
-///   `ChecksumReport::basis_token`, not proved here.
+/// - Model-only: the 64-bit token collision bound is not proved here.
 #[test]
 fn z3_proof_different_basis_is_never_compared() {
     let cfg = Config::new();

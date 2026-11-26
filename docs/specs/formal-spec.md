@@ -662,11 +662,11 @@ freeze floors:
 ```
 
 A lower convergence replaces the slot's term; a higher re-detection is
-idempotent; reactivation removes it. The 64-bit token collision bound is
-documented on `ChecksumReport::basis_token`; the claim is "same basis implies
-same token", not the converse. This property is the target of #572
-(`ChecksumBasis.tla` plus Kani on the extracted tracker) and is not yet a proved
-property.
+idempotent; reactivation removes it. The 64-bit token collision bound is not
+proved; it is the usual 64-bit birthday bound over the number of distinct bases
+compared in a session, and the claim is "same basis implies same token", not the
+converse. This property is the target of #572 (`ChecksumBasis.tla` plus Kani on
+the extracted tracker) and is not yet a proved property.
 
 ### SAFE-7c: Rewrite clears stale latch state
 
