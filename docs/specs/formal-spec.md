@@ -635,16 +635,16 @@ not alter the deterministic protocol-v1 message format.
 ### SAFE-7a: Same-basis comparison
 
 The desync comparison of a frame runs only when the two peers' basis tokens at
-that frame are equal. A report from a different basis describes a history the
-receiver cannot compare with its recomputed local checksum, so it is discarded
-rather than latched:
+that frame are equal. The receiver discards a report from a different basis
+rather than latching it, because the receiver cannot compare that report with
+its recomputed local checksum:
 
 ```
 □(checksum_compare(p, q, f) → basis_token(p, f) = basis_token(q, f))
 ```
 
-This is the AP/EL input-exchange posture: a genuine divergence reported
-cross-basis is detected once a same-basis report arrives. The Z3 gate proofs are
+This is the AP/EL input-exchange posture: the receiver detects a genuine
+cross-basis divergence once a same-basis report arrives. The Z3 gate proofs are
 model-only (`z3_proof_different_basis_is_never_compared` and
 `z3_proof_desync_detection_no_false_negatives_on_comparison`). They prove the
 comparison primitive and the gate, not the Rust implementation.
@@ -652,8 +652,8 @@ comparison primitive and the gate, not the Rust implementation.
 ### SAFE-7b: Converged history shares a token
 
 The token is one additive term per frozen slot boundary at or below the frame,
-keyed by slot. Survivors that converged to the same frozen history therefore
-derive the same token, even when they reached it through different intermediate
+keyed by slot. Survivors that converged to the same frozen history derive the
+same token, even when they reached it through different intermediate
 freeze floors:
 
 ```
@@ -662,11 +662,12 @@ freeze floors:
 ```
 
 A lower convergence replaces the slot's term; a higher re-detection is
-idempotent; reactivation removes it. The 64-bit token collision bound is not
-proved; it is the usual 64-bit birthday bound over the number of distinct bases
-compared in a session, and the claim is "same basis implies same token", not the
-converse. This property is the target of #572 (`ChecksumBasis.tla` plus Kani on
-the extracted tracker) and is not yet a proved property.
+idempotent; reactivation removes it. The 64-bit token collision bound remains
+unproved: collisions follow the usual 64-bit birthday bound over the number of
+distinct bases compared in a session, and the claim is "same basis implies same
+token", not the converse. This property is the target of #572
+(`ChecksumBasis.tla` plus Kani on the extracted tracker) and is not yet a proved
+property.
 
 ### SAFE-7c: Rewrite clears stale latch state
 
@@ -678,12 +679,12 @@ A confirmed-history rewrite at floor `r` invalidates every comparison at or abov
 □(rewrite(p, r) → ∀q, f: f ≥ r → ¬pending(p, q, f))
 ```
 
-`SyncHealth::DesyncDetected` is therefore latched within one basis, not terminal
-for the session lifetime. The behavior is covered by the Rust tests
+`SyncHealth::DesyncDetected` stays latched within one basis, not terminal for
+the session lifetime. The Rust tests
 `freeze_rewrite_clears_a_latched_mismatch_whose_basis_was_invalidated` and
-`delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite`.
-`ChecksumExchange.tla` latches a verdict per pair and does not yet model the
-rewrite transition.
+`delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite` cover the
+behavior. `ChecksumExchange.tla` latches a verdict per pair and does not yet
+model the rewrite transition.
 
 ---
 
