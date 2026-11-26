@@ -8,7 +8,7 @@
 
 ## In progress
 
-_None._
+- [ ] #572 Prove the checksum basis token over converged freeze history — split part (b), Z3 slice: retire the stale "always trigger"/"terminal" desync claims, make the comparison proof basis-aware, and correct the `formal-spec.md` SAFE-7/version header. Claimed: ses_de6fd17caffetszqvtSz73umoT 2026-11-26T17:59:10Z. Expires: 2026-11-26T20:59:10Z. Exit: both stale claims are absent from `tests/verification/z3.rs` and `docs/specs/formal-spec.md`, the basis-aware/new Z3 proofs pass with pinned z3 5.1.0, and no existing test is weakened. Part (a) extraction+Kani and `ChecksumBasis.tla` remain on #572.
 
 ## Future
 
