@@ -186,6 +186,13 @@ def test_mislocated_rust_test_name_fails(tmp_path: Path) -> None:
     assert any("has no #[test] definition" in error for error in report.errors)
 
 
+@pytest.mark.parametrize("name", ["tests::demo_test", "demo_test"])
+def test_underqualified_rust_test_name_fails(tmp_path: Path, name: str) -> None:
+    repo = build_repo(tmp_path, _manifest(tests=f'["{name}"]'))
+    report = run_check(repo)
+    assert any("has no #[test] definition" in error for error in report.errors)
+
+
 def test_test_index_qualifies_nested_inline_modules(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     nested = repo / "src" / "nested.rs"
@@ -481,6 +488,33 @@ def test_comment_only_spec_update_does_not_satisfy_gate(tmp_path: Path, suffix: 
     report = run_affected(repo)
     assert report.impacts[0].verification_updated is False
     assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+@pytest.mark.parametrize("body", ["\\* only a comment\n", "\n\n   \n"])
+def test_new_comment_only_spec_does_not_satisfy_gate(tmp_path: Path, body: str) -> None:
+    manifest = _manifest(specs='["specs/tla/Demo.tla", "specs/tla/New.tla"]')
+    repo = build_repo(tmp_path, manifest)
+    (repo / "specs" / "tla" / "New.tla").write_text(body, encoding="utf-8")
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_new_substantive_spec_satisfies_gate(tmp_path: Path) -> None:
+    manifest = _manifest(specs='["specs/tla/Demo.tla", "specs/tla/New.tla"]')
+    repo = build_repo(tmp_path, manifest)
+    (repo / "specs" / "tla" / "New.tla").write_text(
+        "---- MODULE New ----\n====\n", encoding="utf-8"
+    )
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is True
+    assert report.drifted == ()
 
 
 def test_internal_whitespace_spec_update_does_not_satisfy_gate(tmp_path: Path) -> None:

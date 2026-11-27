@@ -567,14 +567,9 @@ def test_index(root: Path) -> dict[str, Path]:
 
 
 def _find_test(index: dict[str, Path], name: str) -> tuple[str, Path] | None:
-    """Find a manifest test entry by exact or module-qualified suffix match."""
-    if name in index:
-        return name, index[name]
-    suffix = f"::{name}"
-    for candidate in sorted(index):
-        if candidate.endswith(suffix):
-            return candidate, index[candidate]
-    return None
+    """Find a manifest test entry by its exact module-qualified name."""
+    path = index.get(name)
+    return (name, path) if path is not None else None
 
 
 def registrations(root: Path) -> tuple[set[str], set[str], set[str]]:
@@ -859,7 +854,7 @@ def _file_substance_updated(
         return False
     base_text = _base_text(root, base, path_text, cache)
     if base_text is None:
-        return True
+        return _normalized_substance(current, language) != ((), ())
     return _normalized_substance(current, language) != _normalized_substance(base_text, language)
 
 
