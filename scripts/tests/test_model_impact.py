@@ -77,9 +77,16 @@ def _git(repo: Path, *args: str) -> None:
     )
 
 
-def build_repo(tmp_path: Path, manifest: str | None = None) -> Path:
-    """Create a consistent synthetic repository and commit it."""
-    repo = tmp_path / "repo"
+def build_repo(
+    tmp_path: Path, manifest: str | None = None, subdir: str | None = None
+) -> Path:
+    """Create a consistent synthetic repository and commit it.
+
+    When *subdir* is set the project lives below the Git root, so a run with
+    ``--root`` pointing at the project exercises the repository-prefix path.
+    """
+    repository = tmp_path / "repo"
+    repo = repository / subdir if subdir else repository
     (repo / "src").mkdir(parents=True)
     (repo / "specs" / "tla").mkdir(parents=True)
     (repo / "scripts" / "verification").mkdir(parents=True)
@@ -119,6 +126,9 @@ def build_repo(tmp_path: Path, manifest: str | None = None) -> Path:
     (repo / "tests" / "verification" / "z3.rs").write_text(
         "fn z3_proof_demo() {}\n", encoding="utf-8"
     )
+    (repo / "Cargo.toml").write_text(
+        '[package]\nname = "fixture"\nversion = "0.1.0"\n', encoding="utf-8"
+    )
     manifest_text = manifest if manifest is not None else _manifest()
     (repo / "docs" / "specs" / "verification-manifest.toml").write_text(
         manifest_text, encoding="utf-8"
@@ -130,17 +140,17 @@ def build_repo(tmp_path: Path, manifest: str | None = None) -> Path:
         encoding="utf-8",
     )
 
-    _git(repo, "init", "-q")
-    _git(repo, "config", "user.name", "Fixture")
-    _git(repo, "config", "user.email", "fixture@example.invalid")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", "fixture baseline")
+    _git(repository, "init", "-q")
+    _git(repository, "config", "user.name", "Fixture")
+    _git(repository, "config", "user.email", "fixture@example.invalid")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-q", "-m", "fixture baseline")
 
     # The generated block must match the committed manifest.
     parsed = model_impact.load_manifest(repo / model_impact.MANIFEST_REL)
     model_impact.write_render(parsed, repo)
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-q", "-m", "render fixture table")
+    _git(repository, "add", ".")
+    _git(repository, "commit", "-q", "-m", "render fixture table")
     return repo
 
 
@@ -311,6 +321,73 @@ def test_one_line_test_attribute_before_helper_does_not_leak(tmp_path: Path) -> 
     index = model_impact.test_index(repo)
     assert "helpers::helper" not in index
     assert "helper" not in index
+
+
+def test_multiline_attribute_block_is_indexed(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text(
+        "#[test]\n"
+        "#[cfg_attr(\n"
+        '    feature = "slow",\n'
+        "    ignore\n"
+        ")]\n"
+        "fn attributed_test() {}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::attributed_test" in index
+
+
+def test_multiline_attribute_block_does_not_leak_from_a_previous_item(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text(
+        "#[cfg_attr(\n"
+        '    feature = "slow",\n'
+        "    ignore\n"
+        ")]\n"
+        "fn helper() {}\n\n"
+        "#[test]\n"
+        "fn actual_test() {}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::helper" not in index
+    assert "helpers::actual_test" in index
+
+
+def test_multiline_kani_attribute_is_indexed(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace(
+            "#[kani::proof]\nfn proof_demo()",
+            "#[kani::proof]\n#[kani::unwind(\n    4\n)]\nfn proof_demo()",
+        ),
+        encoding="utf-8",
+    )
+    assert "proof_demo" in model_impact.kani_proof_index(repo)
+
+
+@pytest.mark.parametrize(
+    ("relative", "expected"),
+    [
+        ("src/lib.rs", ()),
+        ("src/demo.rs", ("demo",)),
+        ("src/bin/tool.rs", ("tool",)),
+        ("src/bin/tool/main.rs", ("tool",)),
+        ("src/bin/tool/helper.rs", ("tool", "helper")),
+        ("src/main.rs", ("fixture",)),
+        ("tests/demo.rs", ("demo",)),
+        ("tests/verification/z3.rs", ("verification", "z3")),
+    ],
+)
+def test_module_path_uses_the_cargo_target_root(
+    tmp_path: Path, relative: str, expected: tuple[str, ...]
+) -> None:
+    repo = build_repo(tmp_path)
+    assert model_impact._module_path(repo / relative, repo) == expected
 
 
 def test_two_functions_on_one_line_bind_attributes_separately(tmp_path: Path) -> None:
@@ -784,6 +861,59 @@ def test_internal_whitespace_spec_update_does_not_satisfy_gate(tmp_path: Path) -
     report = run_affected(repo)
     assert report.impacts[0].verification_updated is False
     assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+# --- affected: repository prefix under a subdirectory root ------------------
+
+
+def test_comment_only_spec_update_under_a_subdirectory_root_does_not_satisfy_gate(
+    tmp_path: Path,
+) -> None:
+    repo = build_repo(tmp_path, subdir="nested")
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    spec = repo / "specs" / "tla" / "Demo.tla"
+    spec.write_text(spec.read_text(encoding="utf-8") + "\n\\* comment-only touch\n", encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_substantive_spec_update_under_a_subdirectory_root_satisfies_gate(
+    tmp_path: Path,
+) -> None:
+    repo = build_repo(tmp_path, subdir="nested")
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    spec = repo / "specs" / "tla" / "Demo.tla"
+    spec.write_text(spec.read_text(encoding="utf-8") + "\nVARIABLE reviewed\n", encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is True
+    assert report.drifted == ()
+
+
+def test_base_text_returns_none_only_when_the_path_is_absent_at_base(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    assert model_impact._base_text(repo, "HEAD", "src/new.rs", {}) is None
+    assert "mapped_fn" in (model_impact._base_text(repo, "HEAD", "src/demo.rs", {}) or "")
+
+
+def test_base_text_propagates_a_git_read_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = build_repo(tmp_path)
+    real_git = model_impact._git
+
+    def failing_show(root: Path, *args: str) -> str:
+        if args and args[0] == "show":
+            raise model_impact.GitError("simulated git failure")
+        return real_git(root, *args)
+
+    monkeypatch.setattr(model_impact, "_git", failing_show)
+    with pytest.raises(model_impact.GitError):
+        model_impact._base_text(repo, "HEAD", "src/demo.rs", {})
 
 
 def test_form_feed_in_string_does_not_misalign_substance() -> None:
