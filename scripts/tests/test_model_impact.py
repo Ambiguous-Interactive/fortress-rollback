@@ -390,6 +390,58 @@ def test_module_path_uses_the_cargo_target_root(
     assert model_impact._module_path(repo / relative, repo) == expected
 
 
+def test_multiline_attribute_with_braces_is_indexed(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text(
+        "#[test]\n"
+        "#[marker {\n"
+        "    key = 1\n"
+        "}]\n"
+        "fn attributed_test() {}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::attributed_test" in index
+
+
+def test_multiline_attribute_with_a_brace_in_a_string_is_indexed(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text(
+        "#[test]\n"
+        "#[should_panic(\n"
+        '    expected = "boom {"\n'
+        ")]\n"
+        "fn attributed_test() {}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::attributed_test" in index
+
+
+def test_module_path_uses_explicit_binary_target_names(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    (repo / "Cargo.toml").write_text(
+        '[package]\nname = "fixture"\nversion = "0.1.0"\n\n'
+        '[[bin]]\nname = "server"\npath = "src/main.rs"\n\n'
+        '[[bin]]\nname = "renamed-tool"\npath = "src/bin/tool.rs"\n\n'
+        '[[bin]]\nname = "directory-tool"\npath = "src/bin/tool/main.rs"\n',
+        encoding="utf-8",
+    )
+    assert model_impact._module_path(repo / "src" / "main.rs", repo) == ("server",)
+    assert model_impact._module_path(repo / "src" / "bin" / "tool.rs", repo) == (
+        "renamed_tool",
+    )
+    assert model_impact._module_path(repo / "src" / "bin" / "tool" / "main.rs", repo) == (
+        "directory_tool",
+    )
+    assert model_impact._module_path(repo / "src" / "bin" / "tool" / "helper.rs", repo) == (
+        "directory_tool",
+        "helper",
+    )
+
+
 def test_two_functions_on_one_line_bind_attributes_separately(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     helpers = repo / "src" / "helpers.rs"

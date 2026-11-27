@@ -574,10 +574,8 @@ def _has_attribute(
             continue
         balance = segment.count("[") - segment.count("]")
         if balance != 0:
-            # An unbalanced block continues on the previous line, but an item
-            # body can never be part of an attribute, so stop there.
-            if "{" in segment or "}" in segment:
-                return False
+            # An unbalanced block continues on the previous line. The final
+            # shape check prevents an item body from being mistaken for one.
             while index >= 0 and not lines[index].strip():
                 index -= 1
             if index < 0:
@@ -602,6 +600,7 @@ def _has_test_attribute(
 
 
 _PACKAGE_NAME_CACHE: dict[str, str | None] = {}
+_BINARY_TARGET_CACHE: dict[str, dict[str, str]] = {}
 
 
 def _package_binary_name(root: Path) -> str:
@@ -616,17 +615,49 @@ def _package_binary_name(root: Path) -> str:
     key = str(root.resolve())
     if key not in _PACKAGE_NAME_CACHE:
         name: str | None = None
-        try:
-            data = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
-            package = data.get("package")
-            if isinstance(package, dict):
-                candidate = package.get("name")
-                if isinstance(candidate, str) and candidate:
-                    name = candidate.replace("-", "_")
-        except (OSError, ValueError):
-            name = None
+        package = _manifest_table(root).get("package")
+        if isinstance(package, dict):
+            candidate = package.get("name")
+            if isinstance(candidate, str) and candidate:
+                name = candidate.replace("-", "_")
         _PACKAGE_NAME_CACHE[key] = name
     return _PACKAGE_NAME_CACHE[key] or "main"
+
+
+def _manifest_table(root: Path) -> dict[str, Any]:
+    """Read the root ``Cargo.toml``, or an empty table when it is unreadable."""
+    try:
+        data = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _binary_targets(root: Path) -> dict[str, str]:
+    """Map binary source paths to their explicit ``[[bin]]`` target names.
+
+    An explicit ``[[bin]]`` entry can rename ``src/main.rs`` or a file under
+    ``src/bin/``, so the file stem is not authoritative when an entry matches.
+    """
+    key = str(root.resolve())
+    if key not in _BINARY_TARGET_CACHE:
+        targets: dict[str, str] = {}
+        bins = _manifest_table(root).get("bin", [])
+        if isinstance(bins, list):
+            for entry in bins:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                path = entry.get("path")
+                if isinstance(name, str) and name and isinstance(path, str) and path:
+                    relative = str(Path(path)).lstrip("./")
+                    targets[relative] = name.replace("-", "_")
+        _BINARY_TARGET_CACHE[key] = targets
+    return _BINARY_TARGET_CACHE[key]
+
+
+def _binary_name(root: Path, relative: Path, default: str) -> str:
+    return _binary_targets(root).get(relative.as_posix(), default)
 
 
 def _module_tail(parts: list[str]) -> tuple[str, ...]:
@@ -660,14 +691,15 @@ def _module_path(path: Path, root: Path) -> tuple[str, ...]:
         if rest[0] == "bin" and len(rest) >= 2:
             binary = rest[1]
             if binary.endswith(".rs"):
-                return (Path(binary).stem, *_module_tail(rest[2:]))
-            if len(rest) == 3 and rest[2] == "main.rs":
-                return (binary,)
-            return (binary, *_module_tail(rest[2:]))
+                name = _binary_name(root, Path(*parts), Path(binary).stem)
+                return (name, *_module_tail(rest[2:]))
+            name = _binary_name(root, Path("src", "bin", binary, "main.rs"), binary)
+            return (name, *_module_tail(rest[2:]))
         if rest == ["lib.rs"]:
             return ()
         if rest == ["main.rs"]:
-            return (_package_binary_name(root),)
+            default = _package_binary_name(root)
+            return (_binary_name(root, Path(*parts), default),)
     return _module_tail(rest)
 
 

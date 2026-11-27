@@ -43,8 +43,9 @@ unregistered TLA check, expired residual `review_by`, expired waiver, or a stale
 A Rust test entry must match the test's full module path exactly; abbreviated or bare names fail,
 except for library-root tests (in `src/lib.rs`), whose qualified name is the bare function name.
 Cargo target roots are qualified by their crate identity: `src/main.rs` uses the package's default
-binary name, `src/bin/tool.rs` and `src/bin/tool/main.rs` both use `tool::...`, and an integration
-target `tests/foo.rs` uses `foo::...`. Same-named tests in different modules stay distinct, and a
+binary name (or an explicit `[[bin]] name`), `src/bin/tool.rs` and `src/bin/tool/main.rs` both use
+`tool::...` (again honoring an explicit `[[bin]] name`), and an integration target `tests/foo.rs`
+uses `foo::...`. Same-named tests in different modules stay distinct, and a
 name defined in more than one file fails `check` as ambiguous. A newly added spec counts only when it
 has non-comment, non-whitespace content. A Kani harness name must have exactly one `#[kani::proof]`
 definition; duplicates fail `check` with the defining paths. Symbol regex mismatches are advisory
