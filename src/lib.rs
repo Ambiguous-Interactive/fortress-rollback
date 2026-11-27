@@ -284,6 +284,10 @@ pub mod sessions {
     pub mod p2p_spectator_session;
     #[doc(hidden)]
     pub mod player_registry;
+    /// Provisional and locked `Ready` transcripts for coordinated drops
+    /// (extracted for Kani).
+    #[doc(hidden)]
+    pub(crate) mod ready_transcripts;
     /// Replay playback session for deterministic match replay.
     pub mod replay_session;
     #[doc(hidden)]

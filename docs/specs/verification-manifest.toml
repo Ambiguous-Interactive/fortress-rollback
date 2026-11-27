@@ -76,13 +76,14 @@ residuals = []
 id = "provisional-ready"
 status = "bounded"
 owner = "maintainer"
-last_reviewed = "2026-11-26"
-paths = ["src/sessions/p2p_session.rs"]
-symbols = ["src/sessions/p2p_session.rs::coordinated_drop_promote_provisional_ready"]
+last_reviewed = "2026-11-27"
+paths = ["src/sessions/ready_transcripts.rs", "src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/ready_transcripts.rs::ready_admission", "src/sessions/ready_transcripts.rs::admit", "src/sessions/ready_transcripts.rs::lock_digest", "src/sessions/ready_transcripts.rs::promote_matching", "src/sessions/p2p_session.rs::coordinated_drop_mark_ready"]
 specs = ["specs/tla/CoordinatedReadyDigest.tla"]
-tests = ["sessions::p2p_session::tests::non_authority_ready_cannot_lock_the_digest_or_count", "sessions::p2p_session::tests::matching_provisional_ready_is_promoted_when_authority_locks_the_digest", "sessions::p2p_session::tests::local_history_locks_the_digest_despite_a_conflicting_provisional_ready"]
-scope = "one already-selected cut, three participants, two digests; only the effective authority or independently verified local history locks the cut digest, a matching provisional is promoted, a mismatching one is discarded, and a counted Ready matches the lock. The pre-#530 rule is an enforced expected-fail. Cut selection and the coordinator fallback are modeled separately"
-residuals = []
+kani = ["proof_ready_admission_count_requires_authority_or_lock", "proof_ready_transcripts_provisional_never_counts", "proof_ready_transcripts_promotion_requires_matching_digest"]
+tests = ["sessions::p2p_session::tests::non_authority_ready_cannot_lock_the_digest_or_count", "sessions::p2p_session::tests::matching_provisional_ready_is_promoted_when_authority_locks_the_digest", "sessions::p2p_session::tests::local_history_locks_the_digest_despite_a_conflicting_provisional_ready", "sessions::ready_transcripts::tests::non_authority_report_stays_provisional_until_the_digest_locks", "sessions::ready_transcripts::tests::mismatching_provisional_report_is_discarded_on_lock", "sessions::ready_transcripts::tests::non_authority_report_conflicts_with_a_different_locked_digest", "sessions::ready_transcripts::tests::transcript_before_the_lock_is_a_conflict_and_never_counts", "sessions::ready_transcripts::tests::adopted_commit_digest_does_not_promote_provisional_reports", "sessions::ready_transcripts::tests::conflicting_retry_for_one_participant_is_a_conflict", "sessions::ready_transcripts::tests::resync_counts_only_matching_digests_and_rejects_a_foreign_cut", "sessions::ready_transcripts::tests::locked_transcripts_are_exposed_in_participant_order"]
+scope = "one already-selected cut, three participants, two digests; only the effective authority or independently verified local history locks the cut digest, a matching provisional is promoted, a mismatching one is discarded, and a counted Ready matches the lock. The pre-#530 rule is an enforced expected-fail. The extracted ReadyTranscripts typestate keeps the counted set private and the three Kani harnesses cover the pure admission rule, unlocked non-authority reports, and matching-only promotion. Cut selection and the coordinator fallback are modeled separately"
+residuals = [{ id = "ready-transcript-map", description = "the BTreeMap composition, certificate-adoption ordering, and the session-level authority decision are module/integration tested rather than Kani-proved; the three harnesses cover the pure admission and promotion kernels", review_by = "2027-02-01" }]
 
 [[component]]
 id = "terminal-epoch"

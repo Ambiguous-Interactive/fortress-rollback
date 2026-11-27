@@ -22,6 +22,7 @@ use crate::sessions::config::ClockFn;
 use crate::sessions::config::{DisconnectBehavior, ProtocolConfig, SaveMode};
 use crate::sessions::event_drain::enqueue_event_bounded;
 use crate::sessions::player_registry::PlayerRegistry;
+use crate::sessions::ready_transcripts::ReadyTranscripts;
 use crate::sessions::session_trait::Session;
 use crate::sessions::sync_health::SyncHealth;
 use crate::sessions::terminal_epoch::{
@@ -260,22 +261,15 @@ struct CoordinatedDropAttempt<A> {
     held_at: Frame,
     phase: CoordinatedDropPhase,
     reports: BTreeMap<u16, DropReport>,
-    ready: std::collections::BTreeSet<u16>,
-    /// Ready transcripts accepted after the expected cut digest was established
-    /// by an authority or by independently verified local history.
-    ready_transcripts: BTreeMap<u16, (Frame, u64)>,
-    /// Ready transcripts observed before the expected cut digest exists.
+    /// Locked digest plus provisional and counted Ready transcripts.
     ///
-    /// Agreement on the selected frame alone does not establish agreement on
-    /// the history at that frame, so a non-authority Ready is retained here and
-    /// does not count toward the quorum. It is promoted only if its digest
-    /// matches the digest later established by an authority or by local
-    /// verification; a mismatching provisional report is discarded. Bounded by
-    /// the participant set.
-    provisional_ready: BTreeMap<u16, (Frame, u64)>,
+    /// The typestate in [`ReadyTranscripts`] keeps a pre-digest non-authority
+    /// report provisional: it never counts until an authority or independently
+    /// verified local history locks the digest (#529). Bounded by the
+    /// participant set.
+    ready: ReadyTranscripts,
     committed_acks: std::collections::BTreeSet<u16>,
     cut: Option<Frame>,
-    cut_digest: Option<u64>,
     pending_commit: Option<DropCommit>,
     backfill_chunks: BTreeMap<u16, DropBackfill>,
     relayed_backfill: BTreeMap<u16, DropBackfill>,
@@ -2970,12 +2964,9 @@ impl<T: Config> P2PSession<T> {
             held_at,
             phase: CoordinatedDropPhase::Inventory,
             reports,
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: None,
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -3052,9 +3043,9 @@ impl<T: Config> P2PSession<T> {
             reason,
             attempt.phase,
             attempt.cut,
-            attempt.cut_digest,
+            attempt.ready.digest(),
             attempt.reports.len(),
-            attempt.ready.len(),
+            attempt.ready.count(),
             attempt.committed_acks.len(),
             attempt.pending_commit
         );
@@ -3575,12 +3566,9 @@ impl<T: Config> P2PSession<T> {
             held_at,
             phase: CoordinatedDropPhase::Inventory,
             reports,
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: None,
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -3852,15 +3840,10 @@ impl<T: Config> P2PSession<T> {
                     // The effective coordinator originated this Ready, so its
                     // digest is authoritative. It also promotes any matching
                     // provisional participant transcript.
-                    Self::coordinated_drop_establish_ready_digest(
-                        active,
-                        report.cut,
-                        report.cut_digest,
-                    )?;
                     active
-                        .ready_transcripts
-                        .insert(report.participant, (report.cut, report.cut_digest));
-                    active.ready.insert(report.participant);
+                        .ready
+                        .admit(report.participant, report.cut, report.cut_digest, true)
+                        .map_err(|_error| DropAbortReason::ConflictingHistory)?;
                     // Re-enter Backfill so this node verifies/backfills its own
                     // history and emits Ready at the coordinator's cut.
                     active.phase = CoordinatedDropPhase::Backfill;
@@ -3885,8 +3868,18 @@ impl<T: Config> P2PSession<T> {
                         }
                         return Err(DropAbortReason::ConflictingHistory);
                     }
-                    match active.cut_digest {
-                        Some(expected) if expected != report.cut_digest => {
+                    // Agreement on the selected frame alone does not establish
+                    // agreement on the history at that frame. The transcript
+                    // typestate keeps a non-authority report provisional until
+                    // an authority or local verification locks the digest.
+                    match active.ready.admit(
+                        report.participant,
+                        report.cut,
+                        report.cut_digest,
+                        conflicting_authority,
+                    ) {
+                        Ok(new_information) => relay |= new_information,
+                        Err(_conflict) => {
                             if !conflicting_authority {
                                 Self::coordinated_drop_discard_artifact(
                                     "report",
@@ -3895,62 +3888,6 @@ impl<T: Config> P2PSession<T> {
                                 return Ok(());
                             }
                             return Err(DropAbortReason::ConflictingHistory);
-                        },
-                        Some(_) => {
-                            Self::coordinated_drop_promote_provisional_ready(active);
-                            if let Some(existing) =
-                                active.ready_transcripts.get(&report.participant)
-                            {
-                                if *existing != (report.cut, report.cut_digest) {
-                                    Self::coordinated_drop_discard_artifact(
-                                        "report",
-                                        DropAbortReason::ConflictingHistory,
-                                    );
-                                    return Ok(());
-                                }
-                            } else {
-                                active
-                                    .ready_transcripts
-                                    .insert(report.participant, (report.cut, report.cut_digest));
-                                relay = true;
-                            }
-                            active.ready.insert(report.participant);
-                        },
-                        None if conflicting_authority => {
-                            Self::coordinated_drop_establish_ready_digest(
-                                active,
-                                report.cut,
-                                report.cut_digest,
-                            )?;
-                            active
-                                .ready_transcripts
-                                .insert(report.participant, (report.cut, report.cut_digest));
-                            active.ready.insert(report.participant);
-                            relay = true;
-                        },
-                        None => {
-                            // Agreement on the selected frame alone does not
-                            // establish agreement on the history at that
-                            // frame. Keep a non-authority transcript
-                            // provisional until an authority or local
-                            // verification locks the expected digest.
-                            match active.provisional_ready.get(&report.participant) {
-                                Some(existing) if *existing != (report.cut, report.cut_digest) => {
-                                    Self::coordinated_drop_discard_artifact(
-                                        "report",
-                                        DropAbortReason::ConflictingHistory,
-                                    );
-                                    return Ok(());
-                                },
-                                Some(_) => {},
-                                None => {
-                                    active.provisional_ready.insert(
-                                        report.participant,
-                                        (report.cut, report.cut_digest),
-                                    );
-                                    relay = true;
-                                },
-                            }
                         },
                     }
                 }
@@ -4016,7 +3953,8 @@ impl<T: Config> P2PSession<T> {
                     return Ok(());
                 }
                 if active
-                    .cut_digest
+                    .ready
+                    .digest()
                     .is_some_and(|digest| digest != report.cut_digest)
                 {
                     Self::coordinated_drop_discard_artifact(
@@ -4886,28 +4824,16 @@ impl<T: Config> P2PSession<T> {
             active.phase = CoordinatedDropPhase::Backfill;
             relay = true;
         }
-        if active
-            .cut_digest
-            .is_some_and(|digest| digest != commit.cut_digest)
-        {
-            return Err(DropAbortReason::ConflictingHistory);
-        }
-        active.cut_digest.get_or_insert(commit.cut_digest);
+        active
+            .ready
+            .adopt_digest(commit.cut_digest)
+            .map_err(|_conflict| DropAbortReason::ConflictingHistory)?;
         if let Some(reporter) = reporter {
             if active.participants.contains(&reporter) {
-                match active.ready_transcripts.get(&reporter) {
-                    Some(existing) if *existing != (commit.cut, commit.cut_digest) => {
-                        return Err(DropAbortReason::ConflictingHistory);
-                    },
-                    Some(_existing) => {},
-                    None => {
-                        active
-                            .ready_transcripts
-                            .insert(reporter, (commit.cut, commit.cut_digest));
-                        active.ready.insert(reporter);
-                        relay = true;
-                    },
-                }
+                relay |= active
+                    .ready
+                    .record_locked(reporter, commit.cut, commit.cut_digest)
+                    .map_err(|_conflict| DropAbortReason::ConflictingHistory)?;
             }
         }
         active.pending_commit = Some(commit);
@@ -5246,50 +5172,6 @@ impl<T: Config> P2PSession<T> {
             && now.saturating_duration_since(active.started_at) >= COORDINATED_DROP_FALLBACK_GRACE
     }
 
-    /// Promotes provisional Ready transcripts that match the established cut
-    /// digest and drops reports that agree on the frame but disagree on its
-    /// history. Until this runs, a provisional report never counts toward the
-    /// strict-majority quorum.
-    fn coordinated_drop_promote_provisional_ready(active: &mut CoordinatedDropAttempt<T::Address>) {
-        let (Some(cut), Some(digest)) = (active.cut, active.cut_digest) else {
-            return;
-        };
-        let provisional = std::mem::take(&mut active.provisional_ready);
-        for (participant, (reported_cut, reported_digest)) in provisional {
-            if reported_cut == cut && reported_digest == digest {
-                active
-                    .ready_transcripts
-                    .insert(participant, (reported_cut, reported_digest));
-                active.ready.insert(participant);
-            }
-        }
-    }
-
-    /// Locks the expected cut digest from a Ready authority or from locally
-    /// verified history, then promotes matching provisional transcripts.
-    ///
-    /// Returns whether this call established the digest. A differing digest is
-    /// a genuine conflict with an already locked expectation.
-    fn coordinated_drop_establish_ready_digest(
-        active: &mut CoordinatedDropAttempt<T::Address>,
-        cut: Frame,
-        digest: u64,
-    ) -> Result<bool, DropAbortReason> {
-        if active.cut != Some(cut) {
-            return Err(DropAbortReason::ConflictingHistory);
-        }
-        if let Some(existing) = active.cut_digest {
-            if existing != digest {
-                return Err(DropAbortReason::ConflictingHistory);
-            }
-            Self::coordinated_drop_promote_provisional_ready(active);
-            return Ok(false);
-        }
-        active.cut_digest = Some(digest);
-        Self::coordinated_drop_promote_provisional_ready(active);
-        Ok(true)
-    }
-
     fn coordinated_drop_mark_ready(&mut self) -> Result<(), DropAbortReason> {
         let (operation, participant, targets, cut) = {
             let active = self
@@ -5319,11 +5201,6 @@ impl<T: Config> P2PSession<T> {
             .active
             .as_mut()
             .ok_or(DropAbortReason::ParticipantLost)?;
-        if let Some(existing) = active.cut_digest {
-            if existing != digest {
-                return Err(DropAbortReason::ConflictingHistory);
-            }
-        }
         // A donor announced the digest it computed for this cut; if it disagrees
         // with the value this endpoint derived from the installed history, the
         // announced range was not the certified one.
@@ -5336,10 +5213,11 @@ impl<T: Config> P2PSession<T> {
         }
         // Independently verified local history is an authoritative digest
         // source: lock it before counting any provisional participant report.
-        Self::coordinated_drop_establish_ready_digest(active, cut, digest)?;
+        active
+            .ready
+            .admit(participant, cut, digest, true)
+            .map_err(|_conflict| DropAbortReason::ConflictingHistory)?;
         active.phase = CoordinatedDropPhase::Ready;
-        active.ready.insert(participant);
-        active.ready_transcripts.insert(participant, (cut, digest));
         self.coordinated_drop_broadcast(DropControlMessage::Report(report), &targets);
         Ok(())
     }
@@ -5356,9 +5234,9 @@ impl<T: Config> P2PSession<T> {
             }
             if active.operation != commit.operation
                 || active.cut != Some(commit.cut)
-                || active.cut_digest != Some(commit.cut_digest)
-                || !active.ready.contains(&active.local_participant)
-                || active.ready.len() < active.quorum
+                || active.ready.digest() != Some(commit.cut_digest)
+                || !active.ready.is_counted(active.local_participant)
+                || active.ready.count() < active.quorum
                 || active.phase != CoordinatedDropPhase::Ready
             {
                 return Err(DropAbortReason::ConflictingHistory);
@@ -5820,9 +5698,9 @@ impl<T: Config> P2PSession<T> {
             let participants = active.participants.clone();
             let inventory_reports: Vec<_> = active.reports.values().cloned().collect();
             let ready_reports: Vec<_> = active
-                .ready_transcripts
-                .iter()
-                .map(|(&participant, &(cut, cut_digest))| DropReport {
+                .ready
+                .locked_transcripts()
+                .map(|(participant, cut, cut_digest)| DropReport {
                     operation: active.operation,
                     participant,
                     stage: DropReportStage::Ready,
@@ -5835,7 +5713,7 @@ impl<T: Config> P2PSession<T> {
             let relayed_backfills: Vec<_> = active.relayed_backfill.values().cloned().collect();
             let phase = active.phase;
             let cut = active.cut;
-            let cut_digest = active.cut_digest;
+            let cut_digest = active.ready.digest();
             let local_participant = active.local_participant;
             let coordinator =
                 Self::coordinated_drop_effective_coordinator(active).unwrap_or(local_participant);
@@ -5976,19 +5854,14 @@ impl<T: Config> P2PSession<T> {
 
         let deferred_ready_error = self.coordinated_drop.active.as_mut().and_then(|active| {
             let cut = active.cut?;
-            let expected = active.cut_digest?;
-            for (&participant, &(reported_cut, digest)) in &active.ready_transcripts {
-                if reported_cut != cut {
-                    return Some(DropAbortReason::ConflictingHistory);
-                }
-                // Only transcripts matching the established digest count toward
-                // the quorum. A disparate claim is a peer artifact, not a
-                // conflict with an authority-established expectation.
-                if digest == expected {
-                    active.ready.insert(participant);
-                }
-            }
-            None
+            // Only transcripts matching the established digest count toward the
+            // quorum. A disparate claim is a peer artifact, not a conflict with
+            // an authority-established expectation.
+            active
+                .ready
+                .resync_counted(cut)
+                .err()
+                .map(|_conflict| DropAbortReason::ConflictingHistory)
         });
         if let Some(reason) = deferred_ready_error {
             self.coordinated_drop_fail_closed(reason, true);
@@ -6093,7 +5966,7 @@ impl<T: Config> P2PSession<T> {
         }
 
         let commit_ready = self.coordinated_drop.active.as_ref().is_some_and(|active| {
-            active.phase == CoordinatedDropPhase::Ready && active.ready.len() >= active.quorum
+            active.phase == CoordinatedDropPhase::Ready && active.ready.count() >= active.quorum
         });
         let commit = if commit_ready {
             self.coordinated_drop.active.as_ref().and_then(|active| {
@@ -6105,16 +5978,16 @@ impl<T: Config> P2PSession<T> {
                 }
                 let is_coordinator = Self::coordinated_drop_effective_coordinator(active)
                     == Some(active.local_participant);
-                let may_commit = if active.ready.len() == active.participants.len() {
+                let may_commit = if active.ready.count() == active.participants.len() {
                     true
                 } else if active.acting_coordinator.is_some() {
                     self.coordinated_drop_missing_witnesses_excused(active, |participant| {
-                        !active.ready.contains(&participant)
+                        !active.ready.is_counted(participant)
                     })
                 } else {
                     self.coordinated_drop_missing_ready_are_unresponsive(
                         &active.participants,
-                        &active.ready,
+                        active.ready.counted(),
                     )
                 };
                 if !is_coordinator || !may_commit {
@@ -6123,7 +5996,7 @@ impl<T: Config> P2PSession<T> {
                 Some(DropCommit {
                     operation: active.operation,
                     cut: active.cut?,
-                    cut_digest: active.cut_digest?,
+                    cut_digest: active.ready.digest()?,
                 })
             })
         } else {
@@ -23048,9 +22921,7 @@ mod tests {
             cut_digest: 0,
         };
         let now = session.coordinated_drop_now();
-        let mut ready = std::collections::BTreeSet::new();
-        ready.insert(0_u16);
-        ready.insert(1_u16);
+        let ready = ReadyTranscripts::from_parts(Some(0), [], [], [0_u16, 1]);
         session.coordinated_drop.active = Some(CoordinatedDropAttempt {
             operation,
             target_addr: test_addr(9403),
@@ -23062,11 +22933,8 @@ mod tests {
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
             ready,
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
-            cut_digest: Some(0),
             pending_commit: Some(commit),
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -23224,12 +23092,12 @@ mod tests {
         };
         let cut = Frame::new(0);
         let now = session.coordinated_drop_now();
-        let mut ready = std::collections::BTreeSet::new();
-        let mut ready_transcripts = BTreeMap::new();
-        for participant in [0_u16, 1, 2] {
-            ready.insert(participant);
-            ready_transcripts.insert(participant, (cut, 0));
-        }
+        let ready = ReadyTranscripts::from_parts(
+            Some(0),
+            [(0, cut, 0), (1, cut, 0), (2, cut, 0)],
+            [],
+            [0_u16, 1, 2],
+        );
         session.coordinated_drop.active = Some(CoordinatedDropAttempt {
             operation,
             target_addr: test_addr(9403),
@@ -23241,11 +23109,8 @@ mod tests {
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
             ready,
-            ready_transcripts,
-            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
-            cut_digest: Some(0),
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -23346,12 +23211,9 @@ mod tests {
             held_at: cut,
             phase: CoordinatedDropPhase::Backfill,
             reports,
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -24456,7 +24318,7 @@ mod tests {
             .expect("a committed report before the local cut must stage the certificate");
         let active = session.coordinated_drop.active.as_ref().expect("active");
         assert_eq!(active.cut, Some(commit.cut));
-        assert_eq!(active.cut_digest, Some(commit.cut_digest));
+        assert_eq!(active.ready.digest(), Some(commit.cut_digest));
         assert_eq!(
             active.phase,
             CoordinatedDropPhase::Backfill,
@@ -24464,7 +24326,7 @@ mod tests {
         );
         assert_eq!(active.pending_commit, Some(commit));
         assert!(
-            active.ready.contains(&1),
+            active.ready.is_counted(1),
             "the committed reporter has already produced a ready transcript"
         );
     }
@@ -24491,7 +24353,7 @@ mod tests {
             .expect("a commit before the local cut must stage the certificate");
         let active = session.coordinated_drop.active.as_ref().expect("active");
         assert_eq!(active.cut, Some(commit.cut));
-        assert_eq!(active.cut_digest, Some(commit.cut_digest));
+        assert_eq!(active.ready.digest(), Some(commit.cut_digest));
         assert_eq!(
             active.phase,
             CoordinatedDropPhase::Backfill,
@@ -24499,7 +24361,7 @@ mod tests {
         );
         assert_eq!(active.pending_commit, Some(commit));
         assert!(
-            active.ready_transcripts.is_empty(),
+            active.ready.locked_is_empty(),
             "a direct commit's transport source is not a ready witness"
         );
     }
@@ -24545,7 +24407,7 @@ mod tests {
         let mut session = five_player_majority_session(PlayerHandle::new(0));
         let (operation, cut) = staged_post_inventory_backfill_attempt(&mut session);
         if let Some(active) = session.coordinated_drop.active.as_mut() {
-            active.cut_digest = Some(7);
+            active.ready.set_digest_for_test(Some(7));
         }
         assert_eq!(
             session.coordinated_drop_accept_commit(
@@ -24912,12 +24774,9 @@ mod tests {
                     receipts,
                 },
             )]),
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -25044,12 +24903,9 @@ mod tests {
             held_at: Frame::new(127),
             phase: CoordinatedDropPhase::Backfill,
             reports,
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -25229,12 +25085,9 @@ mod tests {
             held_at: Frame::new(127),
             phase: CoordinatedDropPhase::Backfill,
             reports,
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -25427,12 +25280,9 @@ mod tests {
                     },
                 ),
             ]),
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(127)),
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -26235,7 +26085,7 @@ mod tests {
                 .as_mut()
                 .expect("staged attempt");
             active.phase = CoordinatedDropPhase::Committed;
-            active.cut_digest = Some(0);
+            active.ready.set_digest_for_test(Some(0));
             active.pending_commit = Some(DropCommit {
                 operation,
                 cut,
@@ -26373,12 +26223,9 @@ mod tests {
             held_at: Frame::new(0),
             phase: CoordinatedDropPhase::Inventory,
             reports: BTreeMap::new(),
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: None,
-            cut_digest: None,
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -26572,7 +26419,7 @@ mod tests {
         if let Some(active) = session.coordinated_drop.active.as_mut() {
             active.phase = CoordinatedDropPhase::Committed;
             active.cut = Some(Frame::new(0));
-            active.cut_digest = Some(0);
+            active.ready.set_digest_for_test(Some(0));
         }
 
         let next_targets = vec![DropTarget {
@@ -26635,12 +26482,9 @@ mod tests {
                 held_at: Frame::new(0),
                 phase: CoordinatedDropPhase::Inventory,
                 reports: BTreeMap::new(),
-                ready: std::collections::BTreeSet::new(),
-                ready_transcripts: BTreeMap::new(),
-                provisional_ready: BTreeMap::new(),
+                ready: ReadyTranscripts::default(),
                 committed_acks: std::collections::BTreeSet::new(),
                 cut: None,
-                cut_digest: None,
                 pending_commit: None,
                 backfill_chunks: BTreeMap::new(),
                 relayed_backfill: BTreeMap::new(),
@@ -26814,12 +26658,12 @@ mod tests {
             cut_digest: 0,
         };
         let now = majority.coordinated_drop_now();
-        let mut ready = std::collections::BTreeSet::new();
-        let mut ready_transcripts = BTreeMap::new();
-        for participant in [0_u16, 1, 2] {
-            ready.insert(participant);
-            ready_transcripts.insert(participant, (cut, 0));
-        }
+        let ready = ReadyTranscripts::from_parts(
+            Some(0),
+            [(0, cut, 0), (1, cut, 0), (2, cut, 0)],
+            [],
+            [0_u16, 1, 2],
+        );
         majority.coordinated_drop.active = Some(CoordinatedDropAttempt {
             operation,
             target_addr: test_addr(9203),
@@ -26831,11 +26675,8 @@ mod tests {
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
             ready,
-            ready_transcripts,
-            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
-            cut_digest: Some(0),
             pending_commit: Some(commit),
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -26973,12 +26814,9 @@ mod tests {
             held_at: cut,
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::from_parts(Some(cut_digest), [], [], []),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
-            cut_digest: Some(cut_digest),
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -27216,12 +27054,12 @@ mod tests {
             cut_digest: 0,
         };
         let now = session.coordinated_drop_now();
-        let mut ready = std::collections::BTreeSet::new();
-        let mut ready_transcripts = BTreeMap::new();
-        for participant in [0_u16, 1, 2] {
-            ready.insert(participant);
-            ready_transcripts.insert(participant, (cut, 0));
-        }
+        let ready = ReadyTranscripts::from_parts(
+            Some(0),
+            [(0, cut, 0), (1, cut, 0), (2, cut, 0)],
+            [],
+            [0_u16, 1, 2],
+        );
         session.coordinated_drop.active = Some(CoordinatedDropAttempt {
             operation,
             target_addr: test_addr(9403),
@@ -27233,11 +27071,8 @@ mod tests {
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
             ready,
-            ready_transcripts,
-            provisional_ready: BTreeMap::new(),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
-            cut_digest: Some(0),
             pending_commit: Some(commit),
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
@@ -29257,11 +29092,12 @@ mod tests {
             .expect("a pre-digest participant Ready is provisional");
         let active = session.coordinated_drop.active.as_ref().expect("active");
         assert_eq!(
-            active.cut_digest, None,
+            active.ready.digest(),
+            None,
             "a non-authority Ready must not establish the expected digest"
         );
         assert!(
-            !active.ready.contains(&3),
+            !active.ready.is_counted(3),
             "a provisional Ready must not count toward the quorum"
         );
 
@@ -29269,10 +29105,10 @@ mod tests {
             .coordinated_drop_accept_report_from(ready_report(operation, 0, 10, 8), Some(0))
             .expect("the coordinator's Ready establishes the digest");
         let active = session.coordinated_drop.active.as_ref().expect("active");
-        assert_eq!(active.cut_digest, Some(8));
-        assert!(active.ready.contains(&0));
+        assert_eq!(active.ready.digest(), Some(8));
+        assert!(active.ready.is_counted(0));
         assert!(
-            !active.ready.contains(&3),
+            !active.ready.is_counted(3),
             "a provisional digest that disagrees with authority must not be promoted"
         );
 
@@ -29280,7 +29116,7 @@ mod tests {
             .coordinated_drop_accept_report_from(ready_report(operation, 3, 10, 8), Some(3))
             .expect("a matching retry is accepted after the digest is established");
         let active = session.coordinated_drop.active.as_ref().expect("active");
-        assert!(active.ready.contains(&3));
+        assert!(active.ready.is_counted(3));
     }
 
     #[test]
@@ -29306,9 +29142,9 @@ mod tests {
             .coordinated_drop_accept_report_from(ready_report(operation, 0, 10, 7), Some(0))
             .expect("the coordinator's matching Ready locks the digest");
         let active = session.coordinated_drop.active.as_ref().expect("active");
-        assert_eq!(active.cut_digest, Some(7));
+        assert_eq!(active.ready.digest(), Some(7));
         assert!(
-            active.ready.contains(&0) && active.ready.contains(&3),
+            active.ready.is_counted(0) && active.ready.is_counted(3),
             "the matching provisional Ready is promoted once authority establishes the digest"
         );
     }
@@ -29345,10 +29181,10 @@ mod tests {
             .coordinated_drop_mark_ready()
             .expect("independently verified local history establishes the digest");
         let active = session.coordinated_drop.active.as_ref().expect("active");
-        assert_eq!(active.cut_digest, Some(digest));
-        assert!(active.ready.contains(&0));
+        assert_eq!(active.ready.digest(), Some(digest));
+        assert!(active.ready.is_counted(0));
         assert!(
-            !active.ready.contains(&1),
+            !active.ready.is_counted(1),
             "the conflicting provisional digest must not count"
         );
     }
@@ -29668,7 +29504,7 @@ mod tests {
         let active = adopted.coordinated_drop.active.as_ref().expect("active");
         assert_eq!(active.acting_coordinator, Some(1));
         assert_eq!(active.cut, Some(Frame::new(10)));
-        assert_eq!(active.cut_digest, Some(42));
+        assert_eq!(active.ready.digest(), Some(42));
 
         // Before the grace the Ready is ignored.
         let mut early = five_player_majority_session(PlayerHandle::new(2));
@@ -29956,7 +29792,7 @@ mod tests {
             .coordinated_drop
             .active
             .as_ref()
-            .and_then(|active| Some((active.cut?, active.cut_digest?)))
+            .and_then(|active| Some((active.cut?, active.ready.digest()?)))
             .expect("the coordinator certifies a cut for the retry");
 
         for participant in participants.iter().copied().filter(|peer| *peer != 0) {
@@ -30067,12 +29903,9 @@ mod tests {
             held_at: Frame::new(0),
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
-            ready: std::collections::BTreeSet::new(),
-            ready_transcripts: BTreeMap::new(),
-            provisional_ready: BTreeMap::new(),
+            ready: ReadyTranscripts::from_parts(Some(0), [], [], []),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(0)),
-            cut_digest: Some(0),
             pending_commit: None,
             backfill_chunks: BTreeMap::new(),
             relayed_backfill: BTreeMap::new(),
