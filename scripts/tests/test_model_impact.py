@@ -423,6 +423,42 @@ def test_comment_only_spec_update_does_not_satisfy_gate(tmp_path: Path, suffix: 
     assert [impact.component.component_id for impact in report.drifted] == ["demo"]
 
 
+def test_internal_whitespace_spec_update_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    spec = repo / "specs" / "tla" / "Demo.tla"
+    spec.write_text("---- MODULE Demo ----\nVARIABLE reviewed\n====\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "add variable")
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    spec.write_text("---- MODULE Demo ----\nVARIABLE    reviewed\n====\n", encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_substance_signature_ignores_whitespace_and_comments_but_not_literals() -> None:
+    base = 'X == "a"  \\* note\n'
+    same = 'X  ==  "a"\n'
+    changed = 'X == "b"\n'
+    assert model_impact._normalized_substance(base, "tla") == model_impact._normalized_substance(
+        same, "tla"
+    )
+    assert model_impact._normalized_substance(base, "tla") != model_impact._normalized_substance(
+        changed, "tla"
+    )
+    rust = 'let x = "a"; // note\n'
+    rust_same = 'let  x="a";\n'
+    rust_changed = 'let x = "b";\n'
+    assert model_impact._normalized_substance(rust, "rust") == model_impact._normalized_substance(
+        rust_same, "rust"
+    )
+    assert model_impact._normalized_substance(rust, "rust") != model_impact._normalized_substance(
+        rust_changed, "rust"
+    )
+
+
 def test_comment_only_test_update_does_not_satisfy_gate(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     demo = repo / "src" / "demo.rs"

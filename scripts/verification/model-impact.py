@@ -346,12 +346,19 @@ def _tla_quoted_span(text: str, start: int) -> tuple[int, int]:
     return start, len(text)
 
 
-def _sanitize(text: str, language: str, *, keep_strings: bool) -> str:
+def _sanitize(
+    text: str,
+    language: str,
+    *,
+    keep_strings: bool,
+    literals: list[str] | None = None,
+) -> str:
     """Replace comments and (optionally) literal bodies with spaces.
 
     Newlines are preserved so callers can keep line numbers. String contents
-    stay intact when *keep_strings* is true, which lets substance comparisons
-    notice changed constants while still ignoring comments.
+    stay intact when *keep_strings* is true. When *literals* is provided, each
+    literal's original text is appended in source order so callers can compare
+    constants independently of their position.
     """
     if language not in {"rust", "tla"}:
         raise ValueError(f"unsupported language: {language}")
@@ -387,10 +394,14 @@ def _sanitize(text: str, language: str, *, keep_strings: bool) -> str:
                 index = end
             elif text[index] == '"':
                 start, end = _rust_quoted_span(text, index)
+                if literals is not None:
+                    literals.append(text[start:end])
                 if not keep_strings:
                     blank(start, end)
                 index = end
             elif (raw := _rust_raw_string_span(text, index)) is not None:
+                if literals is not None:
+                    literals.append(text[raw[0] : raw[1]])
                 if not keep_strings:
                     blank(*raw)
                 index = raw[1]
@@ -399,6 +410,8 @@ def _sanitize(text: str, language: str, *, keep_strings: bool) -> str:
                 if char is None:
                     index += 1
                 else:
+                    if literals is not None:
+                        literals.append(text[char[0] : char[1]])
                     if not keep_strings:
                         blank(*char)
                     index = char[1]
@@ -425,6 +438,8 @@ def _sanitize(text: str, language: str, *, keep_strings: bool) -> str:
             index = end
         elif text[index] == '"':
             start, end = _tla_quoted_span(text, index)
+            if literals is not None:
+                literals.append(text[start:end])
             if not keep_strings:
                 blank(start, end)
             index = end
@@ -433,17 +448,20 @@ def _sanitize(text: str, language: str, *, keep_strings: bool) -> str:
     return "".join(out)
 
 
-def _strip_comments(text: str, language: str) -> str:
-    return _sanitize(text, language, keep_strings=True)
-
-
 def _strip_structure(text: str, language: str) -> str:
     return _sanitize(text, language, keep_strings=False)
 
 
-def _normalized_substance(text: str, language: str) -> str:
-    stripped = _strip_comments(text, language)
-    return "\n".join(line.strip() for line in stripped.splitlines() if line.strip())
+COMPARE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d[\w.]*|[^\sA-Za-z0-9_]")
+
+
+def _normalized_substance(
+    text: str, language: str
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return a whitespace- and comment-insensitive token/literal signature."""
+    literals: list[str] = []
+    structure = _sanitize(text, language, keep_strings=False, literals=literals)
+    return tuple(COMPARE_TOKEN_RE.findall(structure)), tuple(literals)
 
 
 def function_index(root: Path) -> dict[str, Path]:
@@ -820,12 +838,14 @@ def _file_substance_updated(
     return _normalized_substance(current, language) != _normalized_substance(base_text, language)
 
 
-def _fn_substance(text: str, name: str) -> str | None:
+def _fn_substance(
+    text: str, name: str
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
     span = _fn_range_text(text, name)
     if span is None:
         return None
-    lines = _strip_comments(text, "rust").splitlines()
-    return "\n".join(line.strip() for line in lines[span[0] - 1 : span[1]] if line.strip())
+    lines = text.splitlines()
+    return _normalized_substance("\n".join(lines[span[0] - 1 : span[1]]), "rust")
 
 
 def _fn_substance_updated(
