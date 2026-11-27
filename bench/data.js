@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795823712880,
+  "lastUpdate": 1795823748353,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "bccd0a36971789d26707f996e6735481e81ede6c",
-          "message": "docs: qualify concurrent-removal liveness under lossy control (#478)\n\n## Summary\n\nA deterministic Rough 4-peer row with two disjoint `GracefulRemove`\nevents (seed `1129270851`) shows that concurrent removals can still\nwedge a participant that misses the losing certificate's `Superseded`\nabort: it reaches the Inventory timeout and fails closed. This is safe\n(no fork) but qualifies the deterministic-order guarantee added in #474.\n\nChanges:\n\n- User guide and `remove_player` rustdoc now state that disjoint\nremovals commit in deterministic order **while control messages\narrive**, and that a participant which misses the abort under lossy\ndelivery fails closed at the bounded Inventory timeout.\n- CHANGELOG wording qualified the same way.\n- Detailed reproduction and options recorded in #477.\n\n## Verification\n\n- Markdown lint, vale, synced wiki, and agent preflight pass.\n- Doc-only; `cargo tfull` was 3263 passed / 76 skipped before the\nwording change.",
-          "timestamp": "2026-11-18T11:31:31Z",
-          "tree_id": "ffac6edfc90083f8cf32dc9de8441480d14bc81c",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/bccd0a36971789d26707f996e6735481e81ede6c"
-        },
-        "date": 1795002237725,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 61347,
-            "range": "± 690",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 32990,
-            "range": "± 650",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1863,
-            "range": "± 203",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1555,
-            "range": "± 106",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3136,
-            "range": "± 160",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 2767,
             "range": "± 161",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "41f09398cc8e9c2e4ea53b3b96ff0987112f20cc",
+          "message": "chore(deps): bump smallvec from 1.16.5 to 1.16.6 in /fuzz in the cargo-fuzz group (#600)\n\nBumps the cargo-fuzz group in /fuzz with 1 update:\n[smallvec](https://github.com/smallvec/smallvec).\n\nUpdates `smallvec` from 1.16.5 to 1.16.6\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/smallvec/smallvec/releases\">smallvec's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v1.16.6</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>fix: point v1 repository metadata to smallvec/smallvec by <a\nhref=\"https://github.com/himanchalkaushale\"><code>@​himanchalkaushale</code></a>\nin <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/869\">smallvec/smallvec#869</a></li>\n<li>feat: update v1 by <a\nhref=\"https://github.com/alejandro-vaz\"><code>@​alejandro-vaz</code></a>\nin <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/908\">smallvec/smallvec#908</a></li>\n<li>feat: update v1 release workflow and style by <a\nhref=\"https://github.com/alejandro-vaz\"><code>@​alejandro-vaz</code></a>\nin <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/909\">smallvec/smallvec#909</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li><a\nhref=\"https://github.com/himanchalkaushale\"><code>@​himanchalkaushale</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/869\">smallvec/smallvec#869</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6\">https://github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6</a></p>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/smallvec/smallvec/commit/347b5c346168f9648bf4298d6ed49deda7e18aeb\"><code>347b5c3</code></a>\nfeat: update v1 release workflow and style (<a\nhref=\"https://redirect.github.com/smallvec/smallvec/issues/909\">#909</a>)</li>\n<li><a\nhref=\"https://github.com/smallvec/smallvec/commit/d384c966b655fdfd1919d34ca8988c1a2e90fda3\"><code>d384c96</code></a>\nfeat: update v1 (<a\nhref=\"https://redirect.github.com/smallvec/smallvec/issues/908\">#908</a>)</li>\n<li><a\nhref=\"https://github.com/smallvec/smallvec/commit/432a701da44bdaefb0690174a093827ca549475e\"><code>432a701</code></a>\nfix: point v1 repository metadata to smallvec/smallvec (<a\nhref=\"https://redirect.github.com/smallvec/smallvec/issues/869\">#869</a>)</li>\n<li>See full diff in <a\nhref=\"https://github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\n[![Dependabot compatibility\nscore](https://dependabot-badges.githubapp.com/badges/compatibility_score?dependency-name=smallvec&package-manager=cargo&previous-version=1.16.5&new-version=1.16.6)](https://docs.github.com/en/github/managing-security-vulnerabilities/about-dependabot-security-updates#about-compatibility-scores)\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore <dependency name> major version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's major version (unless you unignore this specific\ndependency's major version or upgrade to it yourself)\n- `@dependabot ignore <dependency name> minor version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's minor version (unless you unignore this specific\ndependency's minor version or upgrade to it yourself)\n- `@dependabot ignore <dependency name>` will close this group update PR\nand stop Dependabot creating any more for the specific dependency\n(unless you unignore this specific dependency or upgrade to it yourself)\n- `@dependabot unignore <dependency name>` will remove all of the ignore\nconditions of the specified dependency\n- `@dependabot unignore <dependency name> <ignore condition>` will\nremove the ignore condition of the specified dependency and ignore\nconditions\n\n\n</details>\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-27T23:43:35Z",
+          "tree_id": "cdc15f8672bdcfc7c0883970d1feeef6654bf10f",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/41f09398cc8e9c2e4ea53b3b96ff0987112f20cc"
+        },
+        "date": 1795823747429,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 24341,
+            "range": "± 629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 14948,
+            "range": "± 189",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 450,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 561,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 5086,
+            "range": "± 157",
             "unit": "ns/iter"
           }
         ]
