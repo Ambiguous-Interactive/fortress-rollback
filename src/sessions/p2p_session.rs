@@ -6796,7 +6796,7 @@ impl<T: Config> P2PSession<T> {
             if let Some(telemetry) = &self.telemetry {
                 telemetry.on_frame_advance(current);
             }
-        } else {
+        } else if advancing {
             debug!(
                 "Prediction Threshold reached. Skipping on frame {}",
                 self.sync_layer.current_frame()

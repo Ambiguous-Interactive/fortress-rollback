@@ -355,6 +355,7 @@ fn recover_finalizes_withheld_confirmed_frame(save_mode: SaveMode) -> Result<(),
 
     // The recovery call repairs the already-received confirmed row at the
     // existing boundary: the correction loads and re-simulates 256 only.
+    let stalls_before = pair.sess1.metrics().stall_count;
     let correction = pair.sess1.recover_confirmed_inputs()?;
     let mut saw_load = false;
     let mut saw_resimulation = false;
@@ -394,6 +395,11 @@ fn recover_finalizes_withheld_confirmed_frame(save_mode: SaveMode) -> Result<(),
     );
     pair.stub1.handle_requests(repeated);
     assert_eq!(pair.sess1.current_frame(), Frame::new(257));
+    assert_eq!(
+        pair.sess1.metrics().stall_count,
+        stalls_before,
+        "recovery and a repeated recovery are not prediction-window stalls"
+    );
 
     // Plain advance still requires the local sample that the game stopped
     // producing; recovery is the supported path for that state.
@@ -526,6 +532,7 @@ fn recover_confirmed_inputs_does_not_invent_the_withheld_row() -> Result<(), For
         "the still-withheld row cannot advance confirmation"
     );
 
+    let stalls_before = pair.sess1.metrics().stall_count;
     let requests = pair.sess1.recover_confirmed_inputs()?;
     assert!(
         requests
@@ -534,6 +541,11 @@ fn recover_confirmed_inputs_does_not_invent_the_withheld_row() -> Result<(), For
         "an unavailable row needs no correction, got {requests:?}"
     );
     pair.stub1.handle_requests(requests);
+    assert_eq!(
+        pair.sess1.metrics().stall_count,
+        stalls_before,
+        "recovery is not a prediction-window stall"
+    );
 
     let replay = pair.sess1.take_replay()?;
     assert_eq!(
