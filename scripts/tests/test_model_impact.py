@@ -752,6 +752,26 @@ def test_same_file_kani_proof_body_still_counts_with_a_helper(tmp_path: Path) ->
     assert report.drifted == ()
 
 
+def test_same_line_sibling_after_kani_proof_does_not_count(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace(
+            "#[kani::proof]\nfn proof_demo() {\n    assert!(true);\n}\n",
+            "#[kani::proof] fn proof_demo() {} fn helper() { let _ = 0; }\n",
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "one-line proof and helper")
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n", 1)
+    demo.write_text(text.replace("let _ = 0;", "let _ = 1;"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
 def test_substantive_kani_proof_update_satisfies_gate(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     demo = repo / "src" / "demo.rs"

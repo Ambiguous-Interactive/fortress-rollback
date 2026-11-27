@@ -932,7 +932,29 @@ def _fn_substance(
     if span is None:
         return None
     lines = text.split("\n")
-    return _normalized_substance("\n".join(lines[span[0] - 1 : span[1]]), "rust")
+    start_line = span[0] - 1
+    structure = _strip_structure(text, "rust")
+    line_start = sum(len(line) + 1 for line in lines[:start_line])
+    line_structure = structure.split("\n")[start_line]
+    fn_match = re.search(rf"\bfn\s+{re.escape(name)}\b", line_structure)
+    if fn_match is None:
+        return None
+    start = line_start + fn_match.start()
+    brace = structure.find("{", start)
+    if brace < 0:
+        return None
+    depth = 0
+    end = brace
+    while end < len(structure):
+        if structure[end] == "{":
+            depth += 1
+        elif structure[end] == "}":
+            depth -= 1
+            if depth == 0:
+                end += 1
+                break
+        end += 1
+    return _normalized_substance(text[start:end], "rust")
 
 
 def _fn_substance_updated(
