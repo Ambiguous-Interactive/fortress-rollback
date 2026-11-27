@@ -464,6 +464,45 @@ fn recover_finalizes_withheld_confirmed_frame(save_mode: SaveMode) -> Result<(),
     Ok(())
 }
 
+/// The old path remains a bug: plain `advance_frame` refuses before recording
+/// the confirmed row, so recovery is required rather than optional.
+#[test]
+fn advance_frame_does_not_finalize_without_the_recovery_call() -> Result<(), FortressError> {
+    let mut pair = build_recovery_pair(SaveMode::EveryFrame)?;
+    for frame in 0..256 {
+        pair.advance(frame)?;
+    }
+
+    pair.block_peer1_to_peer0();
+    pair.advance(256)?;
+    pair.unblock_peer1_to_peer0();
+    pair.settle();
+    assert_eq!(pair.sess1.confirmed_frame(), Frame::new(256));
+
+    let error = pair
+        .sess1
+        .advance_frame()
+        .expect_err("advance_frame must refuse without local input for 257");
+    assert!(
+        matches!(
+            error,
+            FortressError::InvalidRequestStructured {
+                kind: InvalidRequestKind::MissingLocalInput
+            }
+        ),
+        "expected MissingLocalInput, got {error:?}"
+    );
+
+    let replay = pair.sess1.take_replay()?;
+    assert_eq!(
+        replay.total_frames(),
+        256,
+        "the old path must leave the confirmed row out of the replay"
+    );
+    assert_eq!(replay_desync_frames(replay), Vec::<Frame>::new());
+    Ok(())
+}
+
 /// A neutral control: the delayed row matches the prediction, so recovery must
 /// record it without fabricating a rollback.
 #[test]
