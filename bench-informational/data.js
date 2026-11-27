@@ -1,374 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795751974659,
+  "lastUpdate": 1795764531027,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Informational Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "1a674d6c60cd479b841d38b405be8a3509e5bf11",
-          "message": "test: un-quarantine lossy crash retirement and pin removal retry commit (#472)\n\n## Summary\n\nUn-quarantines lossy crash retirement in the deterministic fleet (closes\n#470) and records the CAP decision for cross-peer concurrent graceful\nremovals while adding a full retry-commit regression (#461).\n\n### Crash retirement (#470)\n\n- `nightly_schedule` now rewrites `PeerKill` / `SpectatorHostKill` only\nfor the two-peer shape. Every `n >= 3` mesh keeps its real crash event;\na kill leaves a strict majority.\n- `nightly_run_options` uses the production 2 s disconnect timeout\nwhenever a row contains a crash. The inflated modeled-run timeout is\ntransport-only: a crashed peer never resumes, so the inflated timeout\nstarved the automatic drop and froze every survivor at the prediction\nlimit.\n- Added `lossy_crash_retirement_rows_keep_one_history_and_recover`\nacross `PeerKill` and `SpectatorHostKill` under Rough, ReliableFifo, and\nSwarm.\n- Added `two_peer_crash_retirement_fails_closed_without_fork`: the\nexcluded two-peer shape halts in `Synchronizing` at the shared cut with\nno divergence or desync.\n- Narrowed the quarantine test to the two-peer rewrite and assert a\nfive-peer mesh keeps its crash event.\n\n### Concurrent removals and retry (#461)\n\n- Current behavior is retained: cross-peer concurrent different-target\nremovals fail closed. The issue's option 2 (keep the removed target\npolling as an inventory witness until its own commit) was implemented\nand rejected with data. A live target keeps authoring inputs during the\ncertificate; under Rough loss survivors apply different post-request\ntarget frames.\n- seed `12345038` (N=10) reproduced in-band checksum desync at frame\n2130;\n- seed `12345098` (N=10) reproduced in-band checksum desync at frame\n2190;\n  - both rows pass with request-boundary retirement.\n- Added `retried_removal_after_supersede_collects_reports_and_commits`:\naccept op A, supersede with op B, queue/start the retry with a fresh\nidentity, collect Inventory/Ready/Committed reports, commit, and stay\n`Running`.\n\n## Verification\n\n- `cargo tfull` -> 3,260 passed, 75 skipped.\n- `cargo nextest run --release --features\ntokio,json,hot-join,violation-census --test simulation --no-fail-fast`\n-> 484 passed, 27 skipped.\n- Nightly shard 0 at seed base `12345` with `--profile ci --run-ignored\nignored-only` -> 1 passed (163 s), all 125 seeds including the newly\nun-quarantined crash rows.\n- `cargo clippy --workspace --all-targets --features\ntokio,json,hot-join,violation-census -- -D warnings` -> clean.\n- `cargo check --target wasm32-unknown-unknown --no-default-features\n--features hot-join` -> clean.\n- `python3 scripts/ci/agent-preflight.py --auto-fix` -> all checks\npassed.\n\n## CAP notes\n\n- `n == 2` crash retirement has no surviving strict majority (1/2) and\nremains a deliberate fail-closed partition at the shared cut. The row\npins no fork and no desync.\n- Cross-peer concurrent removals remain fail-closed until a protocol\ndesign can keep a leaving target's post-request stream from reaching\ndifferent survivors at different times. The live-witness experiment\nabove is the falsifiable evidence for keeping the halt.\n\n- Follow-up: the live-target desync class found while evaluating option\n2 is tracked in #473.",
-          "timestamp": "2026-11-18T07:03:25Z",
-          "tree_id": "fbfa00d55eed45f516e89f15f552ca7346d93d6d",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/1a674d6c60cd479b841d38b405be8a3509e5bf11"
-        },
-        "date": 1794986054488,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Frame/new",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_null",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_valid",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/10",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/100",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1000",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/4",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/8",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/16",
-            "value": 23,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/64",
-            "value": 33,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/256",
-            "value": 85,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/4",
-            "value": 22,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/8",
-            "value": 23,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/16",
-            "value": 25,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/64",
-            "value": 39,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/256",
-            "value": 112,
-            "range": "± 5",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/4",
-            "value": 21,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/8",
-            "value": 21,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/16",
-            "value": 21,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/64",
-            "value": 22,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/256",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/8",
-            "value": 55,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/8",
-            "value": 72,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/8",
-            "value": 97,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/16",
-            "value": 87,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/16",
-            "value": 127,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/16",
-            "value": 205,
-            "range": "± 5",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/32",
-            "value": 153,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/32",
-            "value": 232,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/32",
-            "value": 374,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/8",
-            "value": 84,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/8",
-            "value": 98,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/8",
-            "value": 130,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/16",
-            "value": 145,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/16",
-            "value": 182,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/16",
-            "value": 259,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/32",
-            "value": 267,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/32",
-            "value": 343,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/32",
-            "value": 499,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/idle",
-            "value": 239,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/active",
-            "value": 330,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/fighting",
-            "value": 463,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/analog",
-            "value": 586,
-            "range": "± 24",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/2",
-            "value": 83,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/4",
-            "value": 111,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/2",
-            "value": 356,
-            "range": "± 9",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/4",
-            "value": 569,
-            "range": "± 13",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/7",
-            "value": 804,
-            "range": "± 14",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "P2PSession/metrics",
-            "value": 30,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message/encoded_len",
-            "value": 1,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=2",
-            "value": 16,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=4",
-            "value": 53,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=8",
-            "value": 199,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=16",
-            "value": 765,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=8",
-            "value": 37657,
-            "range": "± 350",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=16",
-            "value": 184886,
-            "range": "± 855",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -18299,6 +17933,372 @@ window.BENCHMARK_DATA = {
             "name": "H-16P advance_frame/warmed_mesh/N=16",
             "value": 231663,
             "range": "± 791",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "cb13bd864c622d2cd0ba939fca6aa567708af0e9",
+          "message": "verification: classify Z3 proof strength and fix summary counts (#575) (#608)\n\n<!-- session: ses_de450524bffeNVAWmjAHNwSWnO started:\n2026-11-27T06:27:07Z -->\n\n## Description\n\nCompletes #575's classification deliverable. The stale desync claims\nwere already retired by #586\nand #591, and #572 added the code-linked Kani proofs; what remained was\nan honest classification of\nevery `z3_*` test and a durable check so the labels do not drift.\n\nThis PR adds a `[z3_proof_strength]` table to\n`docs/specs/verification-manifest.toml` and extends `model-impact.py\ncheck` to enforce it. All 66\ntests in `tests/verification/z3.rs` are classified exactly once (the\neight direct\nguard/premise restatements are `tautology`, not `model_only`):\n\n| Strength | Count | Meaning |\n| --- | --- | --- |\n| `code_linked` | 0 | executes production code or fails on a targeted\nproduction mutation |\n| `model_only` | 29 | a hand-written model of a production\nalgorithm/guard; not a code proof |\n| `witness_only` | 9 | asserts satisfiability/reachability only |\n| `tautology` | 28 | restates a premise/definition, or is a print-only\nsummary |\n\n**Headline finding:** no Z3 test is code-linked. The file never imports\nor calls\n`fortress_rollback`; it constructs `z3::ast::Int`/`Bool` models. The\nproduction controls for the\nchecksum-basis/desync properties are the Kani kernels\n(`ChecksumBasisTracker`,\n`ReadyTranscripts`, `TerminalEpochTable`) and the Rust differential\ntests named in the issue, for\nexample\n`delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite`;\nthe other\nmodel-only rows have no control, as the rationale table records.\n\nThe PR also corrects `z3_verified_properties_summary`: it printed \"64 Z3\nproofs (plus 2 summary\ntests = 66)\", but the file has 62 non-summary tests and four summaries.\nThe group list now includes\nthe mesh-agreed split and the runtime-delay prose section it had\nomitted, the totals are 62\nnon-summary tests + 4 summaries = 66, and the labels no longer call\nevery non-summary test a\n\"proof\".\n\n### Size note\n\nThe hand-written diff is 393 insertions / 29 deletions. The manifest\ntable is the 66 mandatory\nclassifications plus the legend; the `model-impact.py` and test changes\nare the coverage\nenforcement. The issue calls for one classification and one durable\ncheck;\nsplitting the table from the check would leave half the contract\nunenforced.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [x] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [x] `none` — no mapped production path or symbol changed\n- [ ] `updated: <spec/proof>` — the model, proof, or mapped test is\nupdated in this PR\n- [ ] `waived: <reason + approver>` — a named maintainer approved the\nexception and it is recorded in the tracked issue/PR\n\n- [x] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (state which below)\n\n`model-impact.py check` now also validates the classification table:\nevery `z3_*` test exactly once,\nvalid strength names, no duplicates, no unknown tests, and a\n`code_linked` entry mapped to a\ncomponent's `z3` list. `affected --base origin/main` reports no mapped\nproduction impact.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**:\n  - No `unwrap()` in production code\n  - No `expect()` in production code\n  - No `panic!()` or `todo!()`\n  - All fallible operations return `Result`\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes —\nnot changed: internal\nverification tooling and test prose only, no user-visible behavior or\nAPI change\n- [ ] I have updated relevant examples in the `examples/` directory —\nnot applicable\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n```bash\n# Baseline (clean bd727782)\ncargo test --features z3-verification --test verification z3\n# test result: ok. 66 passed; 0 failed; 226 filtered out; finished in 0.21s\n\n# Manifest coverage and the new checks\npython3 scripts/verification/model-impact.py check\n# model-impact check: OK (11 components, 40 symbols, 76 artifacts)\npython3 scripts/verification/model-impact.py affected --base origin/main\n# No mapped verification impact (base origin/main).\npython3 scripts/verification/model-impact.py render --check\n# model-impact render: up to date\n\n# The checker's own regression tests\n.venv/bin/python -m pytest scripts/tests/test_model_impact.py -q\n# 82 passed\n\n# Summary edit and the whole Z3 suite\ncargo test --features z3-verification --test verification z3\n# test result: ok. 66 passed; 0 failed\n\n# Full gate\ncargo fmt --all -- --check                                      # clean\ncargo c                                                          # clean\ncargo tfull                                                      # 3810 passed, 77 skipped\ncargo test --doc                                                 # 160 passed, 51 ignored\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features hot-join,tokio,json,sync-send --document-private-items  # clean\n.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix # all checks passed\nnpx markdownlint <changed markdown> --config .markdownlint.json  # clean\ntypos <changed text files>                                       # clean\n```\n\n**RED mutation evidence.** In `compare_local_checksums_against_peers`,\nthe basis gate\n`if local_token != remote.pending_checksum_basis_token(remote_frame)`\nwas temporarily changed to a\nself-comparison that never skips, so every pending checksum is compared.\nUnder that mutation the\nZ3 suite stayed green (`66 passed`) while the Rust test\n`delayed_pre_rewrite_checksum_report_does_not_relatch_after_a_rewrite`\nfailed. The mutation was\nrestored with `git checkout -- src/sessions/p2p_session.rs`; `git diff`\nthen showed only `PLAN.md`\nand this branch's files. This is the non-binding-proof evidence the\nissue asked for: the Z3 rows\nare models, and the Rust test is the production control.\n\n**Tests added/modified:**\n\n- `scripts/tests/test_model_impact.py`: coverage (including `pub async`\nand same-line-attribute\ndeclarations), comment/string-literal exclusion, unknown test,\nduplicate, invalid strength,\n  missing table, and unmapped `code_linked` cases.\n- `tests/verification/z3.rs`: corrected the summary counts, added the\nomitted runtime/mesh groups,\nand changed the summary labels from \"proofs\" to \"tests\" (no test\ndeleted, skipped, or weakened).\n\n## Classification rationale\n\n<details>\n<summary>All 66 rows (strength, control, rationale)</summary>\n\n| Test | Strength | Control | Rationale |\n| --- | --- | --- | --- |\n| `z3_proof_input_delay_increase_preserves_monotonic_frames` |\n`model_only` | none | Models the delay-increase gap fill; the UNSAT is\ndefinitional substitution, so it documents the formula but cannot fail\nif production changes. |\n| `z3_proof_input_delay_decrease_is_rejected_mid_session` | `model_only`\n| none | Models the rejected decrease; the queued-frame order follows\nfrom the assumed `new < old` inequality. |\n| `z3_proof_pending_output_capacity_sufficient_for_gap_fill` |\n`model_only` | none | Models the per-endpoint capacity precheck; the\nUNSAT is the min-over-endpoints bound. |\n| `z3_proof_confirmed_frame_ignores_disconnected_players` | `tautology`\n| none | Models exclusion of mesh-agreed dropped slots; the proof\nrestates the min definition. |\n| `z3_proof_frozen_peer_input_is_constant_after_drop` | `tautology` |\nnone | Assumes the freeze implication it checks; the contradiction is\nimmediate, so it cannot catch a wrong freeze rule. |\n| `z3_proof_halt_and_continue_without_are_mutually_exclusive_policies` |\n`tautology` | none | Asserts both transition obligations as premises,\nthen asserts a violation; the UNSAT restates the premises. |\n| `z3_proof_frame_addition_bounded` | `model_only` | none | Valid\nnon-negative-addition arithmetic; it does not model Rust overflow or\nexecute `Frame`. |\n| `z3_proof_rollback_frame_valid` | `model_only` | none | Valid\nsubtraction arithmetic under the stated window; no production code\nexecutes. |\n| `z3_proof_frame_comparison_transitive` | `model_only` | none | Integer\ntransitivity; `Frame`'s derived `Ord` is not exercised. |\n| `z3_proof_circular_buffer_index_valid` | `model_only` | none | Modulo\nrange theorem; Z3 `%` is not Rust remainder for negative frames. |\n| `z3_proof_head_advancement_wraps` | `model_only` | none | Modulo range\ntheorem for the head advance. |\n| `z3_proof_head_wraparound_to_zero` | `tautology` | none | Constant\narithmetic on `INPUT_QUEUE_LENGTH - 1`; no symbolic state. |\n| `z3_proof_queue_length_invariant_add` | `model_only` | none | One-step\nlength bound; it assumes the add rule rather than reading it. |\n| `z3_proof_circular_distance_non_wrapped` | `witness_only` | SAT\nwitness | Only asserts that a valid non-wrapped state exists. |\n| `z3_proof_rollback_target_in_past` | `tautology` | none | Models the\n`first_incorrect < current` guard; the target is defined as the guard's\ninput. |\n| `z3_proof_skip_rollback_when_frame_equal` | `tautology` | none |\nMutual exclusion follows directly from `>=` and `<` on the same pair. |\n| `z3_proof_frame_zero_misprediction_skips_rollback` | `tautology` |\nnone | Both frames are fixed to 0; `0 >= 0` is constant arithmetic. |\n| `z3_proof_rollback_within_prediction_window` | `tautology` | none |\nThe premise is the window bound; the query negates the same bound. |\n| `z3_proof_saved_state_available` | `witness_only` | SAT witness | Only\nasserts that a rollback distance fits the stated slot count. |\n| `z3_proof_frame_delay_prevents_overflow` | `model_only` | none | Bound\narithmetic; the delay validator is not executed. |\n| `z3_proof_sequential_frames_with_delay` | `tautology` | none |\nSequential-frame arithmetic identity. |\n| `z3_proof_frame_delay_increase_monotone_gap_fill` | `model_only` |\nnone | Monotonicity follows from a positive delta; the production branch\nis not read. |\n| `z3_proof_frame_delay_decrease_rejected_preserves_state` | `tautology`\n| none | Assumes the rejected post-state, then proves it is unchanged;\ndocuments the branch contract. |\n| `z3_proof_pending_output_capacity_accepts_gap_fill_delta` |\n`model_only` | none | Capacity arithmetic under the stated precheck. |\n| `z3_proof_mesh_agreed_dropped_players_excluded_from_confirmed_min` |\n`model_only` | none | Models the mesh-agreed drop exclusion; the min\ndefinition is assumed. |\n| `z3_proof_confirmed_bound_below_same_instant_subset_overrides` |\n`model_only` | none | Non-trivial subset-min lemma; it explicitly\nexcludes the cross-time and N>=4 relay cases. |\n| `z3_proof_input_position_uniqueness_in_window` | `model_only` | none |\nModulo injectivity within a window; a genuine number-theory lemma. |\n| `z3_proof_complete_rollback_safety` | `witness_only` | SAT witness |\nOnly asserts that the combined preconditions are satisfiable. |\n| `z3_proof_prediction_threshold` | `tautology` | none | The query is\nthe XOR of complementary `>=`/`<` predicates; a decision partition. |\n| `z3_proof_frame_increment_safe` | `model_only` | none | A 24-hour\nframe bound compared with `i32::MAX`; no overflow model. |\n| `z3_proof_desync_detection_no_false_positives` | `tautology` | none |\nDefines detection as `local != remote`, assumes equality, then asserts\ndetection. |\n| `z3_proof_desync_detection_no_false_negatives_on_comparison` |\n`model_only` | gate precondition | Already labeled `model_only` in the\nsource; the same-basis gate is a precondition, not proved. |\n| `z3_proof_different_basis_is_never_compared` | `model_only` |\nsecond-solver latch check | Already labeled `model_only`; the gate is\ndefined in the model, and a second solver checks the latch expression. |\n| `z3_proof_checksum_comparison_guard` | `tautology` | none | Defines\n`guard = remote < confirmed`, assumes it, then asserts `remote >=\nconfirmed`. |\n| `z3_proof_pending_checksum_becomes_comparable` | `tautology` | none |\nThe premise `frames_advanced > pending - initial` is exactly the\nconclusion's arithmetic. |\n| `z3_proof_sync_health_state_transitions` | `model_only` | SAT\nwitnesses; no-clear mutation recorded in #591 | Models the transition\ntable with both unlatched rewrite outcomes; the table is hand-written,\nnot executed. |\n| `z3_proof_last_verified_frame_monotonic` | `tautology` | none |\nDefines the update as `max(current, comparison)` and then proves the max\nnever decreases. |\n| `z3_proof_invariant_checker_soundness` | `tautology` | none | Defines\nthe error as `any_desync`, assumes none, then asserts no error. |\n| `z3_proof_invariant_checker_completeness` | `tautology` | none |\nDefines the error as `any_desync`, assumes one, then asserts the error.\n|\n| `z3_desync_detection_proofs_summary` | `tautology` | none | Prints a\nsummary; no solver query or assertion. |\n| `z3_verified_properties_summary` | `tautology` | none | Prints counts\nand prose; no solver query or assertion. |\n| `z3_proof_input_queue_head_tail_bounds` | `model_only` | none | Modulo\nrange theorem for the head; tail advancement is out of scope. |\n| `z3_proof_input_queue_length_calculation` | `witness_only` | SAT\nwitness | Only asserts that a length in range exists. |\n| `z3_proof_sync_layer_confirmed_frame_invariant` | `model_only` | none\n| One-step inductive preservation; the base case and setter validation\nare out of scope. |\n| `z3_proof_sync_layer_saved_frame_invariant` | `model_only` | none |\nOne-step inductive preservation; sparse mode is out of scope. |\n| `z3_proof_saved_states_availability` | `witness_only` | SAT witness |\nOnly asserts that a modulo cell index exists. |\n| `z3_proof_first_incorrect_frame_bound` | `model_only` | none |\nOne-step preservation of `first_incorrect < current` across\n`advance_frame`. |\n| `z3_proof_prediction_window_bounded` | `witness_only` | SAT witness |\nOnly asserts that a bounded rollback state exists. |\n| `z3_proof_frame_discard_safety` | `model_only` | none | Modulo\ninjectivity for two frames inside the window; SAT-only conclusion. |\n| `z3_proof_fnv1a_single_byte_formula` | `witness_only` | SAT witness |\nAdmits it models addition instead of XOR; only SAT is checked. |\n| `z3_proof_fnv1a_determinism` | `tautology` | none | Assumes both\nstates start equal and asserts they are equal. |\n| `z3_proof_fnv1a_empty_input_identity` | `tautology` | none | Defines\nthe final state as the initial state, then asserts the identity. |\n| `z3_proof_fnv1a_incremental_consistency` | `tautology` | none |\nCompares two syntactically identical arithmetic expressions. |\n| `z3_proof_fnv1a_prime_properties` | `tautology` | none | Checks a\nconstant's parity; no symbolic input. |\n| `z3_proof_fnv1a_single_byte_no_collision` | `witness_only` | SAT\nwitness | Explicitly says it is not a collision proof; only distinct\nbytes exist. |\n| `z3_proof_fnv1a_value_always_64bit` | `witness_only` | SAT witness |\nThe assertion is satisfiable and documents the sign cast; no safety\nproperty. |\n| `z3_hash_proofs_summary` | `tautology` | none | Prints a summary; no\nsolver query or assertion. |\n| `z3_proof_pcg32_increment_always_odd` | `model_only` | none |\nArithmetic property of `2*stream + 1`; the production shift/or is not\nexecuted. |\n| `z3_proof_pcg32_state_transition_deterministic` | `tautology` | none |\nThe source calls it a mathematical tautology; identical expressions are\ncompared. |\n| `z3_proof_pcg32_state_transition_injective` | `model_only` | none |\nInfinite-precision injectivity; the mod-2^64 wrap that makes the\nargument work is not modeled. |\n| `z3_proof_pcg32_multiplier_is_odd` | `tautology` | none | Checks a\nconstant's parity; no symbolic input. |\n| `z3_proof_pcg32_default_increment_is_odd` | `tautology` | none |\nChecks a constant's parity; no symbolic input. |\n| `z3_proof_gen_range_threshold_valid` | `model_only` | none | Modulo\nrange theorem; the u32 wrapping arithmetic is modeled with integers. |\n| `z3_proof_gen_range_acceptance_probability` | `model_only` | none |\nNon-trivial arithmetic bound on the acceptance region; the RNG draw is\nnot modeled. |\n| `z3_proof_pcg32_different_seeds_different_states` | `model_only` |\nnone | Infinite-precision injectivity of the seed map; wrapping\narithmetic is not modeled. |\n| `z3_rng_proofs_summary` | `tautology` | none | Prints a summary; no\nsolver query or assertion. |\n\n</details>\n\n## Risks and Rollback\n\n- **Risk:** classification is a judgment; a reviewer may disagree with\nindividual rows. The checker\nenforces coverage and shape, not the correctness of the judgment.\nChanging a label is a normal\n  review edit to the manifest table.\n- **Risk:** a new `z3_*` test now fails `model-impact.py check` until it\nis classified. That is\n  intentional; the error names the test and the four accepted strengths.\n- **Risk:** the table is data, not a rendered report; the per-test\nrationale lives in this PR and the\nissue. The manifest table is the durable source of truth for the labels.\n- **Rollback:** revert this PR. No production behavior, wire format, or\npublic API changes; the\nmanifest returns to no table and `z3.rs` returns to the old summary\ntext.\n\n## Related Issues\n\n- Fixes #575\n- Tracking: #580\n- Code links already delivered by #572 (Kani), #586 and #591 (desync\nmodel corrections); no new\n  production proof is added here.",
+          "timestamp": "2026-11-27T07:16:33Z",
+          "tree_id": "5fa0ed1e38c4bb3393069c718016461cf8fd1aef",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/cb13bd864c622d2cd0ba939fca6aa567708af0e9"
+        },
+        "date": 1795764530903,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Frame/new",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_null",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_valid",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/10",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/100",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1000",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/4",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/8",
+            "value": 22,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/16",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/64",
+            "value": 37,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/256",
+            "value": 119,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/4",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/8",
+            "value": 25,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/16",
+            "value": 31,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/64",
+            "value": 43,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/256",
+            "value": 128,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/4",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/8",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/16",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/64",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/256",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/8",
+            "value": 76,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/8",
+            "value": 97,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/8",
+            "value": 132,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/16",
+            "value": 127,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/16",
+            "value": 175,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/16",
+            "value": 272,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/32",
+            "value": 228,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/32",
+            "value": 332,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/32",
+            "value": 511,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/8",
+            "value": 105,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/8",
+            "value": 148,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/8",
+            "value": 182,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/16",
+            "value": 205,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/16",
+            "value": 256,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/16",
+            "value": 309,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/32",
+            "value": 356,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/32",
+            "value": 429,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/32",
+            "value": 599,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/idle",
+            "value": 288,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/active",
+            "value": 386,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/fighting",
+            "value": 542,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/analog",
+            "value": 679,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/2",
+            "value": 82,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/4",
+            "value": 108,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/2",
+            "value": 594,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/4",
+            "value": 1013,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/7",
+            "value": 1524,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "P2PSession/metrics",
+            "value": 26,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message/encoded_len",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=2",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=4",
+            "value": 73,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=8",
+            "value": 238,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=16",
+            "value": 931,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=8",
+            "value": 44667,
+            "range": "± 212",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=16",
+            "value": 205632,
+            "range": "± 4643",
             "unit": "ns/iter"
           }
         ]
