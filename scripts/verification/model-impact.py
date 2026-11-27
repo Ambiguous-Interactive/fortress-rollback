@@ -477,6 +477,22 @@ TEST_ATTR_RE = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[{};]")
 
 
+def _has_test_attribute(lines: list[str], line_number: int) -> bool:
+    """Return True when only attributes separate the fn from a test attribute."""
+    index = line_number - 2
+    attributes: list[str] = []
+    while index >= 0:
+        stripped = lines[index].strip()
+        if not stripped:
+            index -= 1
+            continue
+        if not stripped.startswith("#["):
+            break
+        attributes.append(stripped)
+        index -= 1
+    return any(TEST_ATTR_RE.search(attribute) for attribute in attributes)
+
+
 def _module_path(path: Path, root: Path) -> tuple[str, ...]:
     """Derive the Rust module path a file's top-level items live in."""
     try:
@@ -524,8 +540,7 @@ def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
             name = words[index + 1].group(0)
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
                 line = structure.count("\n", 0, words[index].start()) + 1
-                attributes = "\n".join(lines[max(0, line - 4) : line - 1])
-                if TEST_ATTR_RE.search(attributes):
+                if _has_test_attribute(lines, line):
                     path = base + tuple(module for module, _ in modules) + (name,)
                     names.append("::".join(path))
         index += 1

@@ -197,6 +197,18 @@ def test_test_index_qualifies_nested_inline_modules(tmp_path: Path) -> None:
     assert index.get("nested::outer::tests::nested_test") == nested
 
 
+def test_test_index_does_not_reuse_a_preceding_test_attribute(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text(
+        "#[test]\nfn actual_test() {}\n\nfn helper() {}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::actual_test" in index
+    assert "helpers::helper" not in index
+
+
 def test_missing_z3_proof_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(z3='["z3_proof_missing"]'))
     report = run_check(repo)
