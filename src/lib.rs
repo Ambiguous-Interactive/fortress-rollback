@@ -292,6 +292,10 @@ pub mod sessions {
     pub mod sync_health;
     #[doc(hidden)]
     pub mod sync_test_session;
+    /// Authority-scoped terminal-attempt epoch table for coordinated drops
+    /// (extracted for Kani).
+    #[doc(hidden)]
+    pub(crate) mod terminal_epoch;
 }
 #[doc(hidden)]
 pub mod network {
