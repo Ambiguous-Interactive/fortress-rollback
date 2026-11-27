@@ -378,6 +378,8 @@ def test_multiline_kani_attribute_is_indexed(tmp_path: Path) -> None:
         ("src/bin/tool.rs", ("tool",)),
         ("src/bin/tool/main.rs", ("tool",)),
         ("src/bin/tool/helper.rs", ("tool", "helper")),
+        ("src/bin/my-tool.rs", ("my_tool",)),
+        ("src/bin/my-tool/main.rs", ("my_tool",)),
         ("src/main.rs", ("fixture",)),
         ("tests/demo.rs", ("demo",)),
         ("tests/verification/z3.rs", ("verification", "z3")),

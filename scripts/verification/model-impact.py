@@ -690,9 +690,11 @@ def _module_path(path: Path, root: Path) -> tuple[str, ...]:
         if rest[0] == "bin" and len(rest) >= 2:
             binary = rest[1]
             if binary.endswith(".rs"):
-                name = _binary_name(root, Path(*parts), Path(binary).stem)
+                default = Path(binary).stem.replace("-", "_")
+                name = _binary_name(root, Path(*parts), default)
                 return (name, *_module_tail(rest[2:]))
-            name = _binary_name(root, Path("src", "bin", binary, "main.rs"), binary)
+            default = binary.replace("-", "_")
+            name = _binary_name(root, Path("src", "bin", binary, "main.rs"), default)
             return (name, *_module_tail(rest[2:]))
         if rest == ["lib.rs"]:
             return ()
