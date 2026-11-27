@@ -650,8 +650,7 @@ def _binary_targets(root: Path) -> dict[str, str]:
                 name = entry.get("name")
                 path = entry.get("path")
                 if isinstance(name, str) and name and isinstance(path, str) and path:
-                    relative = str(Path(path)).lstrip("./")
-                    targets[relative] = name.replace("-", "_")
+                    targets[Path(path).as_posix()] = name.replace("-", "_")
         _BINARY_TARGET_CACHE[key] = targets
     return _BINARY_TARGET_CACHE[key]
 

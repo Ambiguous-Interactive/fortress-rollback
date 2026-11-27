@@ -424,7 +424,7 @@ def test_module_path_uses_explicit_binary_target_names(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     (repo / "Cargo.toml").write_text(
         '[package]\nname = "fixture"\nversion = "0.1.0"\n\n'
-        '[[bin]]\nname = "server"\npath = "src/main.rs"\n\n'
+        '[[bin]]\nname = "server"\npath = "./src/main.rs"\n\n'
         '[[bin]]\nname = "renamed-tool"\npath = "src/bin/tool.rs"\n\n'
         '[[bin]]\nname = "directory-tool"\npath = "src/bin/tool/main.rs"\n',
         encoding="utf-8",
