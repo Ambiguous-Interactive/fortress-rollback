@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795764528726,
+  "lastUpdate": 1795803222012,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "646bf83741bedcdcc990b198d81f0de7dba425f4",
-          "message": "fix: keep live graceful-removal targets certified without post-cut forks (#474)\n\n## Summary\n\nProduction `remove_player` lets the removed target keep polling and\nauthoring inputs until it observes its own committed certificate. The\nsimulation harness retired the target at the request step, so that\ninterval was never exercised. This PR models the production interval,\nreproduces the post-cut split reported in #473, fixes it, and re-checks\nthe concurrent-removal liveness gap in #461.\n\nCloses #473. Closes #461.\n\n## Root cause\n\nThe certified cut is the **maximum** target receipt across participants.\nA survivor whose own receipt trailed the cut backfilled that frame, but\nit may already have simulated it from a prediction.\n`disconnect_player_at_frames` armed the rollback at `cut + 1`, which\nkeeps the contaminated `state@cut+1` on the speculative side. Nightly\nseed `12345118` (N=15 Rough) shows the split exactly at the first\npost-cut state: peers 0/6 applied the target's predicted value at frame\n1944 while every other survivor applied the certified value; in-band\nchecksums diverged at 1950.\n\nA live target also exposed two receipt-path faults: a retransmission of\na frame the backfill already installed failed the input queue's\nnon-sequential guard and fail-closed the survivor, and benign\nduplicate/late inputs were reported as Error-severity protocol\nviolations.\n\n## Changes\n\n- Re-simulate the certified cut frame itself with the certified value\nwhenever the session already advanced past it, and purge local checksums\nat/above the cut.\n- Advance the receipt high-water when a live target retransmits a frame\nthe backfill already installed; a genuine gap still fails closed.\n- Treat inputs at/below the receipt high-water as benign duplicates at\ntrace level.\n- Add `RunOptions::live_graceful_target`; the nightly fleet enables it\nfor every generated graceful-removal row.\n- Rewrite CAP row 4: two disjoint concurrent removals with live targets\nboth commit in deterministic order (each survivor observes two\n`PeerDropped` events, both targets stop, survivors stay `Running`, no\ndesync).\n- Docs/CHANGELOG describe the certified-cut re-simulation and concurrent\ncertification.\n\n## Verification\n\n- `cargo tfull`: 3261 passed, 76 skipped.\n- `cargo clippy --workspace --all-targets --features tokio,json`: clean.\n- `python3 scripts/ci/agent-preflight.py --auto-fix`: all checks pass.\n- Live-target nightly regression\n(`live_target_graceful_removal_under_rough_loss_certifies_without_desync`):\nseeds 12345038, 12345098, 12345118 pass.\n- Nightly shards 0-7 (`FORTRESS_SIM_SEED_BASE=12345`, 125 seeds each)\nwith live-target mode enabled for graceful rows: all green.\n- `live_target_graceful_removal_smoke_keeps_the_mesh_certified` (N=4\nRough) passes in the PR suite.\n- `concurrent_disjoint_graceful_removals_certify_both_without_fork`\npasses with both certificates committed.",
-          "timestamp": "2026-11-18T09:10:52Z",
-          "tree_id": "572c924d72c4fbfded4847e0ef50d035d1e7a5fb",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/646bf83741bedcdcc990b198d81f0de7dba425f4"
-        },
-        "date": 1794993813411,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 60596,
-            "range": "± 581",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 31686,
-            "range": "± 180",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1672,
-            "range": "± 106",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1556,
-            "range": "± 102",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3032,
-            "range": "± 267",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 7933,
             "range": "± 126",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "25e8020d1a5fd40c4f16b37f97b5ec5329a8566d",
+          "message": "fix(sessions): recover confirmed inputs without advancing (#607) (#610)\n\n## Description\n\nA game can stop accepting local input while its last remote rows are\nstill in flight. Once those\noriginal rows arrive, `advance_frame()` returns\n`InvalidRequestKind::MissingLocalInput` because no\nlocal sample exists for the next frame, before it can build the\ncorrection requests. The confirmed\nrow is therefore never repaired or recorded, and the exported replay\nloses it (#607).\n\nThis adds `P2PSession::recover_confirmed_inputs`, the supported entry\npoint for that state. It\nservices the inputs already received, returns the same ordered\nrollback-correction requests an\nadvance would produce, records the newly confirmed prefix in the replay\nrecorder, and leaves the\nsession at the existing boundary. It never requires, registers, sends,\nor clears a local sample,\nand never advances the simulation.\n\nImplementation: `advance_frame` now delegates to a private\n`drive_frame(FrameDriveMode)`. The\n`Recover` mode gates only the local-input proof, local-input\nregistration/sending, and the\nsimulation-advance block. Every other effect — remote polling,\ndisconnect updates, checksum\ncomparison, confirmation folding, `adjust_gamestate`, spectator flush,\nreplay recording, and\n`set_last_confirmed_frame` — runs unchanged, so recovery cannot drift\nfrom the normal path.\n`advance_frame` behavior is unchanged and still returns\n`MissingLocalInput` without a local sample.\nRecovery also stays out of the prediction-window stall metric because it\nis not an advance, and it\nflushes endpoint messages queued by its checksum/spectator work after\nthe poll's own final flush.\n\nHot-join interactions are inherited: the N-peer paused repair path is\nreused, and the existing\nhost/joiner pause request sets are returned without advancing.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [x] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [x] `none` — no mapped production path or symbol changed\n- [ ] `updated: <spec/proof>` — the model, proof, or mapped test is\nupdated in this PR\n- [ ] `waived: <reason + approver>` — a named maintainer approved the\nexception and it is recorded in the tracked issue/PR\n\n- [ ] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (state which below) — N/A, no proof changed.\n\n`python3 scripts/verification/model-impact.py affected --base\norigin/main` → `No mapped verification\nimpact (base origin/main).` `model-impact.py check` → OK (11 components,\n40 symbols, 76 artifacts).\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**:\n  - No `unwrap()` in production code\n  - No `expect()` in production code\n  - No `panic!()` or `todo!()`\n  - All fallible operations return `Result`\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly — `docs/replay.md`\n(\"Finalizing After Local Input Stops\") and the regenerated\n`wiki/Replay.md`\n- [x] I have added an entry to `CHANGELOG.md` for user-facing changes\n- [ ] I have updated relevant examples in the `examples/` directory —\nN/A\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**RED evidence (before the fix):**\n\n```text\ncargo nextest run --features tokio,json,hot-join \\\n  -E 'test(advance_frame_without_local_input_cannot_finalize_withheld_confirmed_frame)'\n→ PASS as a characterization of the bug: advance_frame returned MissingLocalInput and the replay\n  stayed below 257 rows.\n```\n\nTargeted revert after the fix (recovery call replaced with\n`advance_frame` in the new test):\n\n```text\ncargo nextest run --features tokio,json,hot-join \\\n  -E 'test(recover_confirmed_inputs_finalizes_withheld_confirmed_frame)'\n→ FAIL: Error: InvalidRequestStructured { kind: MissingLocalInput }\n```\n\nThe file was restored byte-identically after the revert check.\n\n**Tests added:**\n\n- `recover_confirmed_inputs_finalizes_withheld_confirmed_frame` —\nasymmetric two-peer withheld-256\nshape, run for `SaveMode::EveryFrame` and `SaveMode::Sparse`; both peers\nrecover at boundary 257,\nserialize the replay, decode it, assert row 256 contains the original\ninputs, and play it back\n  without `ReplayDesync`.\n-\n`recover_confirmed_inputs_records_prediction_matching_row_without_rollback`\n— neutral control: the\ndelayed row repeats the prediction, so recovery requests no correction\nand does not increase\n  `rollback_count`, but still records the row.\n- `recover_confirmed_inputs_does_not_invent_the_withheld_row` — the row\nnever arrives;\n`confirmed_frame` stays 255, and the decoded replay has 256 rows with no\nplaceholder.\n- `advance_frame_does_not_finalize_without_the_recovery_call` — the old\npath still refuses with\n`MissingLocalInput` and exports only 256 rows, so the recovery call is\nrequired rather than\n  optional.\n- Repeated recovery is asserted to return no second load/advance, to\nkeep `current_frame` at 257,\n  and to leave the prediction-stall metric flat.\n\n```text\ncargo nextest run --features tokio,json,hot-join -E 'test(recover_confirmed_inputs)'\n  Summary: 3 passed, 0 failed\n```\n\n**Commands and observed output:**\n\n```text\ncargo fmt --all -- --check                                        clean\ncargo clippy --workspace --all-targets \\\n  --features hot-join,tokio,json,sync-send -- -D warnings         clean\ncargo tfull                                                       3814 passed, 77 skipped\ncargo test --doc                                                  160 passed, 52 ignored\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps \\\n  --features hot-join,tokio,json,sync-send --document-private-items  clean\ncargo check --target wasm32-unknown-unknown --no-default-features   pass\ncargo check -p wasm-browser-smoke --features hot-join \\\n  --target wasm32-unknown-unknown --lib --tests                     pass\n.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix   all checks passed\npython3 scripts/api/public_api_census.py --check                   pass (snapshot updated)\npython3 scripts/verification/model-impact.py check                 OK\npython3 scripts/docs/check-links.py                                0 errors\nbash scripts/ci/check-doc-claims.sh                                SUCCESS\nnpx markdownlint CHANGELOG.md docs/replay.md wiki/Replay.md        clean\npython3 scripts/hooks/check-changelog-unreleased.py                pass\npython3 scripts/hooks/check-plan-hygiene.py                        pass\npython3 scripts/docs/check-wiki-consistency.py                     pass\n```\n\n`python3` in this container lacks pytest, so the repository preflight\nwas run with the checked-in\n`.venv/bin/python` (pytest 9.0.3); the preflight itself reported \"All\nagent preflight checks passed.\"\n\n**Manual testing performed:**\n\n- Read `drive_frame` against `adjust_gamestate`,\n`set_last_confirmed_frame`,\n`record_confirmed_inputs`, and `finalize_pending_replay_checksums` to\nconfirm the correction and\n  recording order is unchanged in `Recover` mode.\n- Confirmed the N-peer paused hot-join branch is the existing\nrepair-only path and the host pause\n  returns empty without advancing.\n\n## Size\n\n618 insertions / 71 deletions (547 net) across 8 files, above the\n500-line split guidance. The\nproduction driver change is ~80 new logic lines plus a rustfmt reindent;\n~381 lines are the new\nintegration tests (four controls, both save modes, serialized\ndecode/playback), and ~38 are the\nchangelog, replay guide, user-guide pointer, and wiki mirrors. Splitting\nthe tests would land an\nuntested public method; splitting the docs would leave a user-facing API\nundocumented. Recorded\nhere rather than split. The production diff is mostly the rustfmt\nreindent of the moved driver body plus the mode gates. The API, tests,\nchangelog, docs, and wiki\nmirror are one story; splitting would either ship an undocumented API or\ntests without the method.\n\n## Risks and rollback\n\n- Primary risk: `Recover` mode skips a shared side effect. Mitigation:\nthe mode gates only the three\nlocal-input/advance spots; every other effect is on the same path, and\nthe full suite plus the\n  repeated/neutral/withheld controls exercise it in both save modes.\n- API risk: an additive inherent method on `P2PSession`; no wire,\nprotocol, trait, or public type\nchange. Rollback: `git revert <merge commit>` restores the prior driver\nbyte-for-byte.\n- The Godot differential witness (`make replay-probes GODOT=...`) is\ntracked in Godot #256 and was\nnot re-run in this environment. The Rust-side acceptance is covered\nend-to-end, including a\nserialized decode-and-playback check; the wasm compile lanes ran\nlocally.\n\n## Explain-back (author)\n\n`recover_confirmed_inputs` is a mode of the existing advance driver, not\na parallel path. It polls\nand applies disconnect knowledge, runs the checksum pass, folds the\nconfirmed frame, calls\n`adjust_gamestate` on a misprediction, flushes spectators, records\nconfirmed inputs, and advances\n`last_confirmed_frame` exactly as `advance_frame` does. It differs in\nthree deliberate ways: it does\nnot prove or consume a local sample, it does not register/send one, and\nit does not call\n`sync_layer.advance_frame`. The correction therefore starts at the state\nbefore the mispredicted\nframe and ends at the boundary the session had already reached, leaving\n`current_frame` unchanged.\nThe replay exporter already knows how to refresh checksums for\nre-simulated frames; the new test\nserializes, decodes, asserts the recovered row's original inputs, and\nreplays the result with\nchecksum validation. The withheld control proves the method does not\ninvent a row, the neutral control proves a\nmatching prediction is recorded without a synthetic rollback, and both\nassert that recovery never\nrecords a prediction-window stall. Recovery also flushes endpoint\nmessages queued after the poll's\nfinal flush, so a recovery-only caller does not defer checksum or\nspectator traffic.\n\n## Related Issues\n\nFixes #607. The Godot-side witness is tracked by Godot #256.",
+          "timestamp": "2026-11-27T18:01:06Z",
+          "tree_id": "9ad25fb46eb50324dea1e8ad3ff6f02e16e21823",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/25e8020d1a5fd40c4f16b37f97b5ec5329a8566d"
+        },
+        "date": 1795803221152,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 62291,
+            "range": "± 799",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 32391,
+            "range": "± 385",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1862,
+            "range": "± 112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1556,
+            "range": "± 80",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 3138,
+            "range": "± 178",
             "unit": "ns/iter"
           }
         ]
