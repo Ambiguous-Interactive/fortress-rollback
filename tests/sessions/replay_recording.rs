@@ -354,7 +354,8 @@ fn recover_finalizes_withheld_confirmed_frame(save_mode: SaveMode) -> Result<(),
     );
 
     // The recovery call repairs the already-received confirmed row at the
-    // existing boundary: the correction loads and re-simulates 256 only.
+    // existing boundary: the correction loads at or before 256 and
+    // re-simulates through the boundary without moving it.
     let stalls_before = pair.sess1.metrics().stall_count;
     let correction = pair.sess1.recover_confirmed_inputs()?;
     let mut saw_load = false;
