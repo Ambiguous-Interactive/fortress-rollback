@@ -59,6 +59,12 @@ scope = "fixture"
 residuals = [{residual}]
 
 {waiver}
+
+[z3_proof_strength]
+code_linked = []
+model_only = ["z3_proof_demo"]
+witness_only = []
+tautology = []
 """
 
 
@@ -368,6 +374,141 @@ def test_missing_z3_proof_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(z3='["z3_proof_missing"]'))
     report = run_check(repo)
     assert any("is not defined in tests/verification/z3.rs" in error for error in report.errors)
+
+
+def test_z3_proof_strength_requires_every_test(tmp_path: Path) -> None:
+    manifest = _manifest().replace(
+        'model_only = ["z3_proof_demo"]', "model_only = []"
+    )
+    repo = build_repo(tmp_path, manifest)
+    report = run_check(repo)
+    assert any(
+        "z3-proof-strength: missing classification for 'z3_proof_demo'" in error
+        for error in report.errors
+    )
+
+
+def test_z3_proof_strength_detects_qualified_functions(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    (repo / "tests" / "verification" / "z3.rs").write_text(
+        "fn z3_proof_demo() {}\npub async fn z3_proof_async() {}\n",
+        encoding="utf-8",
+    )
+    report = run_check(repo)
+    assert any(
+        "z3-proof-strength: missing classification for 'z3_proof_async'" in error
+        for error in report.errors
+    )
+
+
+def test_z3_proof_strength_detects_same_line_attribute(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    (repo / "tests" / "verification" / "z3.rs").write_text(
+        "#[test] fn z3_proof_inline() {}\nfn z3_proof_demo() {}\n",
+        encoding="utf-8",
+    )
+    report = run_check(repo)
+    assert any(
+        "z3-proof-strength: missing classification for 'z3_proof_inline'" in error
+        for error in report.errors
+    )
+
+
+def test_z3_proof_strength_ignores_comments_and_literals(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    (repo / "tests" / "verification" / "z3.rs").write_text(
+        "/* fn z3_proof_comment_fake() {} */\n"
+        'const S: &str = "fn z3_proof_literal_fake() {}";\n'
+        "fn z3_proof_demo() {}\n",
+        encoding="utf-8",
+    )
+    report = run_check(repo)
+    assert report.errors == [], report.errors
+
+
+def test_z3_summary_total_must_match_the_source(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    manifest = _manifest().replace(
+        'model_only = ["z3_proof_demo"]',
+        'model_only = ["z3_proof_demo", "z3_verified_properties_summary"]',
+    )
+    (repo / "docs" / "specs" / "verification-manifest.toml").write_text(
+        manifest, encoding="utf-8"
+    )
+    (repo / "tests" / "verification" / "z3.rs").write_text(
+        "fn z3_proof_demo() {}\n"
+        'fn z3_verified_properties_summary() {\n'
+        '    println!("Total: 99 non-summary Z3 tests");\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    report = run_check(repo)
+    assert any(
+        "summary says 99 non-summary Z3 tests, the file has 1" in error
+        for error in report.errors
+    )
+
+
+def test_z3_proof_strength_rejects_unknown_test(tmp_path: Path) -> None:
+    manifest = _manifest().replace(
+        'model_only = ["z3_proof_demo"]',
+        'model_only = ["z3_proof_demo", "z3_proof_ghost"]',
+    )
+    repo = build_repo(tmp_path, manifest)
+    report = run_check(repo)
+    assert any(
+        "z3-proof-strength: unknown Z3 test 'z3_proof_ghost'" in error
+        for error in report.errors
+    )
+
+
+def test_z3_proof_strength_rejects_duplicate_classification(tmp_path: Path) -> None:
+    manifest = _manifest().replace(
+        "witness_only = []", 'witness_only = ["z3_proof_demo"]'
+    )
+    repo = build_repo(tmp_path, manifest)
+    report = run_check(repo)
+    assert any(
+        "z3-proof-strength: duplicate classification for z3_proof_demo" in error
+        for error in report.errors
+    )
+
+
+def test_z3_proof_strength_rejects_unknown_strength() -> None:
+    manifest = _manifest().replace(
+        "witness_only = []", 'not_a_strength = ["z3_proof_demo"]'
+    )
+    with pytest.raises(model_impact.ManifestError, match="unknown keys"):
+        model_impact.parse_manifest_text(manifest)
+
+
+def test_z3_proof_strength_table_is_required(tmp_path: Path) -> None:
+    manifest = _manifest().replace(
+        "[z3_proof_strength]\n"
+        "code_linked = []\n"
+        'model_only = ["z3_proof_demo"]\n'
+        "witness_only = []\n"
+        "tautology = []\n",
+        "",
+    )
+    repo = build_repo(tmp_path, manifest)
+    report = run_check(repo)
+    assert any(
+        "missing [z3_proof_strength] classification table" in error
+        for error in report.errors
+    )
+
+
+def test_code_linked_proof_must_be_mapped_to_a_component(tmp_path: Path) -> None:
+    manifest = _manifest(z3="[]").replace(
+        "code_linked = []", 'code_linked = ["z3_proof_demo"]'
+    ).replace('model_only = ["z3_proof_demo"]', "model_only = []")
+    repo = build_repo(tmp_path, manifest)
+    report = run_check(repo)
+    assert any(
+        "code_linked proof 'z3_proof_demo' must be mapped" in error
+        for error in report.errors
+    )
 
 
 def test_unregistered_tla_check_fails(tmp_path: Path) -> None:

@@ -3,7 +3,8 @@
 
 ``check`` validates ``docs/specs/verification-manifest.toml``: every mapped
 path, symbol, TLA spec/check, Kani harness, Z3 proof, and Rust test exists,
-residual review dates are current, and the generated alignment table in
+residual review dates are current, the ``[z3_proof_strength]`` table classifies
+every ``z3_*`` test exactly once, and the generated alignment table in
 ``docs/specs/spec-divergences.md`` is fresh.
 
 ``affected --base <rev>`` maps a git diff to manifest components. A mapped
@@ -44,6 +45,7 @@ END = "<!-- END GENERATED: verification-alignment -->"
 BEGIN_MARKER = BEGIN
 END_MARKER = END
 STATUSES = {"modeled", "bounded", "unmodeled", "stale"}
+Z3_STRENGTHS = ("code_linked", "model_only", "witness_only", "tautology")
 TLA_ARRAYS = ("SPECS", "EXPECTED_FAILURE_CHECKS", "ADDITIONAL_CHECKS", "TRACE_CHECKS")
 DEFINITION_RE = r"\b(?:fn|struct|enum|trait|type|const|static|mod|union)\s+{name}\b"
 
@@ -88,6 +90,7 @@ class Manifest(NamedTuple):
     schema_version: int
     components: tuple[Component, ...]
     waivers: tuple[Waiver, ...]
+    z3_proof_strength: dict[str, tuple[str, ...]]
 
 
 class Report(NamedTuple):
@@ -213,6 +216,27 @@ def _waiver(table: dict[str, Any], where: str) -> Waiver:
     )
 
 
+def _z3_proof_strength(data: dict[str, Any], source: str) -> dict[str, tuple[str, ...]]:
+    """Parse the optional ``[z3_proof_strength]`` classification table."""
+    raw = data.get("z3_proof_strength")
+    if raw is None:
+        return {}
+    where = f"{source}: z3_proof_strength"
+    table = _table(raw, where)
+    unknown = sorted(set(table) - set(Z3_STRENGTHS))
+    if unknown:
+        raise ManifestError(f"{where} has unknown keys: {unknown}")
+    result: dict[str, tuple[str, ...]] = {}
+    for strength in Z3_STRENGTHS:
+        names = table.get(strength, [])
+        if not isinstance(names, list) or not all(
+            isinstance(name, str) and name.strip() for name in names
+        ):
+            raise ManifestError(f"{where}.{strength} must be a list of non-empty strings")
+        result[strength] = tuple(name.strip() for name in names)
+    return result
+
+
 def parse_manifest_text(text: str, source: str = "<manifest>") -> Manifest:
     """Parse and structurally validate manifest TOML."""
     try:
@@ -239,6 +263,7 @@ def parse_manifest_text(text: str, source: str = "<manifest>") -> Manifest:
             _waiver(_table(item, f"{source}: waiver[{index}]"), f"{source}: waiver[{index}]")
             for index, item in enumerate(waivers)
         ),
+        _z3_proof_strength(data, source),
     )
 
 
@@ -643,6 +668,12 @@ def z3_proof_index(root: Path) -> dict[str, Path]:
     return index
 
 
+def z3_test_names(root: Path) -> list[str]:
+    """Return every ``fn z3_*`` name in the Z3 test file, in source order."""
+    entries, _lines = _function_entries(_read(root / Z3_REL) or "")
+    return [name for _module, name, _line, _column in entries if name.startswith("z3_")]
+
+
 def kani_proof_index(root: Path) -> dict[str, tuple[tuple[Path, tuple[str, ...]], ...]]:
     """Map ``#[kani::proof]`` harness names to every (file, module) definition."""
     found: dict[str, list[tuple[Path, tuple[str, ...]]]] = {}
@@ -685,7 +716,8 @@ def registrations(root: Path) -> tuple[set[str], set[str], set[str]]:
         match = re.search(rf"^TIER{tier}_PROOFS=\((.*?)^\)", kani_text, re.DOTALL | re.MULTILINE)
         if match is not None:
             kani.update(re.findall(r'"((?:proof|verify)_\w+)"', match.group(1)))
-    z3 = set(re.findall(r"(?m)^\s*fn\s+(z3_\w+)\s*\(", _read(root / Z3_REL) or ""))
+    z3_entries, _lines = _function_entries(_read(root / Z3_REL) or "")
+    z3 = {name for _module, name, _line, _column in z3_entries if name.startswith("z3_")}
     return tla, kani, z3
 
 
@@ -718,6 +750,64 @@ def tla_checks(component: Component) -> tuple[str, ...]:
         stem = Path(spec).stem
         names.append(f"{stem}Contract" if stem.endswith("Trace") else stem)
     return tuple(names)
+
+
+def _check_z3_proof_strength(
+    manifest: Manifest, root: Path, registered_z3: set[str]
+) -> list[str]:
+    """Validate the Z3 proof-strength table covers every test exactly once."""
+    errors: list[str] = []
+    table = manifest.z3_proof_strength
+    if not table:
+        errors.append(
+            "z3-proof-strength: missing [z3_proof_strength] classification table"
+        )
+        return errors
+    classified: dict[str, str] = {}
+    for strength in Z3_STRENGTHS:
+        for name in table.get(strength, ()):
+            if name in classified:
+                errors.append(
+                    f"z3-proof-strength: duplicate classification for {name} "
+                    f"({classified[name]} and {strength})"
+                )
+                continue
+            classified[name] = strength
+            if name not in registered_z3:
+                errors.append(f"z3-proof-strength: unknown Z3 test '{name}'")
+    for name in sorted(set(z3_test_names(root)) - set(classified)):
+        errors.append(f"z3-proof-strength: missing classification for '{name}'")
+    mapped = {proof for component in manifest.components for proof in component.z3}
+    for name, strength in classified.items():
+        if strength == "code_linked" and name not in mapped:
+            errors.append(
+                f"z3-proof-strength: code_linked proof '{name}' must be mapped "
+                "to a component's z3 list"
+            )
+    errors.extend(_check_z3_summary_total(root))
+    return errors
+
+
+def _check_z3_summary_total(root: Path) -> list[str]:
+    """Keep the printed non-summary total aligned with the source inventory."""
+    text = _read(root / Z3_REL) or ""
+    if "z3_verified_properties_summary" not in text:
+        return []
+    match = re.search(r"Total:\s*(\d+)\s+non-summary Z3 tests", text)
+    if match is None:
+        return [
+            "z3-proof-strength: z3_verified_properties_summary is missing its "
+            "'Total: <n> non-summary Z3 tests' line"
+        ]
+    tests = z3_test_names(root)
+    expected = sum(1 for name in tests if "summary" not in name)
+    actual = int(match.group(1))
+    if actual != expected:
+        return [
+            f"z3-proof-strength: summary says {actual} non-summary Z3 tests, "
+            f"the file has {expected}"
+        ]
+    return []
 
 
 def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None) -> Report:
@@ -808,6 +898,7 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
             residual_ids.add(residual.residual_id)
             if residual.review_by < today:
                 errors.append(f"{cid}: residual '{residual.residual_id}' review_by {residual.review_by} has expired")
+    errors.extend(_check_z3_proof_strength(manifest, root, z3))
     for waiver in manifest.waivers:
         if waiver.component not in seen:
             errors.append(f"waiver: unknown component '{waiver.component}'")

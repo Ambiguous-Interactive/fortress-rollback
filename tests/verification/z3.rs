@@ -2149,7 +2149,7 @@ fn z3_desync_detection_proofs_summary() {
          - InvariantChecker soundness: no error when no desync\n\
          - InvariantChecker completeness: error always returned when desync exists\n\
          \n\
-         Total: 9 desync detection Z3 proofs"
+         Total: 9 desync detection Z3 tests"
     );
 }
 
@@ -2157,10 +2157,10 @@ fn z3_desync_detection_proofs_summary() {
 // Summary Test
 // =============================================================================
 
-/// Summary: List all Z3 verified properties
+/// Summary: List all Z3 modeled/checked properties
 ///
 /// This test doesn't verify anything new but serves as documentation
-/// of all properties verified by Z3 in this module.
+/// of all properties modeled or checked by Z3 in this module.
 #[test]
 fn z3_verified_properties_summary() {
     // Frame Arithmetic:
@@ -2184,6 +2184,16 @@ fn z3_verified_properties_summary() {
     // Frame Delay:
     // - MAX_FRAME_DELAY constraint prevents queue overflow
     // - Sequential frames remain sequential with delay
+    // - Mid-session delay changes preserve monotonic queue progress
+    // - The pending-output precheck covers the gap-fill delta
+
+    // Runtime Delay and Peer Drop:
+    // - Input delay changes preserve queued-frame ordering
+    // - Pending-output capacity covers per-endpoint gap-fill messages
+    // - Mesh-agreed dropped players are excluded from the confirmed minimum
+
+    // Mesh-Agreed Confirmed Bound:
+    // - A same-instant subset-min override never exceeds the per-slot bound
 
     // Input Consistency:
     // - No position collision within queue window (modulo uniqueness)
@@ -2218,18 +2228,19 @@ fn z3_verified_properties_summary() {
 
     println!(
         "Z3 Verification Summary:\n\
-         - 3 Frame arithmetic proofs\n\
-         - 5 Circular buffer proofs\n\
-         - 5 Rollback frame selection proofs\n\
-         - 7 Frame delay proofs\n\
-         - 1 Input consistency proof\n\
-         - 3 Comprehensive safety proofs\n\
-         - 6 Runtime delay and peer drop proofs\n\
-         - 8 Internal component invariant proofs\n\
-         - 8 FNV-1a hash function proofs\n\
-         - 9 Desync detection proofs\n\
-         - 9 PCG32 RNG proofs\n\
-         Total: 64 Z3 proofs (plus 2 summary tests = 66 tests)"
+         - 3 Frame arithmetic tests\n\
+         - 5 Circular buffer tests\n\
+         - 5 Rollback frame selection tests\n\
+         - 5 Frame delay tests\n\
+         - 2 Mesh-agreed confirmed-bound tests\n\
+         - 1 Input consistency test\n\
+         - 3 Comprehensive safety tests\n\
+         - 6 Runtime delay and peer drop tests\n\
+         - 8 Internal component invariant tests\n\
+         - 7 FNV-1a hash function tests\n\
+         - 9 Desync detection tests\n\
+         - 8 PCG32 RNG tests\n\
+         Total: 62 non-summary Z3 tests (plus 4 summary tests = 66 tests)"
     );
 }
 
@@ -3136,7 +3147,7 @@ fn z3_hash_proofs_summary() {
          2. Known test vectors from FNV specification\n\
          3. Z3 proofs for mathematical structure\n\
          \n\
-         Total: 7 hash-related Z3 proofs"
+         Total: 7 hash-related Z3 tests"
     );
 }
 
@@ -3546,6 +3557,6 @@ fn z3_rng_proofs_summary() {
          3. Distribution tests for uniformity\n\
          4. Z3 proofs for mathematical structure\n\
          \n\
-         Total: 8 RNG-related Z3 proofs"
+         Total: 8 RNG-related Z3 tests"
     );
 }
