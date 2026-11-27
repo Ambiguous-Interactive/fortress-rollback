@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795729506142,
+  "lastUpdate": 1795741592450,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "bdfbca5c7407237f0cd8c53f3aac4029cadcfb73",
-          "message": "fix: reset late prunes before the confirmation fold and recover stale spectator cursors (#468)\n\n## Description\n\nCloses the two open advance-path correctness issues and one retry defect\nin the coordinated graceful-drop certificate.\n\n**#463 — a prune applied later in the same `advance_frame` bypassed the\npost-prune fresh-ack HOLD.**\n`drive_floor_round` sampled prune transitions before the endpoint poll,\nso a prune applied afterward by a silence-timeout `Event::Disconnected`\nor by the propagated-disconnect fold did not reset any relay's floor\nfreshness. The confirmation fold in the same advance could then consume\na relay's pre-prune `round_floor`, advance confirmation past the true\nfreeze, and discard inputs at `set_last_confirmed_frame`. Prune\ndetection now runs again after `update_player_disconnects`, gated on the\nrelay topology so nothing changes outside it (the next poll still\nlatches there).\n\n**#464 — the spectator flush could discard an already-applied\nrollback.**\nThe spectator flush now runs before any rollback mutation in both\n`advance_frame` and `advance_frame_npeer_paused`, so a flush failure can\nno longer drop the `LoadGameState`/`AdvanceFrame` batch the application\nstill has to execute. A cursor that lags behind a hot-join reopened\nslot's discarded live-era history (or behind an evicted ring entry) is\npermanently unservable; instead of returning `NoConfirmedInput` on every\nlater advance, the host reports the skipped range and resumes at\n`SyncLayer::oldest_servable_input_frame`.\n\n**#461 (partial) — a retried graceful removal was swallowed by the\nclosed-operation history.**\nA retry reuses the generation-derived `DropOperationId`, so peers that\nhad closed a superseded/aborted attempt silently ignored every retry\n`Prepare` and the removal timed out into a permanent fail-closed. A\nclosed identity is now reopened while\n`coordinated_drop_validate_prepare` still holds (target connected,\ngeneration current, survivor set exact); replays of a concluded\noperation still fail that validation and remain ignored. The separate\nconcurrent-disjoint-removal design question in #461 and the N=2\ntarget-tail semantics in #460 remain open — see \"Related Issues\".\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (no new\n`unwrap`/`expect`/`panic!` in production code; all new failures are\nreported, not panicked)\n- [x] I have added tests that prove my fix is effective\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json,hot-join -- -D warnings` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated `CHANGELOG.md` for user-facing changes (four\n`**Pre-existing:**` Fixed entries)\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `same_advance_propagated_prune_resets_the_floor_round_before_the_fold`\n— red on base (verified by removing the new call), green with the fix; a\ngossip-propagated prune inside `advance_frame` now holds confirmation at\nthe pre-prune confirmed frame.\n- `spectator_flush_skips_unservable_reactivation_gap_instead_of_wedging`\n— a stale cursor under a reactivation floor drains the frozen window\ninstead of erroring.\n- `closed_operation_is_reaccepted_only_while_its_target_still_validates`\n— retry reopened while the target validates; stale replay after the\ntarget dropped stays ignored.\n- Existing hand-join spectator/fold tests\n(`npeer_reopened_survivor_with_spectator_flushes_pre_activation_frames`,\n`npeer_joiner_with_own_spectator_flushes_contiguously_from_snapshot_frame`,\n`advance_frame_recomputes_confirmation_when_the_prune_rearms_the_floor_round`,\n`drive_floor_round_drops_the_cached_fold_only_in_the_pruned_relay_topology`)\nall pass unchanged.\n\n**Validation evidence:**\n\n- `cargo nextest run --workspace --features tokio,json`: 3253 passed, 75\nskipped.\n- `cargo nextest run --workspace --features hot-join,tokio,json`: 3548\npassed, 76 skipped.\n- `python3 scripts/ci/agent-preflight.py --full`: exit 0.\n- `cargo check --target aarch64-unknown-linux-gnu\n--no-default-features`: pass.\n- `cargo check --target wasm32-unknown-unknown --no-default-features\n--features hot-join`: pass.\n- `cargo check --target wasm32-wasip1 --no-default-features --features\nhot-join,tokio`: pass.\n- `cargo update`: `bytes` 1.12.1 → 1.12.2 (the only compatible update).\n- `.gitignore`: `mutants.out*/` so local mutation runs leave no\nuntracked state.\n\n## Related Issues\n\nFixes #463\nFixes #464\nRelates to #461 (retry identity fixed; concurrent different-target\nremoval serialization needs a mesh-wide rule and remains open)\nRelates to #460 (lossy retirement/target-tail design decision remains\nopen)",
-          "timestamp": "2026-11-18T00:42:09Z",
-          "tree_id": "d92e4a8ec6271c59d3a8701785fc3677596c544c",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/bdfbca5c7407237f0cd8c53f3aac4029cadcfb73"
-        },
-        "date": 1794963229513,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 51390,
-            "range": "± 736",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 35058,
-            "range": "± 451",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1407,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1604,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3196,
-            "range": "± 284",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 2765,
             "range": "± 168",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7b695d16dd9ab9a124955209d5807d7dd5541833",
+          "message": "verification: extract and prove the coordinated-drop terminal epoch table (#574) (#595)\n\n## Description\n\nExtracts the coordinated-drop terminal-attempt epoch map from\n`P2PSession` into a\n`pub(crate)` state machine and machine-checks its transition kernels.\nThis is #574 in the\napproved proof-drift queue (#580); it changes no public API, wire\nformat, or behavior.\n\nThe old map lived inline in `src/sessions/p2p_session.rs` and was pinned\nonly by prose and\ndeterministic tests. `docs/specs/formal-spec.md` claimed\n`AtMostOneCommittedCut` survives\n\"without a new model\" while the map invariant was unproven. This PR:\n\n- Adds `src/sessions/terminal_epoch.rs` with `CanonicalTargetSet`,\n`TerminalEpochKey`,\n`TerminalEpochEntry`, `TerminalEpochTable`, `TerminalEpochRecord`,\n`EpochAdmission`, and the pure\nkernels `advance_next`, `epoch_generation_is_current`,\n`epoch_space_is_retained`,\n  `canonicalize_handles`, and `epoch_admission`.\n- Moves the epoch lookup, insertion, pruning, capacity refusal, and\nadmission decision behind the\ntable. The session keeps only its local-generation and target-generation\ngates.\n- Adds five registered Kani harnesses on the real module functions:\n  - `proof_terminal_epoch_next_is_monotone`\n  - `proof_terminal_epoch_one_ahead_does_not_swallow_current`\n  - `proof_terminal_epoch_at_most_two_generations_per_target_set`\n-\n`proof_terminal_epoch_fallback_adoption_is_bounded_and_only_when_empty`\n  - `proof_terminal_epoch_entry_targets_match_key_handles`\n- Updates `formal-spec.md` to drop the unqualified \"without a new model\"\nclaim and cite the five\nkernels; the statement is now that the epoch is an admission filter over\nthe same commit path.\n- Updates the verification manifest: `terminal-epoch` moves from\n`unmodeled` to `bounded`, the\n`terminal-epoch-proof` residual closes, and the five harnesses + four\ntable tests are mapped.\n\n**Kani scope, stated plainly.** CBMC cannot model the bounded\n`BTreeMap<TerminalEpochKey, TerminalEpochEntry>` in budget: a one-entry\ninsert with heap `Vec` keys\nran for more than 30 minutes before I stopped it. The harnesses\ntherefore verify the load-bearing\ntransition kernels on production functions, including the production\n`EpochSpaceIdentity` type that\nis the authority component of `TerminalEpochKey` and is compared by the\nmap through its derived\n`Eq`/`Ord`. Table-level Rust tests cover the full key composition,\nexact-key lookup, canonical-order\nsharing, entry-target refresh, pruning, capacity refusal, and\nno-epoch-reuse. This is the stop\ncondition the issue allows (\"prove the key/admission helper and keep the\nmap construction\nconcrete\"); the module documents the split and the manifest carries the\nexplicit\n`terminal-epoch-key-ord` residual for the full-key/map layer rather than\nclaiming it is\nKani-proved.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [x] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [ ] `none` — no mapped production path or symbol changed\n- [x] `updated: docs/specs/verification-manifest.toml + five Kani\nharnesses` — `terminal-epoch` is\nnow `bounded`; `model-impact.py affected --base origin/main` reports a\npresent verification\n  update.\n- [ ] `waived: <reason + approver>`\n- [x] Any new or changed proof has a RED mutation or a non-vacuity\nwitness: the old\nhandles-only identity fails\n`proof_terminal_epoch_one_ahead_does_not_swallow_current` (recorded\nbelow), and reverting `coordinator_generation` out of the production key\nfails both table tests.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** — no\n`unwrap`/`expect`/`panic!` in production; all\n  fallible paths return `Result`, and slice access uses `get`\n- [x] I have added tests that prove my fix is effective or my feature\nworks — 9 table tests plus 5\n  Kani harnesses; the targeted mutation run is recorded below\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no\n  warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly — `formal-spec.md`\nv1.8, regenerated wiki mirror\n  and alignment table\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes —\nN/A, `pub(crate)` refactor\n  with no public API or behavior change\n- [ ] I have updated relevant examples in the `examples/` directory —\nN/A\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `src/sessions/terminal_epoch.rs`: 9 unit tests covering separate\ncurrent/one-ahead epochs,\ncanonical order/dedup sharing, behind-era pruning, the two-generation\nbound over eight eras,\nstale-target reclamation, capacity refusal, bounded/empty-state fallback\nadmission, direct\n`advance_next` behavior, and direct sort/dedup/descending/clamp\nbehavior.\n- `scripts/verification/verify-kani.sh`: five Tier 1 harnesses\nregistered.\n- `src/sessions/p2p_session.rs`: existing epoch/fallback tests\nunchanged; only the internal\n  `.terminal_epochs.len()`/key access adapts to the table API.\n\n**Commands and observed output:**\n\n```text\ncargo nextest run --workspace --features tokio,json,hot-join\n  Summary [38.676s] 3802 tests run: 3802 passed, 77 skipped\n\ncargo kani --harness proof_terminal_epoch_\n  Complete - 5 successfully verified harnesses, 0 failures, 5 total\n  (per-harness Verification Time 0.092s-2.799s)\n\n./scripts/verification/check-kani-coverage.sh\n  SUCCESS: All 136 Kani proofs are covered in tier lists.\n\ncargo test --doc\n  test result: ok. 160 passed; 0 failed; 51 ignored\n\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features hot-join,tokio,json,sync-send --document-private-items\n  Finished (no warnings)\n\ncargo check --target wasm32-unknown-unknown --no-default-features\ncargo check -p wasm-browser-smoke --features hot-join --target wasm32-unknown-unknown --lib --tests\ncargo check --target wasm32-unknown-emscripten --no-default-features\n  all pass\n\ncargo kani --only-codegen\n  Finished (Kani cfg compile passes)\n\n.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix\n  All agent preflight checks passed.\n\npython3 scripts/verification/model-impact.py affected --base origin/main\n  terminal-epoch [bounded] ... verification update: present (exit 0)\n```\n\n**RED control (exact failure):**\n\n```text\n# production key reverted to handles + coordinator only (old #525 identity)\nFAIL sessions::terminal_epoch::tests::current_and_one_ahead_eras_keep_separate_epochs\n  left: 7\n right: 3\nFAIL sessions::terminal_epoch::tests::table_prunes_a_behind_era_when_the_local_view_advanced\n  left: 1\n right: 0\nSummary [0.094s] 2 tests run: 0 passed, 2 failed\n\n# Kani kernel reduced to the old handles-only identity\nCheck 4: ...proof_terminal_epoch_one_ahead_does_not_swallow_current.assertion.1\n  - Status: FAILURE\nVERIFICATION:- FAILED\nComplete - 0 successfully verified harnesses, 1 failures, 1 total.\n```\n\nBoth pass again once the generation is restored.\n\n**Mutation testing:**\n\n- Existing #525 evidence retained: 22 caught, 8 unviable, 0 missed on\nthe same helpers.\n- First run on the extracted file: 64 mutants, 30 caught, 19 unviable,\n15 missed. All 15 survivors\nwere in `advance_next` (3) and `canonicalize_handles` (12); the\ncanonicalization survivors\nexposed that the table tests could pass with the same broken\ncanonicalization on both sides.\n- Hardening: added direct `advance_next` and `canonicalize_handles`\ntests (unsorted, duplicate,\ndescending, already sorted, single, empty, and clamped inputs) and\nreplaced the hand-written max\n  comparison with `std::cmp::max`.\n- Final focused run on the two changed kernels:\n\n  ```text\n  cargo mutants -f src/sessions/terminal_epoch.rs \\\n-F 'advance_next|canonicalize_handles' --cargo-test-arg terminal_epoch \\\n    --baseline=skip -j4\n  Found 20 mutants to test\n  20 mutants tested in 8m: 14 caught, 6 unviable\n  ```\n\nThe rest of the file was unchanged by the hardening and stayed at 30\ncaught / 19 unviable from\nthe full-file run. The review-added `record` generation guard was\nchecked separately: removing\nthe `!` makes `record_ignores_a_generation_outside_the_local_pair` fail\n(`1 failed`), and restoring it passes. The surviving-class tests were\nalso verified directly\nagainst the mutated code (for example `index -= 1` -> `index += 1`\nproduced\n`left: Some([3, 1, 2, 4])` against `right: Some([1, 2, 3, 4])` before\nthe descending fixture).\n\n**Manual testing performed:**\n\n- None beyond the command suite above; the change is an internal\nextraction with no runtime\n  behavior change.\n\n## Risks and Rollback\n\n- **Risk:** the table's `BTreeMap` mechanics are not Kani-verified.\n**Mitigation:** table tests pin\nexact-key lookup, canonical-order sharing, pruning, capacity refusal,\nand no-epoch-reuse, and the\nexisting deterministic eviction/replay, abort, and fallback tests are\nunchanged and green.\n- **Risk:** `canonicalize_handles` is a hand-written O(n²) sort instead\nof `sort_unstable`.\n**Mitigation:** target sets are bounded by the roster (single-digit to\nlow-double-digit handles),\nthe kernel is exhaustively proof-checked for a three-handle set, and\ndirect tests cover\n  unsorted/duplicate/descending/clamped inputs.\n- **Rollback:** revert this PR; the module is `pub(crate)` and the wire\nformat is untouched, so no\n  migration or state cleanup is needed.\n\n## Diff size\n\n+1049/−171 (878 net), above the ~400-line guidance and below the 1,000\nstop. The new module is 896\nlines including five Kani proofs and nine tests; the production move is\nclose to neutral after\nremoving the old inline map. Splitting would leave an unproven\nintermediate table or a proof-only\nPR, so extraction, kernels, and tests stay together as #574 specifies.\n\n## Fresh-context review follow-up\n\nA read-only fresh-context reviewer audited the first head against\n`origin/main`; no behavior drift,\npublic API/wire change, zero-panic violation, or weakened test was\nfound. All six actionable items\nare applied in `6c44938d`:\n\n1. Regenerated the stale wiki mirror (the `Script Tests & Wiki Dry-Run`\nfailure).\n2. Made the coordinator/generation identity a production field of\n`TerminalEpochKey`\n(`EpochSpaceIdentity`, compared by the map via derived `Eq`/`Ord`) and\npointed the Kani harness at\nthat type. Removing the generation from the production identity fails\nthe harness (recorded\nbelow). The full-key/`BTreeMap` layer stays a manifest residual with\nmutation-tested table\n   tests.\n3. Added reverse-membership to the canonicalization proof and a table\ntest for entry-target refresh\n   across a target-generation change.\n4. Avoided the extra participant-prepare key lookup (`local_is_authority\n&& ...`).\n5. Corrected the table-test location in `formal-spec.md`.\n6. Made the two-generation bound a `record` invariant (ignore\nout-of-local-pair generations) with a\n   discriminating test.\n\n**Production identity RED control** (generation removed from\n`EpochSpaceIdentity`):\n\n```text\nCheck 3: core::panicking::assert_failed_inner.assertion.1\n  - Status: FAILURE\nSUMMARY: ** 1 of 41 failed\nVERIFICATION:- FAILED\nComplete - 0 successfully verified harnesses, 1 failures, 1 total.\n```\n\nRestoring the field makes all five harnesses pass again.\n\n## Related Issues\n\nCloses #574. Tracking queue: #580.",
+          "timestamp": "2026-11-27T00:54:52Z",
+          "tree_id": "9c14d959defa6965c9ad210b05224d69e127df61",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/7b695d16dd9ab9a124955209d5807d7dd5541833"
+        },
+        "date": 1795741591227,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 48393,
+            "range": "± 1133",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 29835,
+            "range": "± 497",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 816,
+            "range": "± 100",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1013,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 7961,
+            "range": "± 116",
             "unit": "ns/iter"
           }
         ]
