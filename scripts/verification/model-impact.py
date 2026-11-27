@@ -716,7 +716,12 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
             if proof not in kani:
                 errors.append(f"{cid}: Kani harness '{proof}' is not registered in {VERIFY_KANI_REL}")
             kani_locations = kani_index.get(proof, ())
-            if len(kani_locations) > 1:
+            if not kani_locations:
+                errors.append(
+                    f"{cid}: Kani harness '{proof}' has no #[kani::proof] definition "
+                    "under src/ or tests/"
+                )
+            elif len(kani_locations) > 1:
                 kani_paths = ", ".join(
                     location.relative_to(root).as_posix()
                     for location, _module in kani_locations

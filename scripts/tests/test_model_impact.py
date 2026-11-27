@@ -178,6 +178,19 @@ def test_unregistered_kani_harness_fails(tmp_path: Path) -> None:
     assert any("Kani harness 'proof_missing' is not registered" in error for error in report.errors)
 
 
+def test_missing_kani_harness_definition_fails(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace(
+            "#[kani::proof]\nfn proof_demo() {\n    assert!(true);\n}\n\n", ""
+        ),
+        encoding="utf-8",
+    )
+    report = run_check(repo)
+    assert any("has no #[kani::proof] definition" in error for error in report.errors)
+
+
 def test_duplicate_kani_harness_definition_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     (repo / "src" / "other_proof.rs").write_text(
