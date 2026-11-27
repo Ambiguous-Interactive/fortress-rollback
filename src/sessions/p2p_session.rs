@@ -1394,6 +1394,21 @@ fn decode_coordinated_drop_backfill_input<I: serde::de::DeserializeOwned>(
     Ok(input)
 }
 
+/// Which effects of the shared frame driver to run.
+///
+/// The normal game-loop call advances the simulation and therefore requires a
+/// local sample for the next frame. The recovery call services already-received
+/// remote inputs at the existing boundary: it must repair and record the
+/// confirmed prefix without requiring, sending, or consuming a local sample,
+/// and without advancing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameDriveMode {
+    /// Require local input, send it, and advance the simulation by one frame.
+    Advance,
+    /// Repair and record the confirmed prefix without local input or advance.
+    Recover,
+}
+
 impl<T: Config> P2PSession<T> {
     fn coordinated_drop_now(&self) -> web_time::Instant {
         self.protocol_config
@@ -6398,6 +6413,62 @@ impl<T: Config> P2PSession<T> {
     /// [`RequestVec`]: crate::RequestVec
     #[must_use = "FortressRequests must be processed to advance the game state"]
     pub fn advance_frame(&mut self) -> FortressResult<RequestVec<T>> {
+        self.drive_frame(FrameDriveMode::Advance)
+    }
+
+    /// Services already-received remote inputs at the current boundary and records
+    /// the finalized confirmed prefix without adding local input or advancing.
+    ///
+    /// Use this when the application has stopped accepting local samples while
+    /// the last remote inputs are still in flight. Once those inputs arrive,
+    /// [`poll_remote_clients`](Self::poll_remote_clients) (or this call) observes
+    /// them, but [`advance_frame`](Self::advance_frame) would refuse with
+    /// [`InvalidRequestKind::MissingLocalInput`] because no sample exists for the
+    /// next frame. This method instead derives the newly confirmed frames,
+    /// returns the same ordered rollback-correction requests that an advance
+    /// would produce, and records the confirmed rows in the replay recorder.
+    ///
+    /// The session frame does not move: a correction re-simulates through the
+    /// already-reached boundary and ends there. Process the returned requests in
+    /// order, then export the recording with [`take_replay`](Self::take_replay)
+    /// or [`into_replay`](Self::into_replay). Calling this method again without
+    /// new confirmed input is safe and does not re-apply a correction.
+    ///
+    /// Local input added with [`add_local_input`](Self::add_local_input) is left
+    /// pending; resume normal play with [`advance_frame`](Self::advance_frame).
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`FortressError::NotSynchronized`] if the session is not running.
+    /// - Returns the same structured frame-sync or internal errors that
+    ///   [`advance_frame`](Self::advance_frame) can return while repairing a
+    ///   misprediction.
+    ///
+    /// [`InvalidRequestKind::MissingLocalInput`]: crate::InvalidRequestKind::MissingLocalInput
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // The game stopped producing local input while a remote row was in flight.
+    /// for request in session.recover_confirmed_inputs()? {
+    ///     // Handle SaveGameState, LoadGameState, and re-simulation AdvanceFrame
+    ///     // requests exactly as in the normal game loop.
+    /// }
+    /// let replay = session.take_replay()?;
+    /// ```
+    #[must_use = "FortressRequests must be processed in order to repair the corrected frames"]
+    pub fn recover_confirmed_inputs(&mut self) -> FortressResult<RequestVec<T>> {
+        self.drive_frame(FrameDriveMode::Recover)
+    }
+
+    /// Shared frame driver for [`Self::advance_frame`] and
+    /// [`Self::recover_confirmed_inputs`].
+    ///
+    /// Every network, confirmation, rollback, and recording effect is shared;
+    /// the mode flips only the local-input proof/send and the simulation
+    /// advance, so recovery cannot drift from the normal path.
+    fn drive_frame(&mut self, mode: FrameDriveMode) -> FortressResult<RequestVec<T>> {
+        let advancing = mode == FrameDriveMode::Advance;
         let _violation_scope = self.scoped_violation_observer();
         // receive info from remote players, trigger events and send messages
         self.poll_remote_clients();
@@ -6483,14 +6554,16 @@ impl<T: Config> P2PSession<T> {
         }
 
         // check if input for all local players is queued (zero-allocation via iterator)
-        for handle in self.player_reg.local_player_handles_iter() {
-            if self
-                .local_inputs
-                .get(handle.as_usize())
-                .and_then(Option::as_ref)
-                .is_none()
-            {
-                return Err(InvalidRequestKind::MissingLocalInput.into());
+        if advancing {
+            for handle in self.player_reg.local_player_handles_iter() {
+                if self
+                    .local_inputs
+                    .get(handle.as_usize())
+                    .and_then(Option::as_ref)
+                    .is_none()
+                {
+                    return Err(InvalidRequestKind::MissingLocalInput.into());
+                }
             }
         }
 
@@ -6523,7 +6596,7 @@ impl<T: Config> P2PSession<T> {
         let lockstep = self.in_lockstep_mode();
 
         // if we are in the first frame, we have to save the state
-        if self.sync_layer.current_frame() == 0 && !lockstep {
+        if advancing && self.sync_layer.current_frame() == 0 && !lockstep {
             trace!("Saving state of first frame");
             requests.push(self.sync_layer.save_current_state());
         }
@@ -6603,56 +6676,61 @@ impl<T: Config> P2PSession<T> {
          *  INPUTS
          */
 
-        // register local inputs in the system and send them (zero-allocation via iterator)
-        for handle in self.player_reg.local_player_handles_iter() {
-            // we have checked that these all exist above, but return error for safety
-            let player_input = self
-                .local_inputs
-                .get_mut(handle.as_usize())
-                .and_then(Option::as_mut)
-                .ok_or_else(|| FortressError::MissingInput {
-                    player_handle: handle,
-                    frame: self.sync_layer.current_frame(),
-                })?;
-            // send the input into the sync layer
-            let actual_frame = self.sync_layer.add_local_input(handle, *player_input);
-            player_input.frame = actual_frame;
-            // if the input has not been dropped
-            if actual_frame != Frame::NULL {
-                self.local_connect_status
+        // Only a normal advance proves, registers, and sends a local sample. The
+        // recovery mode deliberately leaves any pending local input untouched
+        // and services the remote rows that are already present.
+        if advancing {
+            // register local inputs in the system and send them (zero-allocation via iterator)
+            for handle in self.player_reg.local_player_handles_iter() {
+                // we have checked that these all exist above, but return error for safety
+                let player_input = self
+                    .local_inputs
                     .get_mut(handle.as_usize())
-                    .ok_or(FortressError::InternalErrorStructured {
-                        kind: InternalErrorKind::ConnectionStatusIndexOutOfBounds {
-                            player_handle: handle,
-                        },
-                    })?
-                    .last_frame = actual_frame;
-            }
-        }
-
-        // if the local inputs have not been dropped by the sync layer, send to all remote clients
-        if !self
-            .local_inputs
-            .iter()
-            .flatten()
-            .any(|input| input.frame == Frame::NULL)
-        {
-            for endpoint in self.player_reg.remotes.values_mut() {
-                // A timed-out serve's retry backoff is a bounded no-serve window:
-                // the abandoned joiner cannot consume simulation inputs, and
-                // sending them would fill `pending_output` before the retry opens.
-                // Outside that window, reserved-slot input traffic is unchanged
-                // (the joiner's handshake and any pre-commit bridging still work).
-                #[cfg(feature = "hot-join")]
-                if self
-                    .hot_join
-                    .endpoint_is_in_serve_backoff(endpoint, self.sync_layer.last_saved_frame())
-                {
-                    endpoint.send_all_messages(&mut self.socket);
-                    continue;
+                    .and_then(Option::as_mut)
+                    .ok_or_else(|| FortressError::MissingInput {
+                        player_handle: handle,
+                        frame: self.sync_layer.current_frame(),
+                    })?;
+                // send the input into the sync layer
+                let actual_frame = self.sync_layer.add_local_input(handle, *player_input);
+                player_input.frame = actual_frame;
+                // if the input has not been dropped
+                if actual_frame != Frame::NULL {
+                    self.local_connect_status
+                        .get_mut(handle.as_usize())
+                        .ok_or(FortressError::InternalErrorStructured {
+                            kind: InternalErrorKind::ConnectionStatusIndexOutOfBounds {
+                                player_handle: handle,
+                            },
+                        })?
+                        .last_frame = actual_frame;
                 }
-                endpoint.send_input(self.local_inputs.as_slice(), &self.local_connect_status);
-                endpoint.send_all_messages(&mut self.socket);
+            }
+
+            // if the local inputs have not been dropped by the sync layer, send to all remote clients
+            if !self
+                .local_inputs
+                .iter()
+                .flatten()
+                .any(|input| input.frame == Frame::NULL)
+            {
+                for endpoint in self.player_reg.remotes.values_mut() {
+                    // A timed-out serve's retry backoff is a bounded no-serve window:
+                    // the abandoned joiner cannot consume simulation inputs, and
+                    // sending them would fill `pending_output` before the retry opens.
+                    // Outside that window, reserved-slot input traffic is unchanged
+                    // (the joiner's handshake and any pre-commit bridging still work).
+                    #[cfg(feature = "hot-join")]
+                    if self
+                        .hot_join
+                        .endpoint_is_in_serve_backoff(endpoint, self.sync_layer.last_saved_frame())
+                    {
+                        endpoint.send_all_messages(&mut self.socket);
+                        continue;
+                    }
+                    endpoint.send_input(self.local_inputs.as_slice(), &self.local_connect_status);
+                    endpoint.send_all_messages(&mut self.socket);
+                }
             }
         }
 
@@ -6660,21 +6738,22 @@ impl<T: Config> P2PSession<T> {
          * ADVANCE THE STATE
          */
 
-        let can_advance = if lockstep {
-            // lockstep mode: only advance if the current frame has inputs confirmed from all other
-            // players.
-            self.sync_layer.last_confirmed_frame() == self.sync_layer.current_frame()
-        } else {
-            // rollback mode: advance as long as we aren't past our prediction window
-            let frames_ahead = if self.sync_layer.last_confirmed_frame().is_null() {
-                // we haven't had any frames confirmed, so all frames we've advanced are "ahead"
-                self.sync_layer.current_frame().as_i32()
+        let can_advance = advancing
+            && if lockstep {
+                // lockstep mode: only advance if the current frame has inputs confirmed from all other
+                // players.
+                self.sync_layer.last_confirmed_frame() == self.sync_layer.current_frame()
             } else {
-                // we're not at the first frame, so we have to subtract the last confirmed frame
-                self.sync_layer.current_frame() - self.sync_layer.last_confirmed_frame()
+                // rollback mode: advance as long as we aren't past our prediction window
+                let frames_ahead = if self.sync_layer.last_confirmed_frame().is_null() {
+                    // we haven't had any frames confirmed, so all frames we've advanced are "ahead"
+                    self.sync_layer.current_frame().as_i32()
+                } else {
+                    // we're not at the first frame, so we have to subtract the last confirmed frame
+                    self.sync_layer.current_frame() - self.sync_layer.last_confirmed_frame()
+                };
+                frames_ahead < self.max_prediction as i32
             };
-            frames_ahead < self.max_prediction as i32
-        };
         if can_advance {
             // get correct inputs for the current frame
             let inputs = match self
