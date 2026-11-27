@@ -475,6 +475,27 @@ def test_module_path_uses_explicit_binary_target_names(tmp_path: Path) -> None:
     )
 
 
+def test_test_attribute_does_not_cross_a_same_line_item_boundary(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text(
+        "#[test]\nfn actual_test() {} fn helper() { assert!(true); }\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::actual_test" in index
+    assert "helpers::helper" not in index
+
+
+def test_attribute_after_a_same_line_item_still_binds_forward(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text("fn helper() {} #[test] fn actual_test() {}\n", encoding="utf-8")
+    index = model_impact.test_index(repo)
+    assert "helpers::actual_test" in index
+    assert "helpers::helper" not in index
+
+
 def test_two_functions_on_one_line_bind_attributes_separately(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     helpers = repo / "src" / "helpers.rs"

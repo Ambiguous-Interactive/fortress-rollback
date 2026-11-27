@@ -518,6 +518,27 @@ TEST_ATTR_RE = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
 KANI_ATTR_RE = re.compile(r"#\[kani::proof(?:\(|\])")
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[()\[\]{}<>;!]")
 
+# Modifiers allowed between an attribute and `fn`. Any other identifier after
+# the closing bracket means the attribute belongs to an item that ended on the
+# same line, not to the following `fn`.
+FUNCTION_MODIFIERS = frozenset(
+    {"pub", "async", "const", "unsafe", "extern", "move", "default"}
+)
+
+
+def _last_item_boundary(text: str) -> int:
+    """Return the last ``}``/``;`` outside an attribute's brackets, if any."""
+    depth = 0
+    boundary = -1
+    for index, character in enumerate(text):
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and character in "};":
+            boundary = index
+    return boundary
+
 
 def _has_attribute(
     lines: list[str],
@@ -542,7 +563,10 @@ def _has_attribute(
     else:
         prefix_end = column
     prefix = current[:prefix_end]
-    boundary = max(prefix.rfind("}"), prefix.rfind(";"))
+    boundary = _last_item_boundary(prefix)
+    # An item that ended on the fn line owns every attribute before the
+    # boundary; only the text after it can belong to this `fn`.
+    line_has_boundary = boundary >= 0
     segment = prefix[boundary + 1 :]
     # The only attribute that can share the fn line precedes the modifiers
     # (`pub`, `async`, `const`, `unsafe`, `extern`). Keep the leading attribute
@@ -565,6 +589,8 @@ def _has_attribute(
     # legal (arbitrarily long) attribute block.
     while True:
         if not segment.strip():
+            if line_has_boundary:
+                return False
             while index >= 0 and not lines[index].strip():
                 index -= 1
             if index < 0:
@@ -585,6 +611,14 @@ def _has_attribute(
             continue
         stripped = segment.strip()
         if not (stripped.startswith("#") and stripped.endswith("]")):
+            return False
+        tail = segment[segment.rfind("]") + 1 :]
+        if any(
+            word not in FUNCTION_MODIFIERS
+            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", tail)
+        ):
+            # The closing bracket was followed by another item on the same
+            # line, so this attribute is not adjacent to our `fn`.
             return False
         if pattern.search(segment):
             return True
