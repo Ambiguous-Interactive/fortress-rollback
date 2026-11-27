@@ -930,17 +930,20 @@ The Rust bookkeeping is the extracted `ReadyTranscripts`
 (`src/sessions/ready_transcripts.rs`). Its `Provisional` and `Locked`
 transcript types are distinct, the counted set is private, and only
 `promote_matching` moves a provisional report into the locked set after the
-digest is established. Three Kani harnesses machine-check the production
-kernels: `proof_ready_admission_count_requires_authority_or_lock` proves the
-pure admission rule counts only an authority or a matching lock,
+digest is established. The lock also records the selected cut: a report whose
+cut differs is rejected before any state changes, even when its digest happens
+to match. Three Kani harnesses machine-check the production kernels:
+`proof_ready_admission_count_requires_authority_or_lock` proves the pure
+admission rule counts only an authority or a matching lock,
 `proof_ready_transcripts_provisional_never_counts` proves an unlocked
 non-authority report locks nothing and counts nothing, and
 `proof_ready_transcripts_promotion_requires_matching_digest` proves promotion
-counts exactly the matching provisional digest while a mismatching report is
-discarded rather than relabeled. The `BTreeMap` composition, certificate
-adoption ordering, and the session-level authority decision remain covered by
-the module tests and the three integration tests above, not by Kani; the
-verification manifest records that residual.
+counts exactly the matching provisional digest, discards a mismatching report
+rather than relabeling it, and rejects a matching digest under another cut.
+The `BTreeMap` composition, certificate-adoption ordering, and the
+session-level authority decision remain covered by the module tests and the
+three integration tests above, not by Kani; the verification manifest records
+that residual.
 
 ---
 

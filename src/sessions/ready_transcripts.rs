@@ -88,15 +88,22 @@ pub(crate) const fn ready_admission(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ReadyConflict;
 
-/// Locked digest plus the provisional and counted `Ready` transcripts for one
-/// coordinated-drop attempt.
+/// The cut and digest an authority or independently verified local history
+/// established for one attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct LockedDigest {
+    cut: Frame,
+    digest: u64,
+}
+
+/// Locked cut/digest plus the provisional and counted `Ready` transcripts for
+/// one coordinated-drop attempt.
 ///
 /// Every collection is bounded by the attempt's participant set.
 #[derive(Debug, Default)]
 pub(crate) struct ReadyTranscripts {
-    /// Digest of the confirmed history at the locked cut, once an authority or
-    /// independently verified local history established it.
-    digest: Option<u64>,
+    /// The selected cut and its expected digest, once established.
+    lock: Option<LockedDigest>,
     /// Reports that match the locked digest, including actors that still have
     /// to be counted by a later reconciliation.
     locked: BTreeMap<u16, ReadyTranscript<Locked>>,
@@ -109,7 +116,19 @@ pub(crate) struct ReadyTranscripts {
 impl ReadyTranscripts {
     /// The established digest, if any.
     pub(crate) const fn digest(&self) -> Option<u64> {
-        self.digest
+        match self.lock {
+            Some(lock) => Some(lock.digest),
+            None => None,
+        }
+    }
+
+    /// The established cut, if any.
+    #[cfg(test)]
+    pub(crate) const fn locked_cut(&self) -> Option<Frame> {
+        match self.lock {
+            Some(lock) => Some(lock.cut),
+            None => None,
+        }
     }
 
     /// Number of participants counted toward the Ready quorum.
@@ -154,51 +173,57 @@ impl ReadyTranscripts {
             .map(|(&participant, transcript)| (participant, transcript.cut(), transcript.digest()))
     }
 
-    /// Establishes the expected digest, then promotes matching provisional
-    /// reports.
+    /// Establishes the expected cut and digest, then promotes matching
+    /// provisional reports.
     ///
     /// Returns whether this call locked the digest. A different already-locked
-    /// value is a conflict.
+    /// cut or digest is a conflict, so a report cannot lock a digest under the
+    /// wrong cut.
     pub(crate) fn lock_digest(&mut self, cut: Frame, digest: u64) -> Result<bool, ReadyConflict> {
-        let newly_locked = self.establish_digest(digest)?;
+        let newly_locked = self.establish_lock(cut, digest)?;
         self.promote_matching(cut);
         Ok(newly_locked)
     }
 
-    /// Adopts a certified commit's digest without promoting provisional
+    /// Adopts a certified commit's cut and digest without promoting provisional
     /// reports.
     ///
     /// The commit path defers promotion until the attempt is reconciled; this
     /// preserves the pre-extraction ordering.
-    pub(crate) fn adopt_digest(&mut self, digest: u64) -> Result<bool, ReadyConflict> {
-        self.establish_digest(digest)
+    pub(crate) fn adopt_digest(&mut self, cut: Frame, digest: u64) -> Result<bool, ReadyConflict> {
+        self.establish_lock(cut, digest)
     }
 
-    fn establish_digest(&mut self, digest: u64) -> Result<bool, ReadyConflict> {
-        match self.digest {
-            Some(existing) if existing != digest => Err(ReadyConflict),
+    fn establish_lock(&mut self, cut: Frame, digest: u64) -> Result<bool, ReadyConflict> {
+        match self.lock {
+            Some(existing) if existing.cut != cut || existing.digest != digest => {
+                Err(ReadyConflict)
+            },
             Some(_) => Ok(false),
             None => {
-                self.digest = Some(digest);
+                self.lock = Some(LockedDigest { cut, digest });
                 Ok(true)
             },
         }
     }
 
-    /// Promotes provisional reports that match the locked digest and discards
-    /// the rest.
+    /// Promotes provisional reports that match the locked cut and digest and
+    /// discards the rest.
     ///
     /// A mismatch is not an error: it is a peer artifact that can never count.
     /// Matching reports become locked and count toward the quorum.
     pub(crate) fn promote_matching(&mut self, cut: Frame) {
-        let Some(digest) = self.digest else {
+        let Some(lock) = self.lock else {
             return;
         };
+        if lock.cut != cut {
+            return;
+        }
         let provisional = std::mem::take(&mut self.provisional);
         for (participant, transcript) in provisional {
-            if transcript.cut() == cut && transcript.digest() == digest {
+            if transcript.cut() == lock.cut && transcript.digest() == lock.digest {
                 self.locked
-                    .insert(participant, ReadyTranscript::new(cut, digest));
+                    .insert(participant, ReadyTranscript::new(lock.cut, lock.digest));
                 self.counted.insert(participant);
             }
         }
@@ -217,7 +242,13 @@ impl ReadyTranscripts {
         digest: u64,
         authority: bool,
     ) -> Result<bool, ReadyConflict> {
-        match ready_admission(self.digest, digest, authority) {
+        // A report for another cut cannot lock or count, even if its digest
+        // happens to match. The previous cut guard rejects it before any state
+        // changes.
+        if self.lock.is_some_and(|lock| lock.cut != cut) {
+            return Err(ReadyConflict);
+        }
+        match ready_admission(self.digest(), digest, authority) {
             Admission::Conflict => Err(ReadyConflict),
             Admission::Count => {
                 let newly_locked = if authority {
@@ -262,7 +293,7 @@ impl ReadyTranscripts {
         cut: Frame,
         digest: u64,
     ) -> Result<bool, ReadyConflict> {
-        if self.digest != Some(digest) {
+        if self.lock != Some(LockedDigest { cut, digest }) {
             return Err(ReadyConflict);
         }
         match self.locked.get(&participant) {
@@ -288,14 +319,17 @@ impl ReadyTranscripts {
     /// cut; a transcript for a different digest is a peer artifact and does not
     /// count.
     pub(crate) fn resync_counted(&mut self, cut: Frame) -> Result<(), ReadyConflict> {
-        let Some(digest) = self.digest else {
+        let Some(lock) = self.lock else {
             return Ok(());
         };
+        if lock.cut != cut {
+            return Err(ReadyConflict);
+        }
         for (&participant, transcript) in &self.locked {
             if transcript.cut() != cut {
                 return Err(ReadyConflict);
             }
-            if transcript.digest() == digest {
+            if transcript.digest() == lock.digest {
                 self.counted.insert(participant);
             }
         }
@@ -306,13 +340,13 @@ impl ReadyTranscripts {
     /// inconsistent shapes the regression tests pin.
     #[cfg(test)]
     pub(crate) fn from_parts(
-        digest: Option<u64>,
+        lock: Option<(Frame, u64)>,
         locked: impl IntoIterator<Item = (u16, Frame, u64)>,
         provisional: impl IntoIterator<Item = (u16, Frame, u64)>,
         counted: impl IntoIterator<Item = u16>,
     ) -> Self {
         Self {
-            digest,
+            lock: lock.map(|(cut, digest)| LockedDigest { cut, digest }),
             locked: locked
                 .into_iter()
                 .map(|(participant, cut, digest)| (participant, ReadyTranscript::new(cut, digest)))
@@ -325,10 +359,10 @@ impl ReadyTranscripts {
         }
     }
 
-    /// Overrides the digest for tests that stage a partial attempt.
+    /// Overrides the lock for tests that stage a partial attempt.
     #[cfg(test)]
-    pub(crate) fn set_digest_for_test(&mut self, digest: Option<u64>) {
-        self.digest = digest;
+    pub(crate) fn set_lock_for_test(&mut self, lock: Option<(Frame, u64)>) {
+        self.lock = lock.map(|(cut, digest)| LockedDigest { cut, digest });
     }
 }
 
@@ -416,6 +450,18 @@ mod kani_proofs {
             provisional_digest == locked_digest,
             "a mismatching provisional report is discarded, not relabeled"
         );
+
+        let other_cut = Frame::new(1);
+        assert_eq!(
+            ready.admit(1, other_cut, locked_digest, true),
+            Err(ReadyConflict),
+            "a matching digest under another cut cannot count"
+        );
+        assert_eq!(
+            ready.count(),
+            usize::from(provisional_digest == locked_digest),
+            "a wrong-cut report leaves the counted set unchanged"
+        );
     }
 }
 
@@ -467,6 +513,22 @@ mod tests {
     }
 
     #[test]
+    fn a_matching_digest_under_another_cut_is_a_conflict() {
+        let cut = Frame::new(10);
+        let other_cut = Frame::new(11);
+        let mut ready = ReadyTranscripts::default();
+        assert_eq!(ready.lock_digest(cut, 7), Ok(true));
+
+        assert_eq!(ready.lock_digest(other_cut, 7), Err(ReadyConflict));
+        assert_eq!(ready.locked_cut(), Some(cut));
+        assert_eq!(ready.admit(3, other_cut, 7, true), Err(ReadyConflict));
+        assert_eq!(ready.admit(3, other_cut, 7, false), Err(ReadyConflict));
+        assert_eq!(ready.count(), 0);
+        assert_eq!(ready.adopt_digest(other_cut, 7), Err(ReadyConflict));
+        assert_eq!(ready.locked_cut(), Some(cut));
+    }
+
+    #[test]
     fn conflicting_retry_for_one_participant_is_a_conflict() {
         let cut = Frame::new(10);
         let mut ready = ReadyTranscripts::default();
@@ -494,7 +556,7 @@ mod tests {
         let cut = Frame::new(10);
         let mut ready = ReadyTranscripts::default();
         assert_eq!(ready.admit(3, cut, 7, false), Ok(true));
-        assert_eq!(ready.adopt_digest(7), Ok(true));
+        assert_eq!(ready.adopt_digest(cut, 7), Ok(true));
         assert_eq!(ready.digest(), Some(7));
         assert!(
             !ready.is_counted(3),
@@ -511,7 +573,8 @@ mod tests {
     #[test]
     fn resync_counts_only_matching_digests_and_rejects_a_foreign_cut() {
         let cut = Frame::new(10);
-        let mut ready = ReadyTranscripts::from_parts(Some(7), [(1, cut, 7), (2, cut, 9)], [], []);
+        let mut ready =
+            ReadyTranscripts::from_parts(Some((cut, 7)), [(1, cut, 7), (2, cut, 9)], [], []);
 
         assert_eq!(ready.resync_counted(cut), Ok(()));
         assert!(ready.is_counted(1));
@@ -527,7 +590,8 @@ mod tests {
     #[test]
     fn locked_transcripts_are_exposed_in_participant_order() {
         let cut = Frame::new(10);
-        let ready = ReadyTranscripts::from_parts(Some(7), [(3, cut, 7), (1, cut, 7)], [], [1, 3]);
+        let ready =
+            ReadyTranscripts::from_parts(Some((cut, 7)), [(3, cut, 7), (1, cut, 7)], [], [1, 3]);
 
         assert_eq!(
             ready.locked_transcripts().collect::<Vec<_>>(),

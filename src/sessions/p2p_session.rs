@@ -4826,7 +4826,7 @@ impl<T: Config> P2PSession<T> {
         }
         active
             .ready
-            .adopt_digest(commit.cut_digest)
+            .adopt_digest(commit.cut, commit.cut_digest)
             .map_err(|_conflict| DropAbortReason::ConflictingHistory)?;
         if let Some(reporter) = reporter {
             if active.participants.contains(&reporter) {
@@ -22921,7 +22921,7 @@ mod tests {
             cut_digest: 0,
         };
         let now = session.coordinated_drop_now();
-        let ready = ReadyTranscripts::from_parts(Some(0), [], [], [0_u16, 1]);
+        let ready = ReadyTranscripts::from_parts(Some((cut, 0)), [], [], [0_u16, 1]);
         session.coordinated_drop.active = Some(CoordinatedDropAttempt {
             operation,
             target_addr: test_addr(9403),
@@ -23093,7 +23093,7 @@ mod tests {
         let cut = Frame::new(0);
         let now = session.coordinated_drop_now();
         let ready = ReadyTranscripts::from_parts(
-            Some(0),
+            Some((cut, 0)),
             [(0, cut, 0), (1, cut, 0), (2, cut, 0)],
             [],
             [0_u16, 1, 2],
@@ -24407,7 +24407,7 @@ mod tests {
         let mut session = five_player_majority_session(PlayerHandle::new(0));
         let (operation, cut) = staged_post_inventory_backfill_attempt(&mut session);
         if let Some(active) = session.coordinated_drop.active.as_mut() {
-            active.ready.set_digest_for_test(Some(7));
+            active.ready.set_lock_for_test(Some((cut, 7)));
         }
         assert_eq!(
             session.coordinated_drop_accept_commit(
@@ -26085,7 +26085,7 @@ mod tests {
                 .as_mut()
                 .expect("staged attempt");
             active.phase = CoordinatedDropPhase::Committed;
-            active.ready.set_digest_for_test(Some(0));
+            active.ready.set_lock_for_test(Some((cut, 0)));
             active.pending_commit = Some(DropCommit {
                 operation,
                 cut,
@@ -26419,7 +26419,7 @@ mod tests {
         if let Some(active) = session.coordinated_drop.active.as_mut() {
             active.phase = CoordinatedDropPhase::Committed;
             active.cut = Some(Frame::new(0));
-            active.ready.set_digest_for_test(Some(0));
+            active.ready.set_lock_for_test(Some((Frame::new(0), 0)));
         }
 
         let next_targets = vec![DropTarget {
@@ -26659,7 +26659,7 @@ mod tests {
         };
         let now = majority.coordinated_drop_now();
         let ready = ReadyTranscripts::from_parts(
-            Some(0),
+            Some((cut, 0)),
             [(0, cut, 0), (1, cut, 0), (2, cut, 0)],
             [],
             [0_u16, 1, 2],
@@ -26814,7 +26814,7 @@ mod tests {
             held_at: cut,
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
-            ready: ReadyTranscripts::from_parts(Some(cut_digest), [], [], []),
+            ready: ReadyTranscripts::from_parts(Some((cut, cut_digest)), [], [], []),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(cut),
             pending_commit: None,
@@ -27055,7 +27055,7 @@ mod tests {
         };
         let now = session.coordinated_drop_now();
         let ready = ReadyTranscripts::from_parts(
-            Some(0),
+            Some((cut, 0)),
             [(0, cut, 0), (1, cut, 0), (2, cut, 0)],
             [],
             [0_u16, 1, 2],
@@ -29903,7 +29903,7 @@ mod tests {
             held_at: Frame::new(0),
             phase: CoordinatedDropPhase::Ready,
             reports: BTreeMap::new(),
-            ready: ReadyTranscripts::from_parts(Some(0), [], [], []),
+            ready: ReadyTranscripts::from_parts(Some((Frame::new(0), 0)), [], [], []),
             committed_acks: std::collections::BTreeSet::new(),
             cut: Some(Frame::new(0)),
             pending_commit: None,
