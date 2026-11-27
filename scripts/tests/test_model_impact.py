@@ -180,6 +180,23 @@ def test_missing_rust_test_fails(tmp_path: Path) -> None:
     assert any("has no #[test] definition" in error for error in report.errors)
 
 
+def test_mislocated_rust_test_name_fails(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path, _manifest(tests='["missing::module::tests::demo_test"]'))
+    report = run_check(repo)
+    assert any("has no #[test] definition" in error for error in report.errors)
+
+
+def test_test_index_qualifies_nested_inline_modules(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    nested = repo / "src" / "nested.rs"
+    nested.write_text(
+        "mod outer {\n    mod tests {\n        #[test]\n        fn nested_test() {}\n    }\n}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert index.get("nested::outer::tests::nested_test") == nested
+
+
 def test_missing_z3_proof_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(z3='["z3_proof_missing"]'))
     report = run_check(repo)
@@ -300,6 +317,41 @@ def test_test_only_change_does_not_trigger_symbol_drift(tmp_path: Path) -> None:
     assert report.drifted == ()
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        '    let marker = "}";\n    do_work();\n',
+        "    let marker = '}';\n    do_work();\n",
+        "    let marker = 1; // }\n    do_work();\n",
+        "    /* } */\n    do_work();\n",
+    ],
+    ids=["string", "char", "line-comment", "block-comment"],
+)
+def test_fn_range_ignores_braces_in_literals_and_comments(body: str) -> None:
+    text = f"fn mapped_fn() {{\n{body}}}\n"
+    assert model_impact._fn_range_text(text, "mapped_fn") == (1, 4)
+
+
+def test_string_brace_does_not_hide_a_later_mapped_change(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace(
+            "pub fn mapped_fn() -> u32 {\n    1\n}",
+            'pub fn mapped_fn() -> u32 {\n    let marker = "}";\n    1\n}',
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "add string brace")
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8"
+    )
+
+    report = run_affected(repo)
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
 def test_changed_path_without_symbol_mapping_is_flagged(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     (repo / "src" / "other.rs").write_text("pub fn other() { let _ = 1; }\n", encoding="utf-8")
@@ -347,11 +399,60 @@ def test_spec_update_in_same_diff_satisfies_gate(tmp_path: Path) -> None:
     demo = repo / "src" / "demo.rs"
     demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
     spec = repo / "specs" / "tla" / "Demo.tla"
-    spec.write_text(spec.read_text(encoding="utf-8") + "\n\\* reviewed\n", encoding="utf-8")
+    spec.write_text(spec.read_text(encoding="utf-8") + "\nVARIABLE reviewed\n", encoding="utf-8")
 
     report = run_affected(repo)
     assert report.impacts[0].verification_updated is True
     assert report.drifted == ()
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["\n\\* comment-only touch\n", "\n(* comment-only touch *)\n", "\n\n   \n"],
+    ids=["line-comment", "block-comment", "whitespace"],
+)
+def test_comment_only_spec_update_does_not_satisfy_gate(tmp_path: Path, suffix: str) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    spec = repo / "specs" / "tla" / "Demo.tla"
+    spec.write_text(spec.read_text(encoding="utf-8") + suffix, encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_comment_only_test_update_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n")
+    demo.write_text(
+        text.replace(
+            "        assert_eq!(super::mapped_fn(), 1);",
+            "        // comment-only touch\n        assert_eq!(super::mapped_fn(), 1);",
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_comment_only_z3_proof_update_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    z3 = repo / "tests" / "verification" / "z3.rs"
+    z3.write_text("fn z3_proof_demo() {\n}\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "multi-line proof")
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    z3.write_text("fn z3_proof_demo() {\n    // comment-only touch\n}\n", encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
 
 
 # --- render: stable and checked --------------------------------------------

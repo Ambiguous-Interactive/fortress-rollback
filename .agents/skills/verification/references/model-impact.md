@@ -38,9 +38,11 @@ python3 scripts/verification/model-impact.py render
 python3 scripts/verification/model-impact.py render --check
 ```
 
-`check` fails closed on a missing path, spec, Kani harness, Z3 proof, Rust test, unregistered TLA
-check, expired residual `review_by`, expired waiver, or a stale generated table. Symbol regex
-mismatches are advisory because method-level Rust parsing is out of scope for the first pass.
+`check` fails closed on a missing path, spec, Kani harness, Z3 proof, module-qualified Rust test,
+unregistered TLA check, expired residual `review_by`, expired waiver, or a stale generated table.
+Test names include their module path, so a name that only matches a same-named test in another
+module fails. Symbol regex mismatches are advisory because method-level Rust parsing is out of scope
+for the first pass.
 
 ## Drift taxonomy
 
@@ -48,16 +50,20 @@ mismatches are advisory because method-level Rust parsing is out of scope for th
 | --- | --- | --- |
 | Missing artifact | Manifest names a deleted spec or test | `check` fails |
 | Registration drift | New `#[kani::proof]` not in `verify-kani.sh` | `check` fails |
-| Stale scope | `stale` component changed; no spec/proof update | `affected` fails |
+| Stale scope | `stale` component changed; no substantive spec/proof update | `affected` fails |
 | Unmodeled change | `unmodeled` component changed; no update | `affected` fails |
-| Symbol drift | Mapped `fn` body changed | `affected` fails unless a mapped spec/proof/test changed |
+| Symbol drift | Mapped `fn` body changed | `affected` fails unless a mapped spec/proof/test changed substantively |
+| Comment-only edit | Mapped code changed plus a spec or test changed only by comments | `affected` fails; comments and whitespace are not updates |
 | Path-only drift | Changed file has no mapped symbol | `affected` fails (file-level fallback) |
 | Waived change | Named approver + unexpired `expires` | `affected` passes, prints the waiver |
 | Table drift | Manifest changed, generated block not rendered | `check` and `render --check` fail |
 
 A change to test code alone does not trigger a symbol-mapped component: the gate compares the
 changed line numbers with the mapped function's line range. A file-level mapping with no symbols
-is intentionally coarser and flags any change to that file.
+is intentionally coarser and flags any change to that file. Comment and whitespace edits to a
+mapped spec or proof function do not satisfy the update requirement; the gate compares
+comment-stripped content. Braces inside strings, char literals, and comments do not truncate a
+mapped function's range. Generated build trees under ignored paths are not scanned for tests.
 
 ## Proof-strength levels
 
@@ -89,8 +95,9 @@ Rules:
 - `stale` -- a model exists but predates current behavior; a change needs the model update, a
   mapped spec/proof/test update, or a waiver.
 
-The gate accepts any mapped spec/proof/test edit or an active waiver. Status is a review signal
-that decides what the reviewer should demand, not a separate enforcement branch. `unmodeled` and
+The gate accepts a substantive mapped spec/proof/test edit or an active waiver; comment-only and
+whitespace-only edits do not count. Status is a review signal that decides what the reviewer should
+demand, not a separate enforcement branch. `unmodeled` and
 `stale` are deliberate debt markers, not passing grades. The residual `review_by` date forces
 re-triage; an expired date fails `check`.
 
