@@ -548,13 +548,17 @@ def _has_attribute(
     # (`pub`, `async`, `const`, `unsafe`, `extern`). Keep the leading attribute
     # text and drop the trailing modifiers.
     attribute_start = segment.find("#[")
-    if attribute_start < 0:
-        segment = ""
-    else:
+    if attribute_start >= 0:
         segment = segment[attribute_start:]
         closing = segment.rfind("]")
         if closing >= 0:
             segment = segment[: closing + 1]
+    elif "]" in segment:
+        # A multi-line block may close on the fn line (`)] fn foo()`). Keep
+        # the closing text so the walk continues onto the opening lines.
+        segment = segment[: segment.rfind("]") + 1]
+    else:
+        segment = ""
     index = line_number - 2
     # Every pass consumes one line, so the walk terminates at the nearest
     # non-attribute line or at the start of the file without truncating a
@@ -696,6 +700,14 @@ def _module_path(path: Path, root: Path) -> tuple[str, ...]:
         if rest == ["main.rs"]:
             default = _package_binary_name(root)
             return (_binary_name(root, Path(*parts), default),)
+        return _module_tail(rest)
+    # A file directly under `tests/` is its own integration target, even when
+    # it is named `lib.rs`, `main.rs`, or `mod.rs`; those names are only
+    # crate-root markers under `src/`.
+    if len(rest) == 1:
+        return (Path(rest[0]).stem.replace("-", "_"),)
+    if len(rest) == 2 and rest[1] == "main.rs":
+        return (rest[0].replace("-", "_"),)
     return _module_tail(rest)
 
 

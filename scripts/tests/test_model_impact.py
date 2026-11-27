@@ -382,6 +382,11 @@ def test_multiline_kani_attribute_is_indexed(tmp_path: Path) -> None:
         ("src/bin/my-tool/main.rs", ("my_tool",)),
         ("src/main.rs", ("fixture",)),
         ("tests/demo.rs", ("demo",)),
+        ("tests/lib.rs", ("lib",)),
+        ("tests/main.rs", ("main",)),
+        ("tests/mod.rs", ("mod",)),
+        ("tests/my-tool.rs", ("my_tool",)),
+        ("tests/my-tool/main.rs", ("my_tool",)),
         ("tests/verification/z3.rs", ("verification", "z3")),
     ],
 )
@@ -416,6 +421,20 @@ def test_multiline_attribute_with_a_brace_in_a_string_is_indexed(tmp_path: Path)
         '    expected = "boom {"\n'
         ")]\n"
         "fn attributed_test() {}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::attributed_test" in index
+
+
+def test_multiline_attribute_closing_on_the_fn_line_is_indexed(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text(
+        "#[test]\n"
+        "#[should_panic(\n"
+        '    expected = "boom"\n'
+        ")] fn attributed_test() {}\n",
         encoding="utf-8",
     )
     index = model_impact.test_index(repo)
