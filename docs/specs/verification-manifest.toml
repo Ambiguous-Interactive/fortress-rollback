@@ -3,8 +3,9 @@
 # Each [[component]] maps production paths and symbols to the TLA+ specs,
 # Kani harnesses, Z3 proofs, and Rust tests that keep it honest.
 # `scripts/verification/model-impact.py` validates this file and maps diffs to
-# components; a mapped code change needs a mapped spec/proof/test update in the
-# same diff or an explicit [[waiver]].
+# components; a mapped code change needs a substantive mapped spec/proof/test
+# update in the same diff or an explicit [[waiver]]. Comment-only and
+# whitespace-only edits do not count.
 #
 # status:
 #   modeled   - a model and/or executable proof covers the component
@@ -42,7 +43,7 @@ symbols = ["src/input_queue/mod.rs::freeze_at", "src/input_queue/mod.rs::freeze_
 specs = ["specs/tla/InputQueue.tla", "specs/tla/FreezeConvergence.tla"]
 kani = ["proof_freeze_add_input_no_mutation", "proof_freeze_player_preserves_frame_state"]
 z3 = ["z3_proof_frozen_peer_input_is_constant_after_drop"]
-tests = ["input_queue::tests::freeze_at_rolls_last_confirmed_input_back_to_earlier_frame"]
+tests = ["input_queue::input_queue_tests::freeze_at_rolls_last_confirmed_input_back_to_earlier_frame"]
 scope = "single ring, agreed freeze frame, converged freeze value; cross-peer convergence is modeled separately"
 residuals = []
 
