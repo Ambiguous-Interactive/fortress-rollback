@@ -285,7 +285,7 @@ rows arrive, `advance_frame()` refuses with `InvalidRequestKind::MissingLocalInp
 sample exists for the next frame. `recover_confirmed_inputs()` is the supported path for that state:
 it services the inputs already received, returns the ordered rollback-correction requests at the
 current boundary, and records the newly confirmed prefix in the replay. It never adds a local
-sample and never advances the simulation.
+sample and never advances past the current boundary.
 
 ```rust
 // The game stopped producing local input while the last remote rows arrived.

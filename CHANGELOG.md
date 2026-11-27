@@ -18,10 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `P2PSession::recover_confirmed_inputs` services already-received remote input after local input has
   stopped, returning the ordered rollback-correction requests at the existing boundary and recording
-  the finalized confirmed prefix for replay export without adding a local sample or advancing the
-  simulation. It covers the case where the last remote rows arrive after the game stops accepting
-  input; without this path, `advance_frame` returns `MissingLocalInput` before it can repair or
-  record them.
+  the finalized confirmed prefix for replay export without adding a local sample or moving the
+  session boundary. It covers the case where the last remote rows arrive after the game stops
+  accepting input; without this path, `advance_frame` returns `MissingLocalInput` before it can
+  repair or record them.
 - Doc-hidden `P2PSession::diagnostic_terminal_replay_prepare_bytes` and
   `diagnostic_replay_drop_control_bytes` compatibility surfaces encode a coordinated-drop
   `Prepare` from a consumed terminal epoch against the current target generation and membership,
