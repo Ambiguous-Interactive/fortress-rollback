@@ -168,3 +168,94 @@ component = "double-failure-relay"
 reason = "doc-only clarification of ChecksumReport::basis_token for #572; no behavior or wire change"
 approver = "wallstop"
 expires = "2026-12-31"
+
+# Z3 proof-strength classification (#575).
+#
+# code_linked  - executes production code or fails on a targeted production mutation.
+# model_only   - a hand-written model of a production algorithm/guard/state machine
+#                that combines its definitions to check a property; simple
+#                arithmetic/modulo theorems are still models, not code proofs, and
+#                can fail on a model mutation but not on a production mutation.
+# witness_only - asserts satisfiability/reachability only; not a safety proof.
+# tautology    - the query is the direct negation of a premise or definition in the
+#                same test, a constant or identical-expression check, or a
+#                print-only summary. A test that assumes a guard and immediately
+#                negates it is tautology, not model_only.
+#
+# Every `fn z3_*` in tests/verification/z3.rs must appear exactly once across these
+# lists. `model-impact.py check` enforces coverage; the per-test rationale is in
+# the PR/issue that added the classification (#575).
+[z3_proof_strength]
+code_linked = []
+model_only = [
+  "z3_proof_input_delay_increase_preserves_monotonic_frames",
+  "z3_proof_input_delay_decrease_is_rejected_mid_session",
+  "z3_proof_pending_output_capacity_sufficient_for_gap_fill",
+  "z3_proof_frame_addition_bounded",
+  "z3_proof_rollback_frame_valid",
+  "z3_proof_frame_comparison_transitive",
+  "z3_proof_circular_buffer_index_valid",
+  "z3_proof_head_advancement_wraps",
+  "z3_proof_queue_length_invariant_add",
+  "z3_proof_frame_delay_prevents_overflow",
+  "z3_proof_frame_delay_increase_monotone_gap_fill",
+  "z3_proof_pending_output_capacity_accepts_gap_fill_delta",
+  "z3_proof_mesh_agreed_dropped_players_excluded_from_confirmed_min",
+  "z3_proof_confirmed_bound_below_same_instant_subset_overrides",
+  "z3_proof_input_position_uniqueness_in_window",
+  "z3_proof_frame_increment_safe",
+  "z3_proof_desync_detection_no_false_negatives_on_comparison",
+  "z3_proof_different_basis_is_never_compared",
+  "z3_proof_sync_health_state_transitions",
+  "z3_proof_input_queue_head_tail_bounds",
+  "z3_proof_sync_layer_confirmed_frame_invariant",
+  "z3_proof_sync_layer_saved_frame_invariant",
+  "z3_proof_first_incorrect_frame_bound",
+  "z3_proof_frame_discard_safety",
+  "z3_proof_pcg32_increment_always_odd",
+  "z3_proof_pcg32_state_transition_injective",
+  "z3_proof_gen_range_threshold_valid",
+  "z3_proof_gen_range_acceptance_probability",
+  "z3_proof_pcg32_different_seeds_different_states",
+]
+witness_only = [
+  "z3_proof_circular_distance_non_wrapped",
+  "z3_proof_saved_state_available",
+  "z3_proof_complete_rollback_safety",
+  "z3_proof_input_queue_length_calculation",
+  "z3_proof_saved_states_availability",
+  "z3_proof_prediction_window_bounded",
+  "z3_proof_fnv1a_single_byte_formula",
+  "z3_proof_fnv1a_single_byte_no_collision",
+  "z3_proof_fnv1a_value_always_64bit",
+]
+tautology = [
+  "z3_proof_frozen_peer_input_is_constant_after_drop",
+  "z3_proof_halt_and_continue_without_are_mutually_exclusive_policies",
+  "z3_proof_head_wraparound_to_zero",
+  "z3_proof_frame_zero_misprediction_skips_rollback",
+  "z3_proof_desync_detection_no_false_positives",
+  "z3_proof_checksum_comparison_guard",
+  "z3_proof_last_verified_frame_monotonic",
+  "z3_proof_invariant_checker_soundness",
+  "z3_proof_invariant_checker_completeness",
+  "z3_desync_detection_proofs_summary",
+  "z3_verified_properties_summary",
+  "z3_proof_fnv1a_determinism",
+  "z3_proof_fnv1a_empty_input_identity",
+  "z3_proof_fnv1a_incremental_consistency",
+  "z3_proof_fnv1a_prime_properties",
+  "z3_hash_proofs_summary",
+  "z3_proof_pcg32_state_transition_deterministic",
+  "z3_proof_pcg32_multiplier_is_odd",
+  "z3_proof_pcg32_default_increment_is_odd",
+  "z3_rng_proofs_summary",
+  "z3_proof_confirmed_frame_ignores_disconnected_players",
+  "z3_proof_rollback_within_prediction_window",
+  "z3_proof_pending_checksum_becomes_comparable",
+  "z3_proof_prediction_threshold",
+  "z3_proof_frame_delay_decrease_rejected_preserves_state",
+  "z3_proof_sequential_frames_with_delay",
+  "z3_proof_rollback_target_in_past",
+  "z3_proof_skip_rollback_when_frame_equal",
+]

@@ -99,6 +99,15 @@ Rules:
    model actually covers the current production behavior.
 4. **Keep the summary honest.** Counts and labels in the PR body and docs must match the artifacts.
 
+## Z3 proof-strength classification
+
+`docs/specs/verification-manifest.toml` has a `[z3_proof_strength]` table that classifies every
+`z3_*` test in `tests/verification/z3.rs` as `code_linked`, `model_only`, `witness_only`, or
+`tautology`. A new test is not complete until it has a row. `model-impact.py check` fails on an
+unclassified or unknown test, a duplicate entry, an invalid strength, or a `code_linked` entry that
+is not mapped to a component's `z3` list. Agent preflight and the CI verification PR job run the
+check. The table records the review decision; it does not decide whether the label is right.
+
 ## Status semantics
 
 - `modeled` -- the listed model/proofs cover the mapped behavior; a change needs an update.
