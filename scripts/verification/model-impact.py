@@ -510,12 +510,14 @@ def _module_path(path: Path, root: Path) -> tuple[str, ...]:
     return tuple(parts[:-1] + [stem])
 
 
-def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
-    """Return module-qualified ``#[test]`` names in one Rust file."""
+def _function_entries(
+    text: str,
+) -> tuple[list[tuple[tuple[str, ...], str, int]], list[str]]:
+    """Return inline-module, name, and line entries for every Rust ``fn``."""
     structure = _strip_structure(text, "rust")
     lines = structure.splitlines()
     words = list(TOKEN_RE.finditer(structure))
-    names: list[str] = []
+    entries: list[tuple[tuple[str, ...], str, int]] = []
     depth = 0
     modules: list[tuple[str, int]] = []
     index = 0
@@ -540,11 +542,19 @@ def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
             name = words[index + 1].group(0)
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
                 line = structure.count("\n", 0, words[index].start()) + 1
-                if _has_test_attribute(lines, line):
-                    path = base + tuple(module for module, _ in modules) + (name,)
-                    names.append("::".join(path))
+                entries.append((tuple(module for module, _ in modules), name, line))
         index += 1
-    return names
+    return entries, lines
+
+
+def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
+    """Return module-qualified ``#[test]`` names in one Rust file."""
+    entries, lines = _function_entries(text)
+    return [
+        "::".join(base + module + (name,))
+        for module, name, line in entries
+        if _has_test_attribute(lines, line)
+    ]
 
 
 def test_index(root: Path) -> dict[str, Path]:
@@ -854,9 +864,9 @@ def _file_substance_updated(
 
 
 def _fn_substance(
-    text: str, name: str
+    text: str, name: str, module_path: tuple[str, ...] | None = None
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    span = _fn_range_text(text, name)
+    span = _fn_range_text(text, name, module_path)
     if span is None:
         return None
     lines = text.splitlines()
@@ -869,33 +879,45 @@ def _fn_substance_updated(
     path_text: str,
     name: str,
     cache: dict[str, str | None],
+    module_path: tuple[str, ...] | None = None,
 ) -> bool:
     """Return True when a mapped proof/test function gained substantive content."""
     current = _read(root / path_text)
     if current is None:
         return False
-    current_body = _fn_substance(current, name)
+    current_body = _fn_substance(current, name, module_path)
     if current_body is None:
         return False
     base_text = _base_text(root, base, path_text, cache)
     if base_text is None:
         return True
-    return _fn_substance(base_text, name) != current_body
+    return _fn_substance(base_text, name, module_path) != current_body
 
 
-def _fn_range_text(text: str, name: str) -> tuple[int, int] | None:
-    lines = _strip_structure(text, "rust").splitlines()
-    for start, line in enumerate(lines):
-        if not re.search(rf"\bfn\s+{re.escape(name)}\b", line):
-            continue
-        depth = 0
-        seen = False
-        for end in range(start, len(lines)):
-            depth += lines[end].count("{") - lines[end].count("}")
-            seen = seen or "{" in lines[end]
-            if seen and depth <= 0:
-                return start + 1, end + 1
-        return start + 1, len(lines)
+def _span_from_line(lines: list[str], start: int) -> tuple[int, int]:
+    depth = 0
+    seen = False
+    for end in range(start, len(lines)):
+        depth += lines[end].count("{") - lines[end].count("}")
+        seen = seen or "{" in lines[end]
+        if seen and depth <= 0:
+            return start + 1, end + 1
+    return start + 1, len(lines)
+
+
+def _fn_range_text(
+    text: str, name: str, module_path: tuple[str, ...] | None = None
+) -> tuple[int, int] | None:
+    if module_path is None:
+        lines = _strip_structure(text, "rust").splitlines()
+        for start, line in enumerate(lines):
+            if re.search(rf"\bfn\s+{re.escape(name)}\b", line):
+                return _span_from_line(lines, start)
+        return None
+    entries, lines = _function_entries(text)
+    for module, fn_name, entry_line in entries:
+        if fn_name == name and module == tuple(module_path):
+            return _span_from_line(lines, entry_line - 1)
     return None
 
 
@@ -984,9 +1006,21 @@ def _verification_updated(
         if matched is None:
             continue
         fqn, location = matched
-        name = fqn.rsplit("::", 1)[-1]
+        modules = fqn.split("::")
+        name = modules.pop()
+        file_module = _module_path(location, root)
+        inline_modules = (
+            tuple(modules[len(file_module) :])
+            if tuple(modules[: len(file_module)]) == file_module
+            else tuple(modules)
+        )
         if _fn_substance_updated(
-            root, base, location.relative_to(root).as_posix(), name, base_cache
+            root,
+            base,
+            location.relative_to(root).as_posix(),
+            name,
+            base_cache,
+            inline_modules,
         ):
             return True
     return False

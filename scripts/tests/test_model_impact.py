@@ -209,6 +209,54 @@ def test_test_index_does_not_reuse_a_preceding_test_attribute(tmp_path: Path) ->
     assert "helpers::helper" not in index
 
 
+def _two_module_demo(repo: Path) -> Path:
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        "pub fn mapped_fn() -> u32 {\n    1\n}\n\n"
+        "#[cfg(test)]\nmod other {\n    #[test]\n    fn demo_test() {}\n}\n\n"
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn demo_test() {\n"
+        "        assert_eq!(super::mapped_fn(), 1);\n    }\n}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "two modules with the same test name")
+    return demo
+
+
+def test_same_named_test_in_another_module_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = _two_module_demo(repo)
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n", 1)
+    demo.write_text(
+        text.replace(
+            "mod other {\n    #[test]\n    fn demo_test() {}",
+            "mod other {\n    #[test]\n    fn demo_test() {\n        let _ = 1;\n    }",
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_mapped_test_body_is_compared_in_its_own_module(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = _two_module_demo(repo)
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n", 1)
+    demo.write_text(
+        text.replace(
+            "assert_eq!(super::mapped_fn(), 1);",
+            "assert_eq!(super::mapped_fn(), 2);",
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is True
+    assert report.drifted == ()
+
+
 def test_missing_z3_proof_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(z3='["z3_proof_missing"]'))
     report = run_check(repo)
