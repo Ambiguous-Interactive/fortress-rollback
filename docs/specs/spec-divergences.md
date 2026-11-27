@@ -58,8 +58,8 @@ runtime refinement link:
 | `checksum-latch` | bounded | `ChecksumExchange.tla`, `ChecksumBasis.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
 | `provisional-ready` | bounded | `CoordinatedReadyDigest.tla`; 3 Kani; 12 Rust tests | `src/sessions/ready_transcripts.rs`, `src/sessions/p2p_session.rs` | ready-transcript-map (2027-02-01) |
 | `terminal-epoch` | bounded | 5 Kani; 9 Rust tests | `src/sessions/terminal_epoch.rs`, `src/sessions/p2p_session.rs` | terminal-epoch-key-ord (2027-02-01) |
-| `coordinated-barrier` | modeled | `CoordinatedPeerDrop.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
-| `coordinator-failover` | modeled | `CoordinatorFailover.tla`, `CoordinatorFailoverCompeting.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
+| `coordinated-barrier` | modeled | `CoordinatedPeerDrop.tla`; 1 Kani; 6 Rust tests | `src/sessions/coordinated_drop.rs`, `src/sessions/p2p_session.rs` | none |
+| `coordinator-failover` | modeled | `CoordinatorFailover.tla`, `CoordinatorFailoverCompeting.tla`; 2 Kani; 4 Rust tests | `src/sessions/coordinated_drop.rs`, `src/sessions/p2p_session.rs` | none |
 | `participant-split-view` | modeled | `CoordinatorSplitView.tla`; 1 Rust test | `src/sessions/p2p_session.rs` | none |
 | `double-failure-relay` | modeled | `DoubleFailureRelay.tla`; 2 Rust tests | `src/sessions/p2p_session.rs`, `src/network/protocol/mod.rs`, `src/network/messages.rs` | relay-topology (2027-06-01) |
 | `spectator-reactivation` | modeled | `SpectatorFailover.tla`, `SpectatorReactivationEpoch.tla`; 2 Rust tests | `src/sessions/p2p_spectator_session.rs` | cross-cycle-high-water (2027-06-01) |

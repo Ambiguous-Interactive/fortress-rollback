@@ -6,7 +6,7 @@
 
 # Fortress Rollback Formal Specification
 
-**Version:** 1.10
+**Version:** 1.11
 **Date:** November 27, 2026
 **Status:** Complete
 
@@ -14,6 +14,10 @@ This document provides a formal specification of Fortress Rollback's core compon
 
 ## Changelog
 
+- **v1.11 (2026-11-27):** Extracted the coordinated-drop state model and pure
+  attempt transitions into `src/sessions/coordinated_drop.rs` and added three
+  Kani proofs for failover authority selection and the canonical backfill
+  chunk plan; the module owns the bounded state but no new policy.
 - **v1.10 (2026-11-27):** Added the Z3 proof-strength classification to the
   `[z3_proof_strength]` table in `docs/specs/verification-manifest.toml` and
   the coverage check in `model-impact.py check`: all 66 `z3_*` tests are
@@ -847,6 +851,25 @@ Rust tests rather than Kani, because the heap-backed key and map are outside the
 proof budget; the verification manifest records that residual and the extracted
 module documents the split.
 
+The coordinated-drop state model and its pure attempt transitions live in the
+extracted `src/sessions/coordinated_drop.rs` (#576 phase 4). The module owns one
+attempt, its fences, the bounded retry/terminal journals, and the participant,
+target, and terminal-epoch bookkeeping the session decisions mutate; the
+message handling and cut/quorum policy remain in `p2p_session`. Extracting the
+state does not add a transition: `fallback_coordinator` still selects the first
+survivor after the deterministic coordinator, `effective_coordinator` still
+prefers an adopted acting coordinator, and `reset_backfill_grid` still clears
+only the uninstalled chunk-grid identity. The canonical backfill plan is now a
+pure kernel over an explicit input width: given `[start, cut]` it computes the
+checked 1 KiB chunk grid, and its three Kani harnesses prove that the failover
+authority is never the deterministic coordinator for a duplicate-free
+participant list, that an acting coordinator's precedence is total, and that
+the planned chunk grid covers every frame in the inclusive range while the
+frame width and `u16` chunk index stay representable. The state collections
+themselves remain covered by the session tests and the bounded-journal
+insertion sites; Kani checks the arithmetic and authority kernels, not the
+heap-backed maps.
+
 `specs/tla/CoordinatedPeerDrop.tla` models two serialized operation IDs over two
 membership/target eras with independent per-survivor commit. The runtime defers
 a prepare received while a prior commit closes, discards its stale participant
@@ -1000,6 +1023,7 @@ that residual.
 | Coordinated-drop split-view participant sets | TLA+ | ✅ Implemented (`specs/tla/CoordinatorSplitView.tla` + manual local-view demo-fail) |
 | Coordinated-drop terminal-epoch replay guard | Rust tests + Kani + exact-byte goldens | ✅ Implemented (`src/sessions/terminal_epoch.rs` five Kani kernels and table tests; integration tests in `src/sessions/p2p_session.rs`; `src/network/wire_golden_v6.rs`) |
 | Coordinated-drop provisional `Ready` digest gate | TLA+ + Kani + Rust tests | ✅ Bounded 3-participant/1-cut/2-digest model (`specs/tla/CoordinatedReadyDigest.tla`; `ProvisionalCounts` enforced expected-fail); `ReadyTranscripts` kernels in `src/sessions/ready_transcripts.rs` with three Kani proofs and module tests |
+| Coordinated-drop state model and backfill plan | Kani + Rust tests | ✅ Extracted `src/sessions/coordinated_drop.rs`; three Kani kernels prove failover authority selection and inclusive chunk-grid coverage; session behavior stays pinned by the existing coordinated-drop tests |
 
 The complete Z3 classification, including the tautology and witness-only rows, is in the
 `[z3_proof_strength]` table of [verification-manifest.toml](https://github.com/wallstop/fortress-rollback/blob/main/docs/specs/verification-manifest.toml). A Z3 row
@@ -1012,6 +1036,7 @@ and Kani harnesses named above are the production controls.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.11    | 2026-11-27 | Extracted the coordinated-drop state model and pure transitions (`src/sessions/coordinated_drop.rs`) with three Kani proofs: failover authority selection, acting-coordinator precedence, and inclusive backfill chunk-grid coverage |
 | 1.10    | 2026-11-27 | Added the Z3 proof-strength classification to the manifest and its coverage check; the frame/queue Z3 rows are marked model-only |
 | 1.9     | 2026-11-27 | Extracted `ReadyTranscripts` (`src/sessions/ready_transcripts.rs`) with a provisional/locked typestate and three Kani proofs: the pure admission rule, non-authority provisional reports never locking or counting, and matching-only promotion |
 | 1.8     | 2026-11-26 | Extracted `TerminalEpochTable` (`src/sessions/terminal_epoch.rs`) with five Kani proofs: monotone advancement, the production coordinator/generation identity component, the caller-independent two-generation bound, bounded fallback adoption, and canonical target handles |

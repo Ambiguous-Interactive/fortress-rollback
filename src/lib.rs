@@ -273,6 +273,10 @@ pub mod sessions {
     /// Configuration types for session behavior.
     #[doc(hidden)]
     pub mod config;
+    /// Coordinated-drop state model and pure transition kernels (extracted for
+    /// Kani).
+    #[doc(hidden)]
+    pub(crate) mod coordinated_drop;
     #[doc(hidden)]
     pub mod event_drain;
     /// Hot-join snapshot serialization and capture/apply helpers.
