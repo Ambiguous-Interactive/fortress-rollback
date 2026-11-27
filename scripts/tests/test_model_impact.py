@@ -252,6 +252,25 @@ def test_macro_template_fn_is_not_indexed_as_a_test(tmp_path: Path) -> None:
     assert "config::test_" not in index
 
 
+def test_macro_rules_template_is_not_indexed_as_a_test(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    macros = repo / "src" / "macros.rs"
+    macros.write_text(
+        "macro_rules! make_test {\n    () => {\n        #[test]\n        fn phantom() {}\n    };\n}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "macros::phantom" not in index
+
+
+def test_same_line_test_attribute_is_indexed(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text("#[test] fn same_line_test() {}\n", encoding="utf-8")
+    index = model_impact.test_index(repo)
+    assert "helpers::same_line_test" in index
+
+
 def test_one_line_test_attribute_before_helper_does_not_leak(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     helpers = repo / "src" / "helpers.rs"

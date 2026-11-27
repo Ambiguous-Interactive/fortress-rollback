@@ -478,6 +478,12 @@ TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[()\[\]{}<>;]")
 
 def _has_attribute(lines: list[str], line_number: int, pattern: re.Pattern[str]) -> bool:
     """Return True when only attributes separate the fn from *pattern*."""
+    current_index = line_number - 1
+    if 0 <= current_index < len(lines):
+        current = lines[current_index]
+        fn_match = re.search(r"\bfn\b", current)
+        if fn_match is not None and pattern.search(current[: fn_match.start()]):
+            return True
     index = line_number - 2
     attributes: list[str] = []
     while index >= 0:
@@ -526,6 +532,29 @@ def _function_entries(
     index = 0
     while index < len(words):
         word = words[index].group(0)
+        if word == "macro_rules":
+            brace_index = next(
+                (
+                    position
+                    for position in range(index + 1, min(index + 5, len(words)))
+                    if words[position].group(0) == "{"
+                ),
+                None,
+            )
+            if brace_index is not None:
+                local_depth = 0
+                end = len(words)
+                for position in range(brace_index, len(words)):
+                    part = words[position].group(0)
+                    if part == "{":
+                        local_depth += 1
+                    elif part == "}":
+                        local_depth -= 1
+                        if local_depth == 0:
+                            end = position
+                            break
+                index = end + 1
+                continue
         if word == "mod" and index + 2 < len(words):
             name_word = words[index + 1].group(0)
             opener = words[index + 2].group(0)
