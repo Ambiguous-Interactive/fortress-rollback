@@ -553,15 +553,15 @@ def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
     ]
 
 
-def kani_proof_index(root: Path) -> dict[str, Path]:
-    """Map ``#[kani::proof]`` harness names to their first defining file."""
-    index: dict[str, Path] = {}
+def kani_proof_index(root: Path) -> dict[str, tuple[Path, ...]]:
+    """Map ``#[kani::proof]`` harness names to every defining file."""
+    found: dict[str, set[Path]] = {}
     for path in _rust_files(root):
         entries, lines = _function_entries(_read(path) or "")
         for _module, name, line in entries:
             if _has_attribute(lines, line, KANI_ATTR_RE):
-                index.setdefault(name, path)
-    return index
+                found.setdefault(name, set()).add(path)
+    return {name: tuple(sorted(paths)) for name, paths in found.items()}
 
 
 def test_index(root: Path) -> dict[str, Path]:
@@ -985,7 +985,7 @@ def _verification_updated(
     root: Path,
     component: Component,
     changed: set[str],
-    kani_index: dict[str, Path],
+    kani_index: dict[str, tuple[Path, ...]],
     test_idx: dict[str, Path],
     base: str,
     base_cache: dict[str, str | None],
@@ -998,8 +998,11 @@ def _verification_updated(
         if _fn_substance_updated(root, base, z3_rel, proof, base_cache):
             return True
     for name in component.kani:
-        location = kani_index.get(name)
-        if location is not None and _fn_substance_updated(
+        locations = kani_index.get(name, ())
+        if len(locations) != 1:
+            continue
+        location = locations[0]
+        if _fn_substance_updated(
             root, base, location.relative_to(root).as_posix(), name, base_cache
         ):
             return True

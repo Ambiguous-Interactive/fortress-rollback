@@ -645,6 +645,19 @@ def test_new_shadow_kani_function_does_not_satisfy_gate(tmp_path: Path) -> None:
     assert [impact.component.component_id for impact in report.drifted] == ["demo"]
 
 
+def test_attributed_shadow_kani_function_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    (repo / "src" / "aaa.rs").write_text(
+        "#[kani::proof]\nfn proof_demo() {}\n", encoding="utf-8"
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
 def test_comment_only_kani_proof_update_does_not_satisfy_gate(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     demo = repo / "src" / "demo.rs"

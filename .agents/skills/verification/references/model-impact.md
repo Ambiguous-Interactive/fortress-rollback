@@ -65,9 +65,11 @@ is intentionally coarser and flags any change to that file. Comment and whitespa
 mapped spec or proof function do not satisfy the update requirement; the gate compares token and
 literal signatures after stripping comments. Braces inside normal, raw, and C raw strings, char
 literals, and nested comments do not truncate a mapped function's range. A mapped Kani harness is
-located by its `#[kani::proof]` attribute, so an unrelated same-named function cannot satisfy the
-kernel. Attribute-only edits outside a function body (for example `#[ignore]`) are not counted as
-proof updates. Generated build trees under ignored paths are not scanned for tests.
+located by its `#[kani::proof]` attribute; duplicate or unrelated same-named functions do not
+count. Attribute-only edits outside a function body (for example `#[ignore]`) are not counted as
+proof updates. The lexer-lite scanner associates single-line attributes directly above an item;
+multi-line attribute blocks are a known limit tracked in #606. Generated build trees under ignored
+paths are not scanned for tests.
 
 ## Proof-strength levels
 
