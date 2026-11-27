@@ -293,6 +293,15 @@ def test_one_line_test_attribute_before_helper_does_not_leak(tmp_path: Path) -> 
     assert "helper" not in index
 
 
+def test_two_functions_on_one_line_bind_attributes_separately(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text("#[test] fn actual_test() {} fn helper() {}\n", encoding="utf-8")
+    index = model_impact.test_index(repo)
+    assert "helpers::actual_test" in index
+    assert "helpers::helper" not in index
+
+
 def _two_module_demo(repo: Path) -> Path:
     demo = repo / "src" / "demo.rs"
     demo.write_text(
@@ -652,6 +661,16 @@ def test_substance_signature_ignores_whitespace_and_comments_but_not_literals() 
     assert model_impact._normalized_substance(
         "let x = 1.0.to_string();", "rust"
     ) == model_impact._normalized_substance("let x = 1.0 .to_string();", "rust")
+    assert model_impact._normalized_substance(
+        'f("a") + g();', "rust"
+    ) != model_impact._normalized_substance('f() + g("a");', "rust")
+    doubled = 'X == "a""b"  \\* note\n'
+    assert model_impact._normalized_substance(doubled, "tla") == model_impact._normalized_substance(
+        'X == "a""b"\n', "tla"
+    )
+    assert model_impact._normalized_substance(
+        'X == "a""b"', "tla"
+    ) != model_impact._normalized_substance('X == "a" "b"', "tla")
 
 
 def test_comment_only_test_update_does_not_satisfy_gate(tmp_path: Path) -> None:
@@ -703,6 +722,29 @@ def test_attributed_shadow_kani_function_does_not_satisfy_gate(tmp_path: Path) -
     demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
     (repo / "src" / "aaa.rs").write_text(
         "#[kani::proof]\nfn proof_demo() {}\n", encoding="utf-8"
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_same_file_helper_before_test_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace(
+            "#[cfg(test)]\nmod tests {\n",
+            "#[cfg(test)]\nmod tests {\n    fn demo_test() {}\n",
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "add test helper")
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n", 1)
+    demo.write_text(
+        text.replace("    fn demo_test() {}", "    fn demo_test() { let _ = 1; }", 1),
+        encoding="utf-8",
     )
 
     report = run_affected(repo)

@@ -377,6 +377,16 @@ def _sanitize(
             if out[position] not in "\r\n":
                 out[position] = " "
 
+    def mark(start: int, end: int) -> None:
+        blank(start, end)
+        out[start] = "\x01"
+
+    def hide(start: int, end: int) -> None:
+        if literals is None:
+            blank(start, end)
+        else:
+            mark(start, end)
+
     index = 0
     while index < length:
         if language == "rust":
@@ -404,13 +414,13 @@ def _sanitize(
                 if literals is not None:
                     literals.append(text[start:end])
                 if not keep_strings:
-                    blank(start, end)
+                    hide(start, end)
                 index = end
             elif (raw := _rust_raw_string_span(text, index)) is not None:
                 if literals is not None:
                     literals.append(text[raw[0] : raw[1]])
                 if not keep_strings:
-                    blank(*raw)
+                    hide(*raw)
                 index = raw[1]
             elif text[index] == "'":
                 char = _rust_char_span(text, index)
@@ -420,7 +430,7 @@ def _sanitize(
                     if literals is not None:
                         literals.append(text[char[0] : char[1]])
                     if not keep_strings:
-                        blank(*char)
+                        hide(*char)
                     index = char[1]
             else:
                 index += 1
@@ -448,7 +458,7 @@ def _sanitize(
             if literals is not None:
                 literals.append(text[start:end])
             if not keep_strings:
-                blank(start, end)
+                hide(start, end)
             index = end
         else:
             index += 1
@@ -476,13 +486,24 @@ KANI_ATTR_RE = re.compile(r"#\[kani::proof(?:\(|\])")
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[()\[\]{}<>;]")
 
 
-def _has_attribute(lines: list[str], line_number: int, pattern: re.Pattern[str]) -> bool:
+def _has_attribute(
+    lines: list[str],
+    line_number: int,
+    pattern: re.Pattern[str],
+    column: int | None = None,
+) -> bool:
     """Return True when only attributes separate the fn from *pattern*."""
     current_index = line_number - 1
     if 0 <= current_index < len(lines):
         current = lines[current_index]
-        fn_match = re.search(r"\bfn\b", current)
-        if fn_match is not None and pattern.search(current[: fn_match.start()]):
+        if column is None:
+            fn_match = re.search(r"\bfn\b", current)
+            prefix_end = fn_match.start() if fn_match is not None else len(current)
+        else:
+            prefix_end = column
+        prefix = current[:prefix_end]
+        boundary = max(prefix.rfind("}"), prefix.rfind(";"))
+        if pattern.search(prefix[boundary + 1 :]):
             return True
     index = line_number - 2
     attributes: list[str] = []
@@ -498,8 +519,10 @@ def _has_attribute(lines: list[str], line_number: int, pattern: re.Pattern[str])
     return any(pattern.search(attribute) for attribute in attributes)
 
 
-def _has_test_attribute(lines: list[str], line_number: int) -> bool:
-    return _has_attribute(lines, line_number, TEST_ATTR_RE)
+def _has_test_attribute(
+    lines: list[str], line_number: int, column: int | None = None
+) -> bool:
+    return _has_attribute(lines, line_number, TEST_ATTR_RE, column)
 
 
 def _module_path(path: Path, root: Path) -> tuple[str, ...]:
@@ -521,12 +544,12 @@ def _module_path(path: Path, root: Path) -> tuple[str, ...]:
 
 def _function_entries(
     text: str,
-) -> tuple[list[tuple[tuple[str, ...], str, int]], list[str]]:
-    """Return inline-module, name, and line entries for every Rust ``fn``."""
+) -> tuple[list[tuple[tuple[str, ...], str, int, int]], list[str]]:
+    """Return inline-module, name, line, and column entries for every Rust ``fn``."""
     structure = _strip_structure(text, "rust")
     lines = structure.split("\n")
     words = list(TOKEN_RE.finditer(structure))
-    entries: list[tuple[tuple[str, ...], str, int]] = []
+    entries: list[tuple[tuple[str, ...], str, int, int]] = []
     depth = 0
     modules: list[tuple[str, int]] = []
     index = 0
@@ -574,8 +597,12 @@ def _function_entries(
             name = words[index + 1].group(0)
             following = words[index + 2].group(0)
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and following in {"(", "<"}:
-                line = structure.count("\n", 0, words[index].start()) + 1
-                entries.append((tuple(module for module, _ in modules), name, line))
+                position = words[index].start()
+                line = structure.count("\n", 0, position) + 1
+                column = position - structure.rfind("\n", 0, position) - 1
+                entries.append(
+                    (tuple(module for module, _ in modules), name, line, column)
+                )
         index += 1
     return entries, lines
 
@@ -585,8 +612,8 @@ def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
     entries, lines = _function_entries(text)
     return [
         "::".join(base + module + (name,))
-        for module, name, line in entries
-        if _has_test_attribute(lines, line)
+        for module, name, line, column in entries
+        if _has_test_attribute(lines, line, column)
     ]
 
 
@@ -595,8 +622,8 @@ def kani_proof_index(root: Path) -> dict[str, tuple[tuple[Path, tuple[str, ...]]
     found: dict[str, list[tuple[Path, tuple[str, ...]]]] = {}
     for path in _rust_files(root):
         entries, lines = _function_entries(_read(path) or "")
-        for module, name, line in entries:
-            if _has_attribute(lines, line, KANI_ATTR_RE):
+        for module, name, line, column in entries:
+            if _has_attribute(lines, line, KANI_ATTR_RE, column):
                 found.setdefault(name, []).append((path, module))
     return {name: tuple(sorted(locations)) for name, locations in found.items()}
 
@@ -1008,12 +1035,14 @@ def _fn_range_text(
                 return _span_from_line(lines, start)
         return None
     entries, lines = _function_entries(text)
-    for module, fn_name, entry_line in entries:
+    for module, fn_name, entry_line, column in entries:
         if fn_name != name:
             continue
         if module_path is not None and module != tuple(module_path):
             continue
-        if attribute is not None and not _has_attribute(lines, entry_line, attribute):
+        if attribute is not None and not _has_attribute(
+            lines, entry_line, attribute, column
+        ):
             continue
         return _span_from_line(lines, entry_line - 1)
     return None
@@ -1128,6 +1157,7 @@ def _verification_updated(
             name,
             base_cache,
             inline_modules,
+            TEST_ATTR_RE,
         ):
             return True
     return False
