@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795811903123,
+  "lastUpdate": 1795823712880,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "b3bf11900471af546e6fea9f90d22f02687b23fe",
-          "message": "test: move the cut boundary into the tested arming helper (#476)\n\n## Summary\n\nThe #475 mutation run still reported two missed boundary mutants at the\n`current_frame() > commit.cut` call site: replacing `>` with `==` or\n`>=` either skipped the rollback or armed it at the untested equality\nboundary. This moves the `current <= cut` decision into\n`arm_certified_cut_resimulation` and asserts both sides of the boundary\ndirectly, leaving the caller with no untested branch.\n\n## Verification\n\n- `cargo tfull`: 3263 passed, 76 skipped.\n- `cargo clippy --workspace --all-targets --features tokio,json`: clean.\n- Local `cargo mutants --in-diff` against `main`: 0 missed (1 caught, 3\nunviable).\n\nRefs: #473 (#475 follow-up)",
-          "timestamp": "2026-11-18T10:36:18Z",
-          "tree_id": "5d2918a69da0e7cea4255aff5d2c1691d0157fc4",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/b3bf11900471af546e6fea9f90d22f02687b23fe"
-        },
-        "date": 1794998860335,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 60815,
-            "range": "± 1710",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 32041,
-            "range": "± 299",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1674,
-            "range": "± 106",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1555,
-            "range": "± 107",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 3141,
-            "range": "± 183",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 5383,
             "range": "± 165",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "a4bdb6a52469458552315e8db2b51c66a2c2e48a",
+          "message": "chore(deps): bump the cargo-godot-emscripten group in /tests/godot-emscripten with 2 updates (#603)\n\nBumps the cargo-godot-emscripten group in /tests/godot-emscripten with 2\nupdates: [godot](https://github.com/godot-rust/gdext) and\n[smallvec](https://github.com/smallvec/smallvec).\n\nUpdates `godot` from 0.5.5 to 0.5.6\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/godot-rust/gdext/releases\">godot's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v0.5.6</h2>\n<h3>🌻 Highlights</h3>\n<ul>\n<li>Compile-time improvements of user crates (reduction of\nmonomorphizations)</li>\n<li>Runtime improvements with variant marshalling</li>\n<li><code>unbind()</code> as a new API to make <code>self</code>\neligible for reborrowing</li>\n<li>Fixed crashes for object destructions, hot-reload with C++ code,\n<code>Debug</code> output</li>\n<li>Rudimentary support for visionOS</li>\n</ul>\n<h3>📚 Further reading</h3>\n<p><a\nhref=\"https://github.com/godot-rust/gdext/blob/master/Changelog.md#v056\">Changelog</a>.</p>\n<p>Git: <a\nhref=\"https://github.com/godot-rust/gdext/compare/v0.5.5...v0.5.6\">https://github.com/godot-rust/gdext/compare/v0.5.5...v0.5.6</a></p>\n<h3>👷 New Contributors</h3>\n<p><a href=\"https://github.com/rnazali\"><code>@​rnazali</code></a> <a\nhref=\"https://github.com/chokomancarr\"><code>@​chokomancarr</code></a>\n<a href=\"https://github.com/sixpolys\"><code>@​sixpolys</code></a> <a\nhref=\"https://github.com/Beliar83\"><code>@​Beliar83</code></a></p>\n</blockquote>\n</details>\n<details>\n<summary>Changelog</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/godot-rust/gdext/blob/master/Changelog.md\">godot's\nchangelog</a>.</em></p>\n<blockquote>\n<h2><a href=\"https://docs.rs/godot/0.5.6\">v0.5.6</a></h2>\n<p><em>22 November 2026</em></p>\n<h3>🌻 Features</h3>\n<ul>\n<li>Add <code>Array::resize_default()</code> (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1675\">#1675</a>)</li>\n<li>Add: visionOS platform support <a\nhref=\"https://redirect.github.com/godot-rust/gdext/issues/1695\">#1695</a>\n(<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1696\">#1696</a>)</li>\n<li>Add <code>unbind()</code> for reentrant scope (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1708\">#1708</a>)</li>\n</ul>\n<h3>📈 Performance</h3>\n<ul>\n<li>Compile-time changes due to monomorphization (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1677\">#1677</a>,\n<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1684\">#1684</a>,\n<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1688\">#1688</a>,\n<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1706\">#1706</a>)</li>\n<li>Rust-side <code>Variant</code> marshalling (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1600\">#1600</a>)</li>\n<li>Cheaper main-thread checks (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1689\">#1689</a>)</li>\n</ul>\n<h3>🧹 Quality of life</h3>\n<ul>\n<li>Add <code>track_caller</code> to variant conversions (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1698\">#1698</a>)</li>\n<li>Mark GodotInstance as a Core type (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1709\">#1709</a>)</li>\n<li>Allow prints of the form <code>godot_print!(&quot;Text {var}&quot;,\nvar = 2)</code> (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1716\">#1716</a>)</li>\n</ul>\n<h3>🛠️ Bugfixes</h3>\n<ul>\n<li>Handle object destruction during Godot-&gt;Rust call (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1671\">#1671</a>)</li>\n<li><code>Debug</code> for scripts: fix class, show script name (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1701\">#1701</a>)</li>\n<li>Fix hot reload with <code>libstdc++</code> involved (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1715\">#1715</a>)</li>\n</ul>\n<h3>🏗️ Maintenance</h3>\n<ul>\n<li>Harden <code>godot-ffi</code> crate (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1676\">#1676</a>)</li>\n<li>Various cleanups (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1678\">#1678</a>)</li>\n<li>Restructure and extend benchmarks (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1681\">#1681</a>)</li>\n<li>Improve benchmark methodology (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1683\">#1683</a>)</li>\n<li>Adapt <code>#[var(no_get)]</code> test to GDScript 4.8\nabort-on-error (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1685\">#1685</a>)</li>\n<li>Benchmarks: run separately from itest, reduce noise (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1687\">#1687</a>)</li>\n<li>Delete removed stub methods on GDScriptTextDocument (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1700\">#1700</a>)</li>\n<li>CI: test <code>codegen-full</code> against latest stable (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1702\">#1702</a>)</li>\n<li>Update Quaternion tests for Godot 4.8 (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1710\">#1710</a>)</li>\n</ul>\n<h3>📚 Documentation</h3>\n<ul>\n<li>Fix minor documentation in <code>connect_builder.rs</code> (<a\nhref=\"https://redirect.github.com/godot-rust/gdext/pull/1703\">#1703</a>)</li>\n</ul>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/a139167c33195f2e002dc29defb4a5b3216b74d8\"><code>a139167</code></a>\nv0.5.6 (with doc attributes)</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/a800399f6ae5017544a17bbb67e37c71168f404c\"><code>a800399</code></a>\nUpdate crate version: 0.5.5 -&gt; 0.5.6</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/a6318ab080aba694814962fcf09a398b09af3e2f\"><code>a6318ab</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/godot-rust/gdext/issues/1716\">#1716</a>\nfrom godot-rust/qol/print-format-args</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/395476db593eb1cd859336fbb43eb113e5ae6cfb\"><code>395476d</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/godot-rust/gdext/issues/1715\">#1715</a>\nfrom godot-rust/bugfix/linux-reload-libstdcxx</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/ec72605fbc4159799d28e0f883d6854b2da97659\"><code>ec72605</code></a>\nAllow prints of the form <code>godot_print!(&quot;Text {var}&quot;, var\n= 2)</code></li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/076eeb197df67ec6c693c47e6b1eaadaf80ef044\"><code>076eeb1</code></a>\nFix Linux hot reload with C++ dependencies</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/e5e01f2accfdd43e53774b38dd4e988fbbca897d\"><code>e5e01f2</code></a>\nHot-reload test: optionally link libstdc++ on Linux</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/0b680b4d59c4790d4673b2293110687d2e5261c7\"><code>0b680b4</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/godot-rust/gdext/issues/1708\">#1708</a>\nfrom godot-rust/feature/reentrant-scope</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/9d3349c69413d7f1741b5a0104649127945d97e2\"><code>9d3349c</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/godot-rust/gdext/issues/1709\">#1709</a>\nfrom Beliar83/godot_instance_fix</li>\n<li><a\nhref=\"https://github.com/godot-rust/gdext/commit/76fb45a9f7e7b128f9521a6485aee8996cf6d777\"><code>76fb45a</code></a>\nMerge pull request <a\nhref=\"https://redirect.github.com/godot-rust/gdext/issues/1710\">#1710</a>\nfrom godot-rust/mtnc/quaternion-blending</li>\n<li>Additional commits viewable in <a\nhref=\"https://github.com/godot-rust/gdext/compare/v0.5.5...v0.5.6\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\nUpdates `smallvec` from 1.16.5 to 1.16.6\n<details>\n<summary>Release notes</summary>\n<p><em>Sourced from <a\nhref=\"https://github.com/smallvec/smallvec/releases\">smallvec's\nreleases</a>.</em></p>\n<blockquote>\n<h2>v1.16.6</h2>\n<h2>What's Changed</h2>\n<ul>\n<li>fix: point v1 repository metadata to smallvec/smallvec by <a\nhref=\"https://github.com/himanchalkaushale\"><code>@​himanchalkaushale</code></a>\nin <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/869\">smallvec/smallvec#869</a></li>\n<li>feat: update v1 by <a\nhref=\"https://github.com/alejandro-vaz\"><code>@​alejandro-vaz</code></a>\nin <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/908\">smallvec/smallvec#908</a></li>\n<li>feat: update v1 release workflow and style by <a\nhref=\"https://github.com/alejandro-vaz\"><code>@​alejandro-vaz</code></a>\nin <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/909\">smallvec/smallvec#909</a></li>\n</ul>\n<h2>New Contributors</h2>\n<ul>\n<li><a\nhref=\"https://github.com/himanchalkaushale\"><code>@​himanchalkaushale</code></a>\nmade their first contribution in <a\nhref=\"https://redirect.github.com/smallvec/smallvec/pull/869\">smallvec/smallvec#869</a></li>\n</ul>\n<p><strong>Full Changelog</strong>: <a\nhref=\"https://github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6\">https://github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6</a></p>\n</blockquote>\n</details>\n<details>\n<summary>Commits</summary>\n<ul>\n<li><a\nhref=\"https://github.com/smallvec/smallvec/commit/347b5c346168f9648bf4298d6ed49deda7e18aeb\"><code>347b5c3</code></a>\nfeat: update v1 release workflow and style (<a\nhref=\"https://redirect.github.com/smallvec/smallvec/issues/909\">#909</a>)</li>\n<li><a\nhref=\"https://github.com/smallvec/smallvec/commit/d384c966b655fdfd1919d34ca8988c1a2e90fda3\"><code>d384c96</code></a>\nfeat: update v1 (<a\nhref=\"https://redirect.github.com/smallvec/smallvec/issues/908\">#908</a>)</li>\n<li><a\nhref=\"https://github.com/smallvec/smallvec/commit/432a701da44bdaefb0690174a093827ca549475e\"><code>432a701</code></a>\nfix: point v1 repository metadata to smallvec/smallvec (<a\nhref=\"https://redirect.github.com/smallvec/smallvec/issues/869\">#869</a>)</li>\n<li>See full diff in <a\nhref=\"https://github.com/smallvec/smallvec/compare/v1.16.5...v1.16.6\">compare\nview</a></li>\n</ul>\n</details>\n<br />\n\n\nDependabot will resolve any conflicts with this PR as long as you don't\nalter it yourself. You can also trigger a rebase manually by commenting\n`@dependabot rebase`.\n\n[//]: # (dependabot-automerge-start)\n[//]: # (dependabot-automerge-end)\n\n---\n\n<details>\n<summary>Dependabot commands and options</summary>\n<br />\n\nYou can trigger Dependabot actions by commenting on this PR:\n- `@dependabot rebase` will rebase this PR\n- `@dependabot recreate` will recreate this PR, overwriting any edits\nthat have been made to it\n- `@dependabot show <dependency name> ignore conditions` will show all\nof the ignore conditions of the specified dependency\n- `@dependabot ignore <dependency name> major version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's major version (unless you unignore this specific\ndependency's major version or upgrade to it yourself)\n- `@dependabot ignore <dependency name> minor version` will close this\ngroup update PR and stop Dependabot creating any more for the specific\ndependency's minor version (unless you unignore this specific\ndependency's minor version or upgrade to it yourself)\n- `@dependabot ignore <dependency name>` will close this group update PR\nand stop Dependabot creating any more for the specific dependency\n(unless you unignore this specific dependency or upgrade to it yourself)\n- `@dependabot unignore <dependency name>` will remove all of the ignore\nconditions of the specified dependency\n- `@dependabot unignore <dependency name> <ignore condition>` will\nremove the ignore condition of the specified dependency and ignore\nconditions\n\n\n</details>\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: wallstop <1045249+wallstop@users.noreply.github.com>",
+          "timestamp": "2026-11-27T23:43:03Z",
+          "tree_id": "f0b2e7a5a9cfc6dfc94646d33c88172db50a7a44",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/a4bdb6a52469458552315e8db2b51c66a2c2e48a"
+        },
+        "date": 1795823712091,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 39260,
+            "range": "± 843",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 25081,
+            "range": "± 733",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1091,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1243,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 2767,
+            "range": "± 161",
             "unit": "ns/iter"
           }
         ]
