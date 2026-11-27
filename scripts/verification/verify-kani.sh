@@ -419,6 +419,10 @@ TIER1_PROOFS=(
     "proof_terminal_epoch_at_most_two_generations_per_target_set"
     "proof_terminal_epoch_fallback_adoption_is_bounded_and_only_when_empty"
     "proof_terminal_epoch_entry_targets_match_key_handles"
+    # Ready transcript kernels (src/sessions/ready_transcripts.rs)
+    "proof_ready_admission_count_requires_authority_or_lock"
+    "proof_ready_transcripts_provisional_never_counts"
+    "proof_ready_transcripts_promotion_requires_matching_digest"
     # Core frame/handle proofs (src/lib.rs)
     "proof_frame_new_valid"
     "proof_frame_null_consistency"

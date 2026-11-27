@@ -6,14 +6,19 @@
 
 # Fortress Rollback Formal Specification
 
-**Version:** 1.8
-**Date:** November 26, 2026
+**Version:** 1.9
+**Date:** November 27, 2026
 **Status:** Complete
 
 This document provides a formal specification of Fortress Rollback's core components, invariants, and correctness properties. It serves as the foundation for formal verification using TLA+, Z3, and Kani.
 
 ## Changelog
 
+- **v1.9 (2026-11-27):** Extracted `ReadyTranscripts`
+  (`src/sessions/ready_transcripts.rs`) from `p2p_session` as a
+  provisional/locked typestate and added three Kani proofs for the admission
+  rule, non-authority provisional reports, and matching-only promotion; the
+  SAFE-12a implementation notes now name the kernel and its residual coverage.
 - **v1.8 (2026-11-26):** Extracted the coordinated-drop terminal-epoch table
   (`src/sessions/terminal_epoch.rs`) and added five Kani proofs for monotone
   advancement, the production coordinator/generation identity component, the
@@ -921,6 +926,25 @@ fail-closed `ConflictingHistory` in `coordinated_drop_mark_ready` and
 selection and backfill are `CoordinatedPeerDrop.tla`; the coordinator/acting
 fallback transition is `CoordinatorFailover.tla`.
 
+The Rust bookkeeping is the extracted `ReadyTranscripts`
+(`src/sessions/ready_transcripts.rs`). Its `Provisional` and `Locked`
+transcript types are distinct, the counted set is private, and only
+`promote_matching` moves a provisional report into the locked set after the
+digest is established. The lock also records the selected cut: a report whose
+cut differs is rejected before any state changes, even when its digest happens
+to match. Three Kani harnesses machine-check the production kernels:
+`proof_ready_admission_count_requires_authority_or_lock` proves the pure
+admission rule counts only an authority or a matching lock,
+`proof_ready_transcripts_provisional_never_counts` proves an unlocked
+non-authority report locks nothing and counts nothing, and
+`proof_ready_transcripts_promotion_requires_matching_digest` proves promotion
+counts exactly the matching provisional digest, discards a mismatching report
+rather than relabeling it, and rejects a matching digest under another cut.
+The `BTreeMap` composition, certificate-adoption ordering, and the
+session-level authority decision remain covered by the module tests and the
+three integration tests above, not by Kani; the verification manifest records
+that residual.
+
 ---
 
 ## Constants
@@ -970,7 +994,7 @@ fallback transition is `CoordinatorFailover.tla`.
 | Coordinated-drop coordinator failover | TLA+ | ✅ Implemented (`specs/tla/CoordinatorFailover.tla` + competing-cut safety companion) |
 | Coordinated-drop split-view participant sets | TLA+ | ✅ Implemented (`specs/tla/CoordinatorSplitView.tla` + manual local-view demo-fail) |
 | Coordinated-drop terminal-epoch replay guard | Rust tests + Kani + exact-byte goldens | ✅ Implemented (`src/sessions/terminal_epoch.rs` five Kani kernels and table tests; integration tests in `src/sessions/p2p_session.rs`; `src/network/wire_golden_v6.rs`) |
-| Coordinated-drop provisional `Ready` digest gate | TLA+ | ✅ Bounded 3-participant/1-cut/2-digest model (`specs/tla/CoordinatedReadyDigest.tla`; `ProvisionalCounts` enforced expected-fail) |
+| Coordinated-drop provisional `Ready` digest gate | TLA+ + Kani + Rust tests | ✅ Bounded 3-participant/1-cut/2-digest model (`specs/tla/CoordinatedReadyDigest.tla`; `ProvisionalCounts` enforced expected-fail); `ReadyTranscripts` kernels in `src/sessions/ready_transcripts.rs` with three Kani proofs and module tests |
 
 ---
 
@@ -978,6 +1002,7 @@ fallback transition is `CoordinatorFailover.tla`.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
+| 1.9     | 2026-11-27 | Extracted `ReadyTranscripts` (`src/sessions/ready_transcripts.rs`) with a provisional/locked typestate and three Kani proofs: the pure admission rule, non-authority provisional reports never locking or counting, and matching-only promotion |
 | 1.8     | 2026-11-26 | Extracted `TerminalEpochTable` (`src/sessions/terminal_epoch.rs`) with five Kani proofs: monotone advancement, the production coordinator/generation identity component, the caller-independent two-generation bound, bounded fallback adoption, and canonical target handles |
 | 1.7     | 2026-11-26 | Added SAFE-12a and `CoordinatedReadyDigest.tla`: only the authority or locally verified history locks the cut digest, provisional Ready reports never count, and the pre-#530 first-Ready-wins rule is an enforced expected-fail |
 | 1.6     | 2026-11-26 | Extracted `ChecksumBasisTracker` (`src/sessions/checksum_basis.rs`) with five Kani proofs, and added `ChecksumBasis.tla` with the `BasisBlind` enforced expected-fail and a non-vacuity witness |
