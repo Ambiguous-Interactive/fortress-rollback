@@ -422,6 +422,10 @@ TIER1_PROOFS=(
     # Ready transcript kernels (src/sessions/ready_transcripts.rs)
     "proof_ready_admission_count_requires_authority_or_lock"
     "proof_ready_transcripts_provisional_never_counts"
+    # Coordinated-drop state kernels (src/sessions/coordinated_drop.rs)
+    "proof_coordinated_drop_fallback_is_not_the_coordinator"
+    "proof_coordinated_drop_effective_coordinator_precedence"
+    "proof_coordinated_drop_backfill_plan_covers_every_frame"
     # Core frame/handle proofs (src/lib.rs)
     "proof_frame_new_valid"
     "proof_frame_null_consistency"

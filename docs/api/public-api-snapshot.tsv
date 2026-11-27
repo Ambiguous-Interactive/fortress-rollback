@@ -2,8 +2,8 @@
 # rustdoc-toolchain=nightly-2026-08-26
 # all-features-excludes=z3-verification,z3-verification-bundled (test/build-only)
 # generated-by=scripts/api/public_api_census.py
-# symbols=2779
-# textual-paths=2773
+# symbols=2782
+# textual-paths=2776
 path	kind	availability	documented	owner	usage-evidence	risk	disposition	alias-of	source
 fortress_rollback	module	no-default+all-features	yes	core	rustdoc-contract	supported-public-contract	keep-supported	-	src/lib.rs
 fortress_rollback::BlankPrediction	struct	no-default+all-features	yes	core	rustdoc-contract	supported-public-contract	keep-supported	-	src/input_queue/prediction.rs
@@ -566,6 +566,7 @@ fortress_rollback::P2PSession::peer_checksum_mismatch_count	function	no-default+
 fortress_rollback::P2PSession::peer_metrics	function	no-default+all-features	yes	sessions	rustdoc-contract	supported-public-contract	keep-supported	-	src/sessions/p2p_session.rs
 fortress_rollback::P2PSession::player_type	function	no-default+all-features	yes	sessions	rustdoc-contract	supported-public-contract	keep-supported	-	src/sessions/p2p_session.rs
 fortress_rollback::P2PSession::poll_remote_clients	function	no-default+all-features	yes	sessions	rustdoc-contract	supported-public-contract	keep-supported	-	src/sessions/p2p_session.rs
+fortress_rollback::P2PSession::recover_confirmed_inputs	function	no-default+all-features	yes	sessions	rustdoc-contract	supported-public-contract	keep-supported	-	src/sessions/p2p_session.rs
 fortress_rollback::P2PSession::remote_player_handle	function	no-default+all-features	yes	sessions	rustdoc-contract	supported-public-contract	keep-supported	-	src/sessions/p2p_session.rs
 fortress_rollback::P2PSession::remote_player_handle_required	function	no-default+all-features	yes	sessions	rustdoc-contract	supported-public-contract	keep-supported	-	src/sessions/p2p_session.rs
 fortress_rollback::P2PSession::remote_player_handles	function	no-default+all-features	yes	sessions	rustdoc-contract	supported-public-contract	keep-supported	-	src/sessions/p2p_session.rs
@@ -2023,6 +2024,7 @@ fortress_rollback::prelude::P2PSession::peer_checksum_mismatch_count	function	no
 fortress_rollback::prelude::P2PSession::peer_metrics	function	no-default+all-features	yes	sessions	prelude-export	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::peer_metrics	src/sessions/p2p_session.rs
 fortress_rollback::prelude::P2PSession::player_type	function	no-default+all-features	yes	sessions	prelude-export	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::player_type	src/sessions/p2p_session.rs
 fortress_rollback::prelude::P2PSession::poll_remote_clients	function	no-default+all-features	yes	sessions	prelude-export	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::poll_remote_clients	src/sessions/p2p_session.rs
+fortress_rollback::prelude::P2PSession::recover_confirmed_inputs	function	no-default+all-features	yes	sessions	prelude-export	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::recover_confirmed_inputs	src/sessions/p2p_session.rs
 fortress_rollback::prelude::P2PSession::remote_player_handle	function	no-default+all-features	yes	sessions	prelude-export	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::remote_player_handle	src/sessions/p2p_session.rs
 fortress_rollback::prelude::P2PSession::remote_player_handle_required	function	no-default+all-features	yes	sessions	prelude-export	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::remote_player_handle_required	src/sessions/p2p_session.rs
 fortress_rollback::prelude::P2PSession::remote_player_handles	function	no-default+all-features	yes	sessions	prelude-export	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::remote_player_handles	src/sessions/p2p_session.rs
@@ -2527,6 +2529,7 @@ fortress_rollback::sessions::p2p_session::P2PSession::peer_checksum_mismatch_cou
 fortress_rollback::sessions::p2p_session::P2PSession::peer_metrics	function	no-default+all-features	no	sessions	compatibility-reexport	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::peer_metrics	src/sessions/p2p_session.rs
 fortress_rollback::sessions::p2p_session::P2PSession::player_type	function	no-default+all-features	no	sessions	compatibility-reexport	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::player_type	src/sessions/p2p_session.rs
 fortress_rollback::sessions::p2p_session::P2PSession::poll_remote_clients	function	no-default+all-features	no	sessions	compatibility-reexport	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::poll_remote_clients	src/sessions/p2p_session.rs
+fortress_rollback::sessions::p2p_session::P2PSession::recover_confirmed_inputs	function	no-default+all-features	no	sessions	compatibility-reexport	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::recover_confirmed_inputs	src/sessions/p2p_session.rs
 fortress_rollback::sessions::p2p_session::P2PSession::remote_player_handle	function	no-default+all-features	no	sessions	compatibility-reexport	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::remote_player_handle	src/sessions/p2p_session.rs
 fortress_rollback::sessions::p2p_session::P2PSession::remote_player_handle_required	function	no-default+all-features	no	sessions	compatibility-reexport	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::remote_player_handle_required	src/sessions/p2p_session.rs
 fortress_rollback::sessions::p2p_session::P2PSession::remote_player_handles	function	no-default+all-features	no	sessions	compatibility-reexport	duplicate-callable-path	keep-compatibility	fortress_rollback::P2PSession::remote_player_handles	src/sessions/p2p_session.rs

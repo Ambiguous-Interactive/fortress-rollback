@@ -20,14 +20,19 @@ use crate::sessions::checksum_basis::ChecksumBasisTracker;
 #[cfg(feature = "hot-join")]
 use crate::sessions::config::ClockFn;
 use crate::sessions::config::{DisconnectBehavior, ProtocolConfig, SaveMode};
+use crate::sessions::coordinated_drop::{
+    backfill_plan, fallback_coordinator, reset_backfill_grid, BackfillGridSource,
+    CoordinatedDropAttempt, CoordinatedDropBackfillPlan, CoordinatedDropFence,
+    CoordinatedDropPhase, CoordinatedDropState, DeferredDropPrepare, DonorAnnouncement,
+    FallbackDropPrepare, PendingTargetCommit, RejectedDropOperation, TerminalTargetWatermark,
+    UnseenCommitEvidence, COORDINATED_DROP_COMMIT_RETRY_WINDOW, COORDINATED_DROP_FALLBACK_GRACE,
+};
 use crate::sessions::event_drain::enqueue_event_bounded;
 use crate::sessions::player_registry::PlayerRegistry;
 use crate::sessions::ready_transcripts::ReadyTranscripts;
 use crate::sessions::session_trait::Session;
 use crate::sessions::sync_health::SyncHealth;
-use crate::sessions::terminal_epoch::{
-    epoch_admission, EpochAdmission, TerminalEpochRecord, TerminalEpochTable,
-};
+use crate::sessions::terminal_epoch::{epoch_admission, EpochAdmission, TerminalEpochRecord};
 use crate::sync_layer::SyncLayer;
 use crate::telemetry::{
     InvariantChecker, InvariantViolation, SessionTelemetry, ViolationKind, ViolationObserver,
@@ -225,146 +230,6 @@ struct RemoteSlotConfirmedBoundObservation {
     lower_floor_consumed: bool,
 }
 
-#[allow(dead_code)] // consumed incrementally by the D14 session state machine below
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum CoordinatedDropPhase {
-    Inventory,
-    Backfill,
-    Ready,
-    Committed,
-}
-
-/// Which donor path produced the currently locked backfill grid.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum BackfillGridSource {
-    /// A start-of-attempt inventory report names a donor covering the range.
-    Inventory,
-    /// A participant announced its current retained range.
-    Announced,
-}
-
-/// One in-flight D14 graceful-drop barrier.
-///
-/// All collections are bounded by `num_players`; backfill payloads retain their
-/// separate wire/queue bounds. The target endpoint is not a participant, so an
-/// explicit removal can complete after the departing process stops polling.
-#[derive(Debug)]
-struct CoordinatedDropAttempt<A> {
-    operation: DropOperationId,
-    target_addr: A,
-    targets: Vec<DropTarget>,
-    participants: Vec<u16>,
-    /// Strict majority of `participants` required for the coordinator to pick a
-    /// cut and for any node to adopt a commit. Fixed at operation start.
-    quorum: usize,
-    local_participant: u16,
-    held_at: Frame,
-    phase: CoordinatedDropPhase,
-    reports: BTreeMap<u16, DropReport>,
-    /// Locked digest plus provisional and counted Ready transcripts.
-    ///
-    /// The typestate in [`ReadyTranscripts`] keeps a pre-digest non-authority
-    /// report provisional: it never counts until an authority or independently
-    /// verified local history locks the digest (#529). Bounded by the
-    /// participant set.
-    ready: ReadyTranscripts,
-    committed_acks: std::collections::BTreeSet<u16>,
-    cut: Option<Frame>,
-    pending_commit: Option<DropCommit>,
-    backfill_chunks: BTreeMap<u16, DropBackfill>,
-    relayed_backfill: BTreeMap<u16, DropBackfill>,
-    next_backfill_chunk: u16,
-    expected_backfill_chunks: Option<u16>,
-    /// Chunk-grid start agreed by the first accepted chunk. Every later chunk
-    /// must share it so chunks from donors with different ranges can never be
-    /// interleaved into one operation.
-    expected_backfill_start: Option<Frame>,
-    /// Which donor path owns the locked grid. An inventory donor takes
-    /// precedence over a current-history announcement, so a late inventory
-    /// report can reset the announced grid and install its canonical layout.
-    backfill_grid_source: Option<BackfillGridSource>,
-    /// Participant that produced every chunk of the locked grid. Once set, a
-    /// chunk naming any other donor is discarded, so two donors that happen to
-    /// share a layout cannot interleave chunks into one range.
-    backfill_donor: Option<u16>,
-    /// Participants that announced their CURRENT retained history can serve a
-    /// backfill range after the start-of-attempt inventory was taken. Bounded
-    /// by `num_players`.
-    donor_announcements: BTreeMap<u16, DonorAnnouncement>,
-    /// Acting coordinator after the deterministic coordinator has been silent
-    /// for [`COORDINATED_DROP_FALLBACK_GRACE`]. `None` means the deterministic
-    /// lowest participant still owns cut selection.
-    acting_coordinator: Option<u16>,
-    /// Most recent message from the deterministic coordinator for this
-    /// operation. Kept on the attempt itself so the bounded cross-operation
-    /// journal cannot evict the evidence and make an alive coordinator look
-    /// silent.
-    coordinator_heard_at: Option<web_time::Instant>,
-    started_at: web_time::Instant,
-    last_broadcast_at: web_time::Instant,
-}
-
-/// A non-coordinator prepare retained while the deterministic coordinator is
-/// silent. After [`COORDINATED_DROP_FALLBACK_GRACE`] the lowest remaining
-/// participant may admit it as acting coordinator.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct FallbackDropPrepare {
-    prepare: DropPrepare,
-    first_seen_at: web_time::Instant,
-    /// Coordinator-heard evidence captured when the candidate was retained.
-    /// A later coordinator message clears the candidate.
-    coordinator_heard_at: Option<web_time::Instant>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct CoordinatedDropFence {
-    operation: DropOperationId,
-    target_generation: u16,
-    cut: Frame,
-}
-
-/// A committed drop whose target endpoint may still be running.
-///
-/// The survivor disconnects the target endpoint locally as soon as the
-/// certificate is applied, but a live process at that address can only learn
-/// its own removal by receiving the commit. Drop-control datagrams are queued
-/// once and are not reliable, so the certificate is retransmitted into the
-/// endpoint's bounded shutdown window until the target acknowledges it, the
-/// retry window elapses, or the endpoint finishes shutting down.
-#[derive(Debug)]
-struct PendingTargetCommit<A> {
-    commit: DropCommit,
-    addr: A,
-    /// Connection id learned from the target before its endpoint was
-    /// disconnected. Direct retransmissions carry it so the live target's
-    /// endpoint accepts them, while a hot-join replacement at the same address
-    /// (a different connection id) ignores them.
-    conn_id: u32,
-    deadline: web_time::Instant,
-    acked: bool,
-}
-
-/// How long a committed certificate is retransmitted to a removed target.
-///
-/// Delivery stays best effort: the survivors stop after this window (or at
-/// endpoint shutdown, whichever comes first) and never wait for an
-/// acknowledgement to freeze their own history. A target that never
-/// acknowledges is bounded by its own peer-disconnect timeout instead.
-const COORDINATED_DROP_COMMIT_RETRY_WINDOW: web_time::Duration = web_time::Duration::from_secs(1);
-
-/// How long a non-coordinator waits after the most recent deterministic
-/// coordinator message before the lowest remaining survivor may act as
-/// coordinator.
-///
-/// The operation deadline is two seconds, so this leaves one second for the
-/// fallback prepare/report/cut/ready/commit exchange. A reachable coordinator's
-/// prepare or report normally arrives within one RTT and refreshes the window;
-/// the grace only releases a coordinator that has been silent for a full
-/// second, whether it was never heard or disappeared after speaking. It never
-/// bypasses quorum, and a later coordinator message still fails closed on a
-/// conflicting cut.
-const COORDINATED_DROP_FALLBACK_GRACE: web_time::Duration = web_time::Duration::from_secs(1);
-
 /// Largest first epoch a fresh acting fallback may adopt from a retained
 /// candidate.
 ///
@@ -378,185 +243,6 @@ const COORDINATED_DROP_FALLBACK_GRACE: web_time::Duration = web_time::Duration::
 /// a hostile future proposal and rejected.
 #[cfg(test)]
 const COORDINATED_DROP_MAX_ADOPTED_EPOCH: u32 = crate::sessions::terminal_epoch::MAX_ADOPTED_EPOCH;
-
-/// One participant's announcement that it can currently serve a drop backfill.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct DonorAnnouncement {
-    start_frame: Frame,
-    chunk_count: u16,
-    /// Digest of every target input at the operation's certified cut, computed
-    /// from the donor's current retained history.
-    cut_digest: u64,
-}
-
-/// Canonical chunk layout for one coordinated-drop backfill range.
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct CoordinatedDropBackfillPlan {
-    input_width: usize,
-    frame_width: usize,
-    frames_per_chunk: usize,
-    frame_count: usize,
-    chunk_count: u16,
-}
-
-/// A prepare this endpoint rejected as superseded by its active operation.
-///
-/// The rejection is retained so retransmitted reports for the losing operation
-/// are answered with a fresh `Superseded` abort. Aborts are best-effort; without
-/// this journal the original rejecter stops retransmitting as soon as the losing
-/// sender observes its abort, and a participant that missed it can only time out
-/// and fail closed.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct RejectedDropOperation {
-    operation: DropOperationId,
-    targets: Vec<DropTarget>,
-}
-
-/// A prepare held until the active committed certificate clears.
-///
-/// The original admission source is retained with the prepare so re-admission
-/// after the deferred phase still validates the same authority. Recomputing the
-/// source as the coordinator at dequeue time would let an intermediate
-/// participant admit a prepare the coordinator never forwarded.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct DeferredDropPrepare {
-    prepare: DropPrepare,
-    source: Option<u16>,
-}
-
-/// One unseen committed certificate awaiting corroboration from another
-/// endpoint. A certificate carries no participant set or signature, so the
-/// only evidence an uninvolved receiver can check is agreement from more than
-/// one endpoint; a single peer must not be able to halt a live session.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct UnseenCommitEvidence {
-    commit: DropCommit,
-    sources: std::collections::BTreeSet<u16>,
-}
-
-/// One exact terminal operation identity retained for a target handle.
-///
-/// Sequences are generation-local per target set and a lower sequence can
-/// still be a live higher-priority attempt, so only an exact identity match is
-/// treated as a replay. The coordinator generation participates so a rejoined
-/// coordinator is not blocked by its predecessor's terminal history.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct TerminalTargetWatermark {
-    target_set_digest: u64,
-    participant_set_digest: u64,
-    coordinator_generation: u16,
-    generation: u16,
-    sequence: u32,
-    terminal_epoch: u32,
-}
-
-/// One authority-generation-scoped, monotone terminal-attempt epoch for a
-/// canonical target handle set.
-///
-/// The epoch is an unbounded-safe replay guard: `next` is the only epoch the
-/// authority will accept for this handle set and generation. Admission
-/// consumes it and advances it, so an operation from an older epoch can never
-/// reopen an attempt even after the bounded exact-identity window has evicted
-/// it (issue #516).
-///
-/// Epochs are scoped to the operation's named coordinator identity. A new
-/// coordinator generation, or a coordinator change after a removal, starts a
-/// fresh epoch space; the older generation's artifacts are rejected by the
-/// per-prepare coordinator-generation fence. Target-generation changes carry
-/// `next` forward for the same handle set, so a reactivated slot cannot reuse
-/// an old epoch. The state machine lives in [`TerminalEpochTable`].
-#[derive(Debug)]
-struct CoordinatedDropState<A> {
-    active: Option<CoordinatedDropAttempt<A>>,
-    queued: std::collections::BTreeSet<PlayerHandle>,
-    /// Queued handles whose request came from the automatic timeout path.
-    /// Explicit `remove_player` requests in the same queue must not be gated
-    /// by the automatic survivor-majority pre-check.
-    queued_automatic: std::collections::BTreeSet<PlayerHandle>,
-    deferred_prepares: VecDeque<DeferredDropPrepare>,
-    /// At most one non-coordinator prepare waiting for the failover grace.
-    fallback_prepare: Option<FallbackDropPrepare>,
-    /// Most recent time each deterministic-coordinator operation was heard.
-    /// A coordinator report may arrive before its prepare, and a coordinator
-    /// that speaks once and then disappears must still release the fallback
-    /// after a full silence window. Bounded by `num_players`.
-    coordinator_heard_operations: VecDeque<(DropOperationId, web_time::Instant)>,
-    committed: BTreeMap<PlayerHandle, CoordinatedDropFence>,
-    /// Canonical connected-era generation retained after a dropped slot
-    /// successfully rejoins. Unlike spectator epochs, this advances exactly
-    /// once per committed drop and once per committed reactivation.
-    membership_generations: BTreeMap<PlayerHandle, u16>,
-    /// Slots certified dropped in the current era that have not reactivated.
-    /// Bounded by `num_players`. A fresh hot-join snapshot imports this set so
-    /// its membership epoch matches the existing survivors' (a locally
-    /// observed disconnect status is not authoritative membership).
-    certified_dropped: std::collections::BTreeSet<PlayerHandle>,
-    closed: VecDeque<DropOperationId>,
-    /// Exact terminal operation identities per target handle.
-    ///
-    /// A target's history survives operations for other targets. The exact
-    /// identity includes the coordinator generation and sequence, so a rejoined
-    /// coordinator and a concurrent lower sequence are not blocked. Bounded by
-    /// two entries per player per handle. This is a secondary fast-path guard:
-    /// the authority-scoped terminal-epoch map below is the unbounded-safe
-    /// replay boundary (issue #516).
-    terminal_targets: BTreeMap<u16, VecDeque<TerminalTargetWatermark>>,
-    /// Authority-scoped monotone terminal-attempt epochs, keyed by the
-    /// canonical target handle set plus the coordinator generation. At most two
-    /// acceptable generations per remote endpoint, so the map is bounded by
-    /// twice the roster (`alloc-bound` at insertion).
-    terminal_epochs: TerminalEpochTable,
-    /// Recently rejected superseded prepares, bounded to one per player.
-    rejected: VecDeque<RejectedDropOperation>,
-    /// Targets of an uncertified attempt that a failed-closed session abandoned.
-    /// Their ordinary disconnect gossip stays shielded (no legacy
-    /// `PeerDropped` without a certificate); bounded by `num_players`.
-    halted_targets: std::collections::BTreeSet<PlayerHandle>,
-    /// Certified removals still being delivered to their (possibly live) target
-    /// endpoint. Bounded by `num_players`: only applied commits insert here and
-    /// a committed target set contains at most one entry per player.
-    retiring: BTreeMap<PlayerHandle, PendingTargetCommit<A>>,
-    /// Unseen certificates seen from one endpoint and awaiting corroboration
-    /// from another. Bounded by `num_players`.
-    unseen_commits: VecDeque<UnseenCommitEvidence>,
-    /// Highest cut already applied for one (coordinator, coordinator
-    /// generation, target-set digest, participant-set digest) identity.
-    /// Retained after the operation leaves the bounded closed journal so a
-    /// delayed duplicate cannot be mistaken for a new removal certificate.
-    /// Bounded by `num_players`.
-    closed_commit_cuts: VecDeque<((u16, u16, u64, u64), Frame)>,
-    /// Most recent applied certificates. A participant that missed the commit
-    /// burst retries its Ready report after the active attempt is gone; a
-    /// closed participant answers that retry with the stored certificate so
-    /// quorum completion cannot strand the last witness. Bounded by
-    /// `num_players`.
-    closed_commits: VecDeque<DropCommit>,
-}
-
-impl<A> Default for CoordinatedDropState<A> {
-    fn default() -> Self {
-        Self {
-            active: None,
-            queued: std::collections::BTreeSet::new(),
-            queued_automatic: std::collections::BTreeSet::new(),
-            deferred_prepares: VecDeque::new(),
-            fallback_prepare: None,
-            coordinator_heard_operations: VecDeque::new(),
-            committed: BTreeMap::new(),
-            membership_generations: BTreeMap::new(),
-            certified_dropped: std::collections::BTreeSet::new(),
-            closed: VecDeque::new(),
-            terminal_targets: BTreeMap::new(),
-            terminal_epochs: TerminalEpochTable::default(),
-            rejected: VecDeque::new(),
-            halted_targets: std::collections::BTreeSet::new(),
-            retiring: BTreeMap::new(),
-            unseen_commits: VecDeque::new(),
-            closed_commit_cuts: VecDeque::new(),
-            closed_commits: VecDeque::new(),
-        }
-    }
-}
 
 /// Receiver-side evidence for deterministic hostile-gossip integration tests.
 #[doc(hidden)]
@@ -1394,6 +1080,21 @@ fn decode_coordinated_drop_backfill_input<I: serde::de::DeserializeOwned>(
     Ok(input)
 }
 
+/// Which effects of the shared frame driver to run.
+///
+/// The normal game-loop call advances the simulation and therefore requires a
+/// local sample for the next frame. The recovery call services already-received
+/// remote inputs at the existing boundary: it must repair and record the
+/// confirmed prefix without requiring, sending, or consuming a local sample,
+/// and without advancing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FrameDriveMode {
+    /// Require local input, send it, and advance the simulation by one frame.
+    Advance,
+    /// Repair and record the confirmed prefix without local input or advance.
+    Recover,
+}
+
 impl<T: Config> P2PSession<T> {
     fn coordinated_drop_now(&self) -> web_time::Instant {
         self.protocol_config
@@ -1763,21 +1464,6 @@ impl<T: Config> P2PSession<T> {
             }
         }
         statuses
-    }
-
-    /// The deterministic acting coordinator: the coordinator itself, or the
-    /// lowest remaining participant after the coordinator's failover grace.
-    fn coordinated_drop_fallback_coordinator(participants: &[u16]) -> Option<u16> {
-        participants.get(1).copied()
-    }
-
-    /// The coordinator that owns cut selection for `attempt`.
-    fn coordinated_drop_effective_coordinator<A>(
-        attempt: &CoordinatedDropAttempt<A>,
-    ) -> Option<u16> {
-        attempt
-            .acting_coordinator
-            .or_else(|| attempt.participants.first().copied())
     }
 
     /// Whether every participant missing from `have` is either the
@@ -3228,7 +2914,7 @@ impl<T: Config> P2PSession<T> {
             if let Some(active) = self.coordinated_drop.active.as_mut() {
                 let coordinator_silent =
                     Self::coordinated_drop_silent_since(active.coordinator_heard_at, now);
-                let fallback = Self::coordinated_drop_fallback_coordinator(&active.participants);
+                let fallback = fallback_coordinator(&active.participants);
                 let adopt_fallback = acting.is_none()
                     && active.acting_coordinator.is_none()
                     && coordinator_silent
@@ -3322,8 +3008,7 @@ impl<T: Config> P2PSession<T> {
                 return Ok(());
             }
             if acting == coordinator
-                || Self::coordinated_drop_fallback_coordinator(&prepare.participants)
-                    != Some(acting)
+                || fallback_coordinator(&prepare.participants) != Some(acting)
                 || source != Some(acting)
             {
                 Self::coordinated_drop_discard_artifact(
@@ -3350,7 +3035,7 @@ impl<T: Config> P2PSession<T> {
             // shorten the already-bounded failover window. Admission stays
             // restricted to the authority that owns the cut, so a relay cannot
             // open a conflicting attempt.
-            let fallback = Self::coordinated_drop_fallback_coordinator(&prepare.participants);
+            let fallback = fallback_coordinator(&prepare.participants);
             if let Some(fallback) = fallback {
                 if fallback != coordinator
                     && Some(fallback) != source
@@ -3696,7 +3381,7 @@ impl<T: Config> P2PSession<T> {
                     && report.receipts.is_empty()
                     && report.exposed_confirmed.is_null();
                 if coordinator_cut_announcement {
-                    let effective = Self::coordinated_drop_effective_coordinator(active);
+                    let effective = active.effective_coordinator();
                     // A conflicting cut from either coordinator authority is a
                     // genuine conflict, even when the other authority currently
                     // owns the locked cut. Check it before any discard branch.
@@ -3711,8 +3396,7 @@ impl<T: Config> P2PSession<T> {
                     }
                     let mut coordinator = effective;
                     if Some(report.participant) != coordinator {
-                        let fallback =
-                            Self::coordinated_drop_fallback_coordinator(&active.participants);
+                        let fallback = fallback_coordinator(&active.participants);
                         // A commit can overtake the cut announcement and stage
                         // the certified cut before the fallback announces it.
                         // Matching that already-staged cut is not a competing
@@ -3815,14 +3499,13 @@ impl<T: Config> P2PSession<T> {
                     );
                     return Ok(());
                 }
-                let coordinator = Self::coordinated_drop_effective_coordinator(active);
+                let coordinator = active.effective_coordinator();
                 // Only the effective coordinator may originate the cut. Other
                 // participants wait for that Ready and then verify it, so two
                 // nodes can never lock different cuts for one operation.
                 if active.cut.is_none() {
                     if Some(report.participant) != coordinator {
-                        let fallback =
-                            Self::coordinated_drop_fallback_coordinator(&active.participants);
+                        let fallback = fallback_coordinator(&active.participants);
                         let may_adopt = active.acting_coordinator.is_none()
                             && coordinator_silent
                             && Some(report.participant) == fallback
@@ -4009,7 +3692,7 @@ impl<T: Config> P2PSession<T> {
                             active
                                 .donor_announcements
                                 .insert(report.participant, announcement);
-                            Self::reset_coordinated_drop_backfill_grid(active);
+                            reset_backfill_grid(active);
                             relay = true;
                         } else if report.cut == existing.start_frame {
                             // Same start: keep the first copy. A DIRECT donor
@@ -4038,7 +3721,7 @@ impl<T: Config> P2PSession<T> {
                         if active.donor_announcements.keys().next().copied()
                             == Some(report.participant)
                         {
-                            Self::reset_coordinated_drop_backfill_grid(active);
+                            reset_backfill_grid(active);
                         }
                         relay = true;
                     },
@@ -4121,24 +3804,12 @@ impl<T: Config> P2PSession<T> {
         })
     }
 
-    /// Drops the buffered chunks and grid locks for an attempt so a new (or
-    /// lower-handle) donor's grid can be accepted. Installed values remain and
-    /// are still subject to the normal overlap validation.
-    fn reset_coordinated_drop_backfill_grid(active: &mut CoordinatedDropAttempt<T::Address>) {
-        active.backfill_chunks.clear();
-        active.relayed_backfill.clear();
-        active.next_backfill_chunk = 0;
-        active.expected_backfill_chunks = None;
-        active.expected_backfill_start = None;
-        active.backfill_grid_source = None;
-        active.backfill_donor = None;
-    }
-
     /// Computes the canonical chunk layout for `[start, cut]` across
     /// `target_count` fixed-width target inputs.
     ///
-    /// Shared by the donor announcement and the chunk sender so both sides
-    /// agree on the exact chunk count a chunk set must have.
+    /// Adapts this session's configured input width to the pure
+    /// [`backfill_plan`] kernel shared by the donor announcement and the chunk
+    /// sender.
     fn coordinated_drop_backfill_plan(
         target_count: usize,
         start: Frame,
@@ -4146,33 +3817,7 @@ impl<T: Config> P2PSession<T> {
     ) -> Result<CoordinatedDropBackfillPlan, DropAbortReason> {
         let input_width = crate::network::codec::encoded_len(&T::Input::default())
             .map_err(|_error| DropAbortReason::ResourceLimit)?;
-        let frame_width = input_width
-            .checked_mul(target_count)
-            .filter(|width| *width > 0)
-            .ok_or(DropAbortReason::ResourceLimit)?;
-        const BACKFILL_BYTES_PER_CHUNK: usize = 1_024;
-        let frames_per_chunk = (BACKFILL_BYTES_PER_CHUNK / frame_width).max(1);
-        let frame_count = usize::try_from(
-            start
-                .distance_to(cut)
-                .ok_or(DropAbortReason::MissingHistory)?,
-        )
-        .ok()
-        .and_then(|distance| distance.checked_add(1))
-        .ok_or(DropAbortReason::ResourceLimit)?;
-        let chunk_count_usize = frame_count
-            .checked_add(frames_per_chunk.saturating_sub(1))
-            .map(|value| value / frames_per_chunk)
-            .ok_or(DropAbortReason::ResourceLimit)?;
-        let chunk_count =
-            u16::try_from(chunk_count_usize).map_err(|_error| DropAbortReason::ResourceLimit)?;
-        Ok(CoordinatedDropBackfillPlan {
-            input_width,
-            frame_width,
-            frames_per_chunk,
-            frame_count,
-            chunk_count,
-        })
+        backfill_plan(input_width, target_count, start, cut)
     }
 
     fn coordinated_drop_send_backfill(
@@ -4510,7 +4155,7 @@ impl<T: Config> P2PSession<T> {
                 .backfill_donor
                 .is_some_and(|locked| locked != backfill.donor)
         {
-            Self::reset_coordinated_drop_backfill_grid(active);
+            reset_backfill_grid(active);
         }
         if active
             .expected_backfill_chunks
@@ -4988,7 +4633,7 @@ impl<T: Config> P2PSession<T> {
             .active
             .as_ref()
             .filter(|active| active.operation == commit.operation)
-            .and_then(Self::coordinated_drop_effective_coordinator);
+            .and_then(CoordinatedDropAttempt::effective_coordinator);
         let conflicting_authority =
             Self::source_has_authority(source, commit.operation.coordinator, effective_authority);
         let Some(active) = self.coordinated_drop.active.as_mut() else {
@@ -5067,7 +4712,7 @@ impl<T: Config> P2PSession<T> {
                     now.saturating_duration_since(heard_at) >= COORDINATED_DROP_FALLBACK_GRACE
                 })
                 && participants.len() >= 3
-                && Self::coordinated_drop_fallback_coordinator(&participants) == source
+                && fallback_coordinator(&participants) == source
         };
         let fence_authority = source == Some(abort.operation.coordinator)
             || (active_matches && self.coordinated_drop_abort_source_is_authority(source))
@@ -5163,7 +4808,7 @@ impl<T: Config> P2PSession<T> {
         if active.acting_coordinator == Some(source) {
             return true;
         }
-        let fallback = Self::coordinated_drop_fallback_coordinator(&active.participants);
+        let fallback = fallback_coordinator(&active.participants);
         if active.participants.len() < 3 || fallback != Some(source) {
             return false;
         }
@@ -5465,8 +5110,7 @@ impl<T: Config> P2PSession<T> {
     fn drive_coordinator_fallback(&mut self) {
         let now = self.coordinated_drop_now();
         if let Some(candidate) = self.coordinated_drop.fallback_prepare.clone() {
-            let acting =
-                Self::coordinated_drop_fallback_coordinator(&candidate.prepare.participants);
+            let acting = fallback_coordinator(&candidate.prepare.participants);
             if Self::coordinated_drop_silent_since(candidate.coordinator_heard_at, now)
                 && candidate.prepare.participants.len() >= 3
                 && acting.is_some()
@@ -5498,8 +5142,7 @@ impl<T: Config> P2PSession<T> {
             active.acting_coordinator.is_none()
                 && active.quorum < active.participants.len()
                 && Self::coordinated_drop_silent_since(active.coordinator_heard_at, now)
-                && Self::coordinated_drop_fallback_coordinator(&active.participants)
-                    == Some(active.local_participant)
+                && fallback_coordinator(&active.participants) == Some(active.local_participant)
                 && now.saturating_duration_since(active.started_at)
                     >= COORDINATED_DROP_FALLBACK_GRACE
         });
@@ -5715,8 +5358,7 @@ impl<T: Config> P2PSession<T> {
             let cut = active.cut;
             let cut_digest = active.ready.digest();
             let local_participant = active.local_participant;
-            let coordinator =
-                Self::coordinated_drop_effective_coordinator(active).unwrap_or(local_participant);
+            let coordinator = active.effective_coordinator().unwrap_or(local_participant);
             let is_coordinator = coordinator == local_participant;
             self.coordinated_drop_send_prepare(
                 DropPrepare {
@@ -5818,8 +5460,7 @@ impl<T: Config> P2PSession<T> {
             .is_some_and(|attempt| {
                 if attempt.cut.is_some()
                     || attempt.reports.len() < attempt.quorum
-                    || Self::coordinated_drop_effective_coordinator(attempt)
-                        != Some(attempt.local_participant)
+                    || attempt.effective_coordinator() != Some(attempt.local_participant)
                 {
                     return false;
                 }
@@ -5976,8 +5617,8 @@ impl<T: Config> P2PSession<T> {
                     // has observed the Ready quorum.
                     return Some(pending);
                 }
-                let is_coordinator = Self::coordinated_drop_effective_coordinator(active)
-                    == Some(active.local_participant);
+                let is_coordinator =
+                    active.effective_coordinator() == Some(active.local_participant);
                 let may_commit = if active.ready.count() == active.participants.len() {
                     true
                 } else if active.acting_coordinator.is_some() {
@@ -6398,6 +6039,68 @@ impl<T: Config> P2PSession<T> {
     /// [`RequestVec`]: crate::RequestVec
     #[must_use = "FortressRequests must be processed to advance the game state"]
     pub fn advance_frame(&mut self) -> FortressResult<RequestVec<T>> {
+        self.drive_frame(FrameDriveMode::Advance)
+    }
+
+    /// Services already-received remote inputs at the current boundary and records
+    /// the finalized confirmed prefix without adding local input or advancing.
+    ///
+    /// Use this when the application has stopped accepting local samples while
+    /// the last remote inputs are still in flight. Once those inputs arrive,
+    /// [`poll_remote_clients`](Self::poll_remote_clients) (or this call) observes
+    /// them, but [`advance_frame`](Self::advance_frame) would refuse with
+    /// [`InvalidRequestKind::MissingLocalInput`] because no sample exists for the
+    /// next frame. This method instead derives the newly confirmed frames,
+    /// returns the same ordered rollback-correction requests that an advance
+    /// would produce, and records the confirmed rows in the replay recorder.
+    ///
+    /// The session frame does not move: a correction re-simulates through the
+    /// already-reached boundary and ends there. Process the returned requests in
+    /// order, then export the recording with [`take_replay`](Self::take_replay)
+    /// or [`into_replay`](Self::into_replay). Calling this method again without
+    /// new confirmed input is safe and does not re-apply a correction.
+    ///
+    /// A hot-join joiner may still receive its existing snapshot-apply batch
+    /// (`LoadGameState` plus the one-frame bridge `AdvanceFrame`); that bridge
+    /// applies the snapshot at the frame the joiner already reached, so the
+    /// session boundary is unchanged.
+    ///
+    /// Local input added with [`add_local_input`](Self::add_local_input) is left
+    /// pending; resume normal play with [`advance_frame`](Self::advance_frame).
+    ///
+    /// # Errors
+    ///
+    /// - Returns [`FortressError::NotSynchronized`] if the session is not running.
+    /// - Returns the same structured frame-sync, spectator-stream, save-state, or
+    ///   internal errors that [`advance_frame`](Self::advance_frame) can return
+    ///   while repairing a misprediction.
+    ///
+    /// [`InvalidRequestKind::MissingLocalInput`]: crate::InvalidRequestKind::MissingLocalInput
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // The game stopped producing local input while a remote row was in flight.
+    /// for request in session.recover_confirmed_inputs()? {
+    ///     // Handle SaveGameState, LoadGameState, and re-simulation AdvanceFrame
+    ///     // requests exactly as in the normal game loop.
+    /// }
+    /// let replay = session.take_replay()?;
+    /// ```
+    #[must_use = "FortressRequests must be processed in order to repair the corrected frames"]
+    pub fn recover_confirmed_inputs(&mut self) -> FortressResult<RequestVec<T>> {
+        self.drive_frame(FrameDriveMode::Recover)
+    }
+
+    /// Shared frame driver for [`Self::advance_frame`] and
+    /// [`Self::recover_confirmed_inputs`].
+    ///
+    /// Every network, confirmation, rollback, and recording effect is shared;
+    /// the mode flips the local-input proof/send, the frame-0 save, the
+    /// simulation advance, and the prediction-stall accounting, so recovery
+    /// cannot drift from the normal path.
+    fn drive_frame(&mut self, mode: FrameDriveMode) -> FortressResult<RequestVec<T>> {
+        let advancing = mode == FrameDriveMode::Advance;
         let _violation_scope = self.scoped_violation_observer();
         // receive info from remote players, trigger events and send messages
         self.poll_remote_clients();
@@ -6483,14 +6186,16 @@ impl<T: Config> P2PSession<T> {
         }
 
         // check if input for all local players is queued (zero-allocation via iterator)
-        for handle in self.player_reg.local_player_handles_iter() {
-            if self
-                .local_inputs
-                .get(handle.as_usize())
-                .and_then(Option::as_ref)
-                .is_none()
-            {
-                return Err(InvalidRequestKind::MissingLocalInput.into());
+        if advancing {
+            for handle in self.player_reg.local_player_handles_iter() {
+                if self
+                    .local_inputs
+                    .get(handle.as_usize())
+                    .and_then(Option::as_ref)
+                    .is_none()
+                {
+                    return Err(InvalidRequestKind::MissingLocalInput.into());
+                }
             }
         }
 
@@ -6523,7 +6228,7 @@ impl<T: Config> P2PSession<T> {
         let lockstep = self.in_lockstep_mode();
 
         // if we are in the first frame, we have to save the state
-        if self.sync_layer.current_frame() == 0 && !lockstep {
+        if advancing && self.sync_layer.current_frame() == 0 && !lockstep {
             trace!("Saving state of first frame");
             requests.push(self.sync_layer.save_current_state());
         }
@@ -6603,55 +6308,72 @@ impl<T: Config> P2PSession<T> {
          *  INPUTS
          */
 
-        // register local inputs in the system and send them (zero-allocation via iterator)
-        for handle in self.player_reg.local_player_handles_iter() {
-            // we have checked that these all exist above, but return error for safety
-            let player_input = self
-                .local_inputs
-                .get_mut(handle.as_usize())
-                .and_then(Option::as_mut)
-                .ok_or_else(|| FortressError::MissingInput {
-                    player_handle: handle,
-                    frame: self.sync_layer.current_frame(),
-                })?;
-            // send the input into the sync layer
-            let actual_frame = self.sync_layer.add_local_input(handle, *player_input);
-            player_input.frame = actual_frame;
-            // if the input has not been dropped
-            if actual_frame != Frame::NULL {
-                self.local_connect_status
+        // Only a normal advance proves, registers, and sends a local sample. The
+        // recovery mode deliberately leaves any pending local input untouched
+        // and services the remote rows that are already present.
+        if advancing {
+            // register local inputs in the system and send them (zero-allocation via iterator)
+            for handle in self.player_reg.local_player_handles_iter() {
+                // we have checked that these all exist above, but return error for safety
+                let player_input = self
+                    .local_inputs
                     .get_mut(handle.as_usize())
-                    .ok_or(FortressError::InternalErrorStructured {
-                        kind: InternalErrorKind::ConnectionStatusIndexOutOfBounds {
-                            player_handle: handle,
-                        },
-                    })?
-                    .last_frame = actual_frame;
-            }
-        }
-
-        // if the local inputs have not been dropped by the sync layer, send to all remote clients
-        if !self
-            .local_inputs
-            .iter()
-            .flatten()
-            .any(|input| input.frame == Frame::NULL)
-        {
-            for endpoint in self.player_reg.remotes.values_mut() {
-                // A timed-out serve's retry backoff is a bounded no-serve window:
-                // the abandoned joiner cannot consume simulation inputs, and
-                // sending them would fill `pending_output` before the retry opens.
-                // Outside that window, reserved-slot input traffic is unchanged
-                // (the joiner's handshake and any pre-commit bridging still work).
-                #[cfg(feature = "hot-join")]
-                if self
-                    .hot_join
-                    .endpoint_is_in_serve_backoff(endpoint, self.sync_layer.last_saved_frame())
-                {
-                    endpoint.send_all_messages(&mut self.socket);
-                    continue;
+                    .and_then(Option::as_mut)
+                    .ok_or_else(|| FortressError::MissingInput {
+                        player_handle: handle,
+                        frame: self.sync_layer.current_frame(),
+                    })?;
+                // send the input into the sync layer
+                let actual_frame = self.sync_layer.add_local_input(handle, *player_input);
+                player_input.frame = actual_frame;
+                // if the input has not been dropped
+                if actual_frame != Frame::NULL {
+                    self.local_connect_status
+                        .get_mut(handle.as_usize())
+                        .ok_or(FortressError::InternalErrorStructured {
+                            kind: InternalErrorKind::ConnectionStatusIndexOutOfBounds {
+                                player_handle: handle,
+                            },
+                        })?
+                        .last_frame = actual_frame;
                 }
-                endpoint.send_input(self.local_inputs.as_slice(), &self.local_connect_status);
+            }
+
+            // if the local inputs have not been dropped by the sync layer, send to all remote clients
+            if !self
+                .local_inputs
+                .iter()
+                .flatten()
+                .any(|input| input.frame == Frame::NULL)
+            {
+                for endpoint in self.player_reg.remotes.values_mut() {
+                    // A timed-out serve's retry backoff is a bounded no-serve window:
+                    // the abandoned joiner cannot consume simulation inputs, and
+                    // sending them would fill `pending_output` before the retry opens.
+                    // Outside that window, reserved-slot input traffic is unchanged
+                    // (the joiner's handshake and any pre-commit bridging still work).
+                    #[cfg(feature = "hot-join")]
+                    if self
+                        .hot_join
+                        .endpoint_is_in_serve_backoff(endpoint, self.sync_layer.last_saved_frame())
+                    {
+                        endpoint.send_all_messages(&mut self.socket);
+                        continue;
+                    }
+                    endpoint.send_input(self.local_inputs.as_slice(), &self.local_connect_status);
+                    endpoint.send_all_messages(&mut self.socket);
+                }
+            }
+        } else {
+            // Recovery has no input send to piggyback the flush on, but the
+            // checksum pass, wait recommendation, and spectator stream above
+            // can queue messages after the poll's own final flush. Send them on
+            // this call so recovery leaves the transport in the same state as
+            // an advance.
+            for endpoint in self.player_reg.remotes.values_mut() {
+                endpoint.send_all_messages(&mut self.socket);
+            }
+            for endpoint in self.player_reg.spectators.values_mut() {
                 endpoint.send_all_messages(&mut self.socket);
             }
         }
@@ -6660,21 +6382,22 @@ impl<T: Config> P2PSession<T> {
          * ADVANCE THE STATE
          */
 
-        let can_advance = if lockstep {
-            // lockstep mode: only advance if the current frame has inputs confirmed from all other
-            // players.
-            self.sync_layer.last_confirmed_frame() == self.sync_layer.current_frame()
-        } else {
-            // rollback mode: advance as long as we aren't past our prediction window
-            let frames_ahead = if self.sync_layer.last_confirmed_frame().is_null() {
-                // we haven't had any frames confirmed, so all frames we've advanced are "ahead"
-                self.sync_layer.current_frame().as_i32()
+        let can_advance = advancing
+            && if lockstep {
+                // lockstep mode: only advance if the current frame has inputs confirmed from all other
+                // players.
+                self.sync_layer.last_confirmed_frame() == self.sync_layer.current_frame()
             } else {
-                // we're not at the first frame, so we have to subtract the last confirmed frame
-                self.sync_layer.current_frame() - self.sync_layer.last_confirmed_frame()
+                // rollback mode: advance as long as we aren't past our prediction window
+                let frames_ahead = if self.sync_layer.last_confirmed_frame().is_null() {
+                    // we haven't had any frames confirmed, so all frames we've advanced are "ahead"
+                    self.sync_layer.current_frame().as_i32()
+                } else {
+                    // we're not at the first frame, so we have to subtract the last confirmed frame
+                    self.sync_layer.current_frame() - self.sync_layer.last_confirmed_frame()
+                };
+                frames_ahead < self.max_prediction as i32
             };
-            frames_ahead < self.max_prediction as i32
-        };
         if can_advance {
             // get correct inputs for the current frame
             let inputs = match self
@@ -6717,7 +6440,7 @@ impl<T: Config> P2PSession<T> {
             if let Some(telemetry) = &self.telemetry {
                 telemetry.on_frame_advance(current);
             }
-        } else {
+        } else if advancing {
             debug!(
                 "Prediction Threshold reached. Skipping on frame {}",
                 self.sync_layer.current_frame()

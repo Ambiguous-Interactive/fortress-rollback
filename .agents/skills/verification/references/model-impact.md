@@ -38,9 +38,20 @@ python3 scripts/verification/model-impact.py render
 python3 scripts/verification/model-impact.py render --check
 ```
 
-`check` fails closed on a missing path, spec, Kani harness, Z3 proof, Rust test, unregistered TLA
-check, expired residual `review_by`, expired waiver, or a stale generated table. Symbol regex
-mismatches are advisory because method-level Rust parsing is out of scope for the first pass.
+`check` fails closed on a missing path, spec, Kani harness, Z3 proof, module-qualified Rust test,
+unregistered TLA check, expired residual `review_by`, expired waiver, or a stale generated table.
+A Rust test entry must match the test's full module path exactly; abbreviated or bare names fail,
+except for library-root tests (in `src/lib.rs`), whose qualified name is the bare function name.
+Cargo target roots are qualified by their crate identity: `src/main.rs` uses the package's default
+binary name (or an explicit `[[bin]] name`), `src/bin/tool.rs` and `src/bin/tool/main.rs` both use
+`tool::...` (again honoring an explicit `[[bin]] name`), and an integration target `tests/foo.rs`
+uses `foo::...`. Same-named tests in different modules stay distinct, and a
+name defined in more than one file fails `check` as ambiguous. A newly added spec counts only when it
+has non-comment, non-whitespace content. A Kani harness name must have exactly one `#[kani::proof]`
+definition; duplicates fail `check` with the defining paths. Symbol regex mismatches are advisory
+because method-level Rust parsing is out of scope for the first pass. Git reads are normalized with
+`git rev-parse --show-prefix`, so `--root` may point below the repository top; a missing base
+revision or an unreadable path fails closed instead of being treated as a new file.
 
 ## Drift taxonomy
 
@@ -48,16 +59,27 @@ mismatches are advisory because method-level Rust parsing is out of scope for th
 | --- | --- | --- |
 | Missing artifact | Manifest names a deleted spec or test | `check` fails |
 | Registration drift | New `#[kani::proof]` not in `verify-kani.sh` | `check` fails |
-| Stale scope | `stale` component changed; no spec/proof update | `affected` fails |
+| Stale scope | `stale` component changed; no substantive spec/proof update | `affected` fails |
 | Unmodeled change | `unmodeled` component changed; no update | `affected` fails |
-| Symbol drift | Mapped `fn` body changed | `affected` fails unless a mapped spec/proof/test changed |
+| Symbol drift | Mapped `fn` body changed | `affected` fails unless a mapped spec/proof/test changed substantively |
+| Comment-only edit | Mapped code changed plus a spec or test changed only by comments | `affected` fails; comments and whitespace are not updates |
 | Path-only drift | Changed file has no mapped symbol | `affected` fails (file-level fallback) |
 | Waived change | Named approver + unexpired `expires` | `affected` passes, prints the waiver |
 | Table drift | Manifest changed, generated block not rendered | `check` and `render --check` fail |
 
 A change to test code alone does not trigger a symbol-mapped component: the gate compares the
 changed line numbers with the mapped function's line range. A file-level mapping with no symbols
-is intentionally coarser and flags any change to that file.
+is intentionally coarser and flags any change to that file. Comment and whitespace edits to a
+mapped spec or proof function do not satisfy the update requirement; the gate compares token and
+literal signatures after stripping comments. Braces inside normal, raw, and C raw strings, char
+literals, and nested comments do not truncate a mapped function's range. A mapped Kani harness is
+located by its `#[kani::proof]` attribute; duplicate or unrelated same-named functions do not
+count. Attribute-only edits outside a function body (for example `#[ignore]`) are not counted as
+proof updates. The lexer-lite scanner associates attribute blocks directly above an item, including
+multi-line blocks such as `#[should_panic(expected = ...)]` and `#[cfg_attr(...)]` and a block that
+shares the `fn` line; a preceding item's attribute never leaks onto the next item. Macro invocation
+and `macro_rules!` token trees are skipped, so macro-generated tests and proofs are not indexed.
+Generated build trees under ignored paths are not scanned for tests.
 
 ## Proof-strength levels
 
@@ -81,6 +103,15 @@ Rules:
    model actually covers the current production behavior.
 4. **Keep the summary honest.** Counts and labels in the PR body and docs must match the artifacts.
 
+## Z3 proof-strength classification
+
+`docs/specs/verification-manifest.toml` has a `[z3_proof_strength]` table that classifies every
+`z3_*` test in `tests/verification/z3.rs` as `code_linked`, `model_only`, `witness_only`, or
+`tautology`. A new test is not complete until it has a row. `model-impact.py check` fails on an
+unclassified or unknown test, a duplicate entry, an invalid strength, or a `code_linked` entry that
+is not mapped to a component's `z3` list. Agent preflight and the CI verification PR job run the
+check. The table records the review decision; it does not decide whether the label is right.
+
 ## Status semantics
 
 - `modeled` -- the listed model/proofs cover the mapped behavior; a change needs an update.
@@ -89,8 +120,9 @@ Rules:
 - `stale` -- a model exists but predates current behavior; a change needs the model update, a
   mapped spec/proof/test update, or a waiver.
 
-The gate accepts any mapped spec/proof/test edit or an active waiver. Status is a review signal
-that decides what the reviewer should demand, not a separate enforcement branch. `unmodeled` and
+The gate accepts a substantive mapped spec/proof/test edit or an active waiver; comment-only and
+whitespace-only edits do not count. Status is a review signal that decides what the reviewer should
+demand, not a separate enforcement branch. `unmodeled` and
 `stale` are deliberate debt markers, not passing grades. The residual `review_by` date forces
 re-triage; an expired date fails `check`.
 
