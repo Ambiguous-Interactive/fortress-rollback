@@ -16,13 +16,13 @@ allow = [
 unused-allowed-license = "allow"
 exceptions = [
     { allow = ["MPL-2.0"], crate = "gdextension-api@0.5.1" },
-    { allow = ["MPL-2.0"], crate = "godot@0.5.5" },
-    { allow = ["MPL-2.0"], crate = "godot-bindings@0.5.5" },
-    { allow = ["MPL-2.0"], crate = "godot-cell@0.5.5" },
-    { allow = ["MPL-2.0"], crate = "godot-codegen@0.5.5" },
-    { allow = ["MPL-2.0"], crate = "godot-core@0.5.5" },
-    { allow = ["MPL-2.0"], crate = "godot-ffi@0.5.5" },
-    { allow = ["MPL-2.0"], crate = "godot-macros@0.5.5" },
+    { allow = ["MPL-2.0"], crate = "godot@0.5.6" },
+    { allow = ["MPL-2.0"], crate = "godot-bindings@0.5.6" },
+    { allow = ["MPL-2.0"], crate = "godot-cell@0.5.6" },
+    { allow = ["MPL-2.0"], crate = "godot-codegen@0.5.6" },
+    { allow = ["MPL-2.0"], crate = "godot-core@0.5.6" },
+    { allow = ["MPL-2.0"], crate = "godot-ffi@0.5.6" },
+    { allow = ["MPL-2.0"], crate = "godot-macros@0.5.6" },
 ]
 
 [licenses.private]
