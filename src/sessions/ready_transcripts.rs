@@ -425,8 +425,13 @@ mod kani_proofs {
 
     /// Promotion counts exactly the provisional reports whose digest matches
     /// the established lock; a mismatch is discarded (the #529 regression).
+    ///
+    /// Both collections hold at most one entry here, so the BTreeMap drop and
+    /// navigation loops need four iterations. The default bound of eight makes
+    /// CBMC explore redundant deallocation paths and exceeds the per-proof
+    /// timeout on CI; four keeps the same symbolic property tractable.
     #[kani::proof]
-    #[kani::unwind(8)]
+    #[kani::unwind(4)]
     fn proof_ready_transcripts_promotion_requires_matching_digest() {
         let cut = Frame::new(0);
         let provisional_digest: u64 = kani::any();

@@ -422,7 +422,6 @@ TIER1_PROOFS=(
     # Ready transcript kernels (src/sessions/ready_transcripts.rs)
     "proof_ready_admission_count_requires_authority_or_lock"
     "proof_ready_transcripts_provisional_never_counts"
-    "proof_ready_transcripts_promotion_requires_matching_digest"
     # Core frame/handle proofs (src/lib.rs)
     "proof_frame_new_valid"
     "proof_frame_null_consistency"
@@ -504,6 +503,11 @@ TIER1_PROOFS=(
 TIER2_PROOFS=(
     # Checksum basis adoption kernel (bounded snapshot map)
     "proof_checksum_basis_adopt_preserves_tokens_above_snapshot"
+    # Ready transcript promotion kernel (src/sessions/ready_transcripts.rs).
+    # Collection-aware: the provisional -> locked transition moves entries
+    # across two BTreeMaps and a BTreeSet, so it takes ~30s locally under the
+    # harness's unwind(4) bound and does not fit the Tier 1 <30s budget.
+    "proof_ready_transcripts_promotion_requires_matching_digest"
     # Core frame proofs (src/lib.rs)
     "proof_frame_add_small_safe"
     "proof_frame_sub_frames_correct"
