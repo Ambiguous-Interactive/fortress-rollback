@@ -1,374 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795748397076,
+  "lastUpdate": 1795751974659,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Informational Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "eefebb84cf33f43200593049962f7a1ae94c68a8",
-          "message": "test: kill the missing-report disjunction mutant in drive_coordinated_drop (#471)\n\n## Description\n\nMain's merge-group mutation run on `0980729` reported one survivor:\n\n```text\nMISSED src/sessions/p2p_session.rs:3045:21: replace || with && in\n       P2PSession<T>::drive_coordinated_drop\n```\n\nThe condition distinguishes \"reports complete\" from \"every missing\nreporter is unresponsive\":\n`A || B` fails closed when all missing reporters are unresponsive, `A &&\nB` waits forever. No\ntest reached the `A = false, B = true` branch — a missing donor with\nonly unresponsive reporters.\n\nNew test\n`drive_coordinated_drop_fails_closed_when_only_unresponsive_reports_are_missing`\nconstructs that exact state (participants `{0,2,3}`, report from 2,\nendpoint 3 down, cut beyond\nevery receipt) and asserts the terminal `MissingHistory` fail-closed\nplus its diagnostic. Verified\nred on the mutant (`replace || with &&` locally) and green on the fixed\ncode.\n\n## Type of Change\n\n- [x] 🧪 Test (adding or updating tests)\n\n## Checklist\n\n### Required\n\n- [x] I have followed the **zero-panic policy**\n- [x] I have added a test that kills the survivor\n- [x] `cargo fmt && cargo clippy --workspace --all-targets --features\ntokio,json,hot-join -- -D warnings` passes\n- [x] `cargo nextest run` passes\n\n## Testing\n\n- New test passes with the fix and fails with the mutant applied\nmanually.\n- `cargo nextest run --workspace --features hot-join,tokio,json`: 3552\npassed, 76 skipped.\n- `python3 scripts/ci/agent-preflight.py --full`: exit 0.\n\n## Related Issues\n\nFixes the merge-group mutation survivor on #469 (refs #460).",
-          "timestamp": "2026-11-18T02:31:04Z",
-          "tree_id": "b14fb87ad13e2d9a0d6ebe399868aa3f1aa29db3",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/eefebb84cf33f43200593049962f7a1ae94c68a8"
-        },
-        "date": 1794969827413,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Frame/new",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_null",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_valid",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/10",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/100",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1000",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/4",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/8",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/16",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/64",
-            "value": 39,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/256",
-            "value": 107,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/4",
-            "value": 28,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/8",
-            "value": 30,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/16",
-            "value": 32,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/64",
-            "value": 47,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/256",
-            "value": 124,
-            "range": "± 5",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/4",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/8",
-            "value": 24,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/16",
-            "value": 24,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/64",
-            "value": 25,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/256",
-            "value": 29,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/8",
-            "value": 78,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/8",
-            "value": 97,
-            "range": "± 5",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/8",
-            "value": 126,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/16",
-            "value": 140,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/16",
-            "value": 202,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/16",
-            "value": 293,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/32",
-            "value": 252,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/32",
-            "value": 359,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/32",
-            "value": 542,
-            "range": "± 19",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/8",
-            "value": 140,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/8",
-            "value": 155,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/8",
-            "value": 190,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/16",
-            "value": 276,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/16",
-            "value": 332,
-            "range": "± 10",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/16",
-            "value": 427,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/32",
-            "value": 480,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/32",
-            "value": 579,
-            "range": "± 13",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/32",
-            "value": 785,
-            "range": "± 16",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/idle",
-            "value": 324,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/active",
-            "value": 451,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/fighting",
-            "value": 653,
-            "range": "± 14",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/analog",
-            "value": 791,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/2",
-            "value": 95,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/4",
-            "value": 134,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/2",
-            "value": 428,
-            "range": "± 10",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/4",
-            "value": 708,
-            "range": "± 17",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/7",
-            "value": 993,
-            "range": "± 24",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "P2PSession/metrics",
-            "value": 37,
-            "range": "± 9",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message/encoded_len",
-            "value": 2,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=2",
-            "value": 20,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=4",
-            "value": 65,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=8",
-            "value": 243,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=16",
-            "value": 962,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=8",
-            "value": 50899,
-            "range": "± 529",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=16",
-            "value": 240478,
-            "range": "± 1660",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -18299,6 +17933,372 @@ window.BENCHMARK_DATA = {
             "name": "H-16P advance_frame/warmed_mesh/N=16",
             "value": 232086,
             "range": "± 2047",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "d76bf3b295ad539ef6cefd7b40d00bd1a9ba7cb2",
+          "message": "test: bound the ReadyTranscripts promotion proof (#597) (#598)\n\n## Description\n\nFixes the red `main` at `7df92003` (CI - Verification / Kani Tier 1).\nThe new\n`proof_ready_transcripts_promotion_requires_matching_digest` harness\ncarried two fully symbolic\n`u64` digests through three BTree collections at the default `unwind(8)`\nbound. CBMC spent 480.6 s\nand hit the 300 s per-proof timeout; the harness itself reported\n`VERIFICATION:- SUCCESSFUL`, so\nthis is tractability, not a counterexample.\n\n- Lower the harness bound to `unwind(4)`: the harness stages at most one\nentry in each of the three\nBTree collections, so their drop/navigation loops unroll three times and\nthe `#[kani::unwind(4)]`\nloop assertion holds. Local solve drops from >420 s (killed) to 30.8 s.\n- Move the collection-aware harness from `TIER1_PROOFS` to\n`TIER2_PROOFS`. Tier 1 is defined as\n`<30 s each`; 30.8 s local is ~57 s on CI at the measured 1.86x local/CI\nratio, so Tier 2\n(30 s-2 min, 300 s per-proof budget) is the honest classification. The\ntwo pure kernels stay in\n  Tier 1.\n- No production code, behavior, wire format, or public API change. The\nharness keeps the same two\n  symbolic `u64` inputs and the same assertions.\n\nSession: `ses_de5049797ffeJI52U1KsRjM8PE` (red-main fix-forward).\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [ ] `none` — no mapped production path or symbol changed\n- [x] `updated: Kani harness + tier registration` — the\n`provisional-ready` promotion harness bound\nand registration are updated; `python3\nscripts/verification/model-impact.py affected --base\norigin/main` reports no mapped production impact, and `model-impact.py\ncheck` passes.\n- [ ] `waived: <reason + approver>` — not applicable\n\n- [x] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (state which below).\n\n**RED mutation:** removing the digest-equality guard in\n`promote_matching` (so any provisional\nreport with the selected cut counts) makes the harness fail 1 of 3,492\nchecks at\n`\"the provisional report counts only when its digest matches the lock\"`\n(`src/sessions/ready_transcripts.rs:448`, 26.9 s solve). The mutation\nwas restored; the committed\ndiff contains only the unwind bound/comment and the tier registration.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**:\n  - No `unwrap()` in production code\n  - No `expect()` in production code\n  - No `panic!()` or `todo!()`\n  - All fallible operations return `Result`\n- [x] I have added tests that prove my fix is effective or my feature\nworks — the existing harness is\n  the test; its RED mutation and restored green are recorded above.\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no\n  warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly — the harness's\n`#[kani::unwind]` rationale is\n  documented in place; no user-facing docs describe tiers.\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes —\nnot applicable: internal\n  verification tooling, no public API or behavior.\n- [ ] I have updated relevant examples in the `examples/` directory —\nnot applicable.\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- No new test cases. The `provisional-ready` promotion harness keeps its\ntwo fully symbolic `u64`\ninputs and all assertions (match counts, mismatch is discarded not\nrelabeled, wrong cut is\n  rejected); only the unwind bound changes.\n\n**Evidence (exact commands):**\n\n```text\ncargo fmt --all -- --check                                      PASS\ncargo c (clippy --workspace --all-targets --features tokio,json) PASS (no warnings)\ncargo tf                                                        3009 passed, 512 skipped\ncargo tfull                                                     3810 passed, 0 failed, 77 skipped (54 s)\ncargo test --doc                                                160 passed, 51 ignored\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features hot-join,tokio,json,sync-send --document-private-items\n                                                                PASS\ncargo check --target wasm32-unknown-unknown --no-default-features PASS\ncargo check -p wasm-browser-smoke --features hot-join --target wasm32-unknown-unknown --lib --tests\n                                                                PASS\n./scripts/verification/verify-kani.sh --quick --tier 1          77 passed, 0 failed (263 s)\n./scripts/verification/verify-kani.sh --quick --tier 2 --part 1 --parts 6\n                                                                7 passed, 0 failed (62 s; includes the moved harness)\n./scripts/verification/verify-kani.sh --quick --harness proof_ready_transcripts_promotion_requires_matching_digest\n                                                                1 passed, 0 failed (37 s)\n./scripts/verification/check-kani-coverage.sh                   139 / 139 proofs registered\npython3 scripts/verification/model-impact.py check              OK (11 components)\nbash scripts/ci/check-shell-portability.sh                      PASS (51 scripts)\n.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix PASS\npython3 scripts/hooks/check-plan-hygiene.py                     PASS\n```\n\n**Mutation evidence:**\n\n```text\nmutated: if transcript.cut() == lock.cut { ... }      (digest-equality guard removed)\n./scripts/verification/verify-kani.sh --quick --harness proof_ready_transcripts_promotion_requires_matching_digest --verbose\n  EXIT 1, 1 of 3492 checks failed\n  Failed Checks: \"the provisional report counts only when its digest matches the lock\"\n  src/sessions/ready_transcripts.rs:448, Verification Time: 26.9 s\nrestored: `git diff` contains only the 11 insertions / 2 deletions described above\n```\n\nKani tiers are push-only (`if: github.event_name != 'pull_request'` in\n`.github/workflows/ci-verification.yml`); the PR's `Kani cfg Compile`\njob type-checks the harness,\nlocal Tier 1, Tier 2 part 1/6, and the single-harness run cover it here,\nand main CI executes every\ntier immediately after merge.\n\n## Risks and rollback\n\n- **Risk:** Kani tiers are push-only, so pull-request CI does not\nexecute the harness. It remains\ntype-checked by `Kani cfg Compile`, locally verified at the same bound\n(Tier 1, Tier 2 part 1/6,\nand the single-harness run), and main CI runs every tier after merge. If\nCI measures over\n2 minutes, a follow-up can re-tier to Tier 3; the 300 s per-proof budget\nstill applies.\n- **Residual risk:** the harness's `unwind(4)` assumes the one-entry\nstaging documented in the\ncomment. A future harness that stages more entries must raise the bound;\nthe unwinding assertions\n  fail loudly if it does not.\n- **Rollback:** revert the squash commit. No persistent state, wire\nformat, or public API changes.\n\n## Related Issues\n\nFixes #597. Relates to #576 (phase 2 kernel extraction) and #596 (the\nmerge that introduced the\nharness). Refs #529 for the provisional-`Ready` gate.",
+          "timestamp": "2026-11-27T03:46:57Z",
+          "tree_id": "8ce21258b934c3eb8d752887c46c05832338ed99",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/d76bf3b295ad539ef6cefd7b40d00bd1a9ba7cb2"
+        },
+        "date": 1795751974534,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Frame/new",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_null",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_valid",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/10",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/100",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1000",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/4",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/8",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/16",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/64",
+            "value": 39,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/256",
+            "value": 107,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/4",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/8",
+            "value": 29,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/16",
+            "value": 32,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/64",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/256",
+            "value": 124,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/4",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/8",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/16",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/64",
+            "value": 25,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/256",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/8",
+            "value": 79,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/8",
+            "value": 98,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/8",
+            "value": 131,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/16",
+            "value": 147,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/16",
+            "value": 206,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/16",
+            "value": 313,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/32",
+            "value": 252,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/32",
+            "value": 380,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/32",
+            "value": 568,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/8",
+            "value": 143,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/8",
+            "value": 176,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/8",
+            "value": 208,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/16",
+            "value": 277,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/16",
+            "value": 333,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/16",
+            "value": 411,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/32",
+            "value": 480,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/32",
+            "value": 581,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/32",
+            "value": 786,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/idle",
+            "value": 324,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/active",
+            "value": 442,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/fighting",
+            "value": 625,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/analog",
+            "value": 800,
+            "range": "± 39",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/2",
+            "value": 95,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/4",
+            "value": 133,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/2",
+            "value": 416,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/4",
+            "value": 678,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/7",
+            "value": 983,
+            "range": "± 28",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "P2PSession/metrics",
+            "value": 36,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message/encoded_len",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=2",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=4",
+            "value": 62,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=8",
+            "value": 227,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=16",
+            "value": 1038,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=8",
+            "value": 49134,
+            "range": "± 275",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=16",
+            "value": 231663,
+            "range": "± 791",
             "unit": "ns/iter"
           }
         ]
