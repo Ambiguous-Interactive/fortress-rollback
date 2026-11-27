@@ -484,6 +484,11 @@ must not pause network polling or event draining.
 2. Add input for **all** local players before calling `advance_frame()`
 3. Process **all** requests in the order received
 
+If the game stops producing local input while remote input is still in flight, call
+`recover_confirmed_inputs()` once those rows arrive instead of `advance_frame()`. It returns the
+ordered correction requests, records the finalized prefix for replay export, and does not advance.
+See [Finalizing After Local Input Stops](Replay#finalizing-after-local-input-stops).
+
 ---
 
 ## Handling Requests

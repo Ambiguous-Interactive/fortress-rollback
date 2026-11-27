@@ -20,6 +20,7 @@ Record P2P matches and play them back deterministically. Use replays for match r
 6. [Use Cases](#use-cases)
 7. [Common Patterns](#common-patterns)
    - [into_replay vs take_replay](#into_replay-vs-take_replay)
+   - [Finalizing After Local Input Stops](#finalizing-after-local-input-stops)
    - [Replay Browser with Metadata](#replay-browser-with-metadata)
 
 ---
@@ -251,6 +252,7 @@ should use `without_byte_limit()`.
 | `is_recording()` | Check if recording is enabled |
 | `into_replay()` | Consume the session and extract the `Replay` |
 | `take_replay()` | Extract the `Replay` without consuming the session |
+| `recover_confirmed_inputs()` | Service received remote input at the current boundary, record the finalized confirmed prefix, and return the ordered correction requests without local input or advancing |
 
 ---
 
@@ -275,6 +277,31 @@ should use `without_byte_limit()`.
 
 !!! note
     `take_replay()` consumes the recorded data. A second call returns an error because the recording has already been taken.
+
+### Finalizing After Local Input Stops
+
+A game can stop accepting local input while its last remote rows are still in flight. Once those
+rows arrive, `advance_frame()` refuses with `InvalidRequestKind::MissingLocalInput` because no local
+sample exists for the next frame. `recover_confirmed_inputs()` is the supported path for that state:
+it services the inputs already received, returns the ordered rollback-correction requests at the
+current boundary, and records the newly confirmed prefix in the replay. It never adds a local
+sample and never advances past the current boundary.
+
+```rust
+// The game stopped producing local input while the last remote rows arrived.
+for request in session.recover_confirmed_inputs()? {
+    handle_requests(request); // LoadGameState / re-simulation AdvanceFrame / SaveGameState
+}
+
+// The finalized prefix is now in the recording.
+let replay = session.take_replay()?;
+std::fs::write("match.replay", replay.to_bytes()?)?;
+```
+
+Process the correction requests in order. A repeated call without new confirmed input is safe and
+does not repeat the rollback. Local input added with `add_local_input` stays pending; call
+`advance_frame` to resume normal play. If the last remote row never arrives, it stays out of the
+replay rather than being replaced by a placeholder.
 
 ### Replay Browser with Metadata
 
