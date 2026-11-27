@@ -861,14 +861,17 @@ survivor after the deterministic coordinator, `effective_coordinator` still
 prefers an adopted acting coordinator, and `reset_backfill_grid` still clears
 only the uninstalled chunk-grid identity. The canonical backfill plan is now a
 pure kernel over an explicit input width: given `[start, cut]` it computes the
-checked 1 KiB chunk grid, and its three Kani harnesses prove that the failover
-authority is never the deterministic coordinator for a duplicate-free
+checked chunk grid (about 1 KiB per chunk, or one frame larger than 1 KiB when a
+single frame exceeds the target), and its three Kani harnesses prove that the
+failover authority is never the deterministic coordinator for a duplicate-free
 participant list, that an acting coordinator's precedence is total, and that
-the planned chunk grid covers every frame in the inclusive range while the
-frame width and `u16` chunk index stay representable. The state collections
-themselves remain covered by the session tests and the bounded-journal
-insertion sites; Kani checks the arithmetic and authority kernels, not the
-heap-backed maps.
+the planned chunk count is the exact ceiling covering every frame in the
+inclusive range while the frame width and `u16` chunk index stay representable.
+The backfill harness bounds symbolic input widths to 1..=64 bytes and 1..=8
+targets over frames 0..=4096; wider envelopes and negative frames rely on the
+checked conversions rather than the proof. The state collections themselves
+remain covered by the session tests and the bounded-journal insertion sites;
+Kani checks the arithmetic and authority kernels, not the heap-backed maps.
 
 `specs/tla/CoordinatedPeerDrop.tla` models two serialized operation IDs over two
 membership/target eras with independent per-survivor commit. The runtime defers

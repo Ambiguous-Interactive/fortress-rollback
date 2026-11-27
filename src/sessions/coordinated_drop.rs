@@ -28,7 +28,7 @@ use crate::sessions::terminal_epoch::TerminalEpochTable;
 use crate::Frame;
 use crate::PlayerHandle;
 
-#[allow(dead_code)] // consumed incrementally by the D14 session state machine below
+#[allow(dead_code)] // consumed incrementally by the D14 session state machine in `p2p_session`
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum CoordinatedDropPhase {
     Inventory,
@@ -408,9 +408,10 @@ pub(crate) fn reset_backfill_grid<A>(active: &mut CoordinatedDropAttempt<A>) {
 /// on the exact chunk count a chunk set must have. `input_width` is the
 /// encoded width of one target input; the caller derives it from `Config`.
 ///
-/// Backfill payloads are capped at 1 KiB per chunk. Every multiplication and
-/// addition is checked, and a layout that cannot be represented by the
-/// `u16` chunk index fails closed with [`DropAbortReason::ResourceLimit`].
+/// Chunks target 1 KiB; a single frame wider than that becomes its own chunk.
+/// Every multiplication and addition is checked, and a layout that cannot be
+/// represented by the `u16` chunk index fails closed with
+/// [`DropAbortReason::ResourceLimit`].
 pub(crate) fn backfill_plan(
     input_width: usize,
     target_count: usize,
@@ -475,6 +476,17 @@ mod tests {
         assert_eq!(plan.frames_per_chunk, 256);
         assert_eq!(plan.frame_count, 10);
         assert_eq!(plan.chunk_count, 1);
+
+        // The ceiling is exact: one full chunk covers exactly 256 frames, and
+        // frame 257 starts the second chunk.
+        let exact = backfill_plan(4, 1, Frame::new(0), Frame::new(255))
+            .expect("a full chunk needs no extra chunk");
+        assert_eq!(exact.frame_count, 256);
+        assert_eq!(exact.chunk_count, 1);
+        let next = backfill_plan(4, 1, Frame::new(0), Frame::new(256))
+            .expect("one frame past a full chunk needs a second chunk");
+        assert_eq!(next.frame_count, 257);
+        assert_eq!(next.chunk_count, 2);
     }
 
     #[test]
@@ -646,11 +658,17 @@ mod kani_proofs {
             plan.frame_count,
             usize::try_from(cut - start).expect("non-negative") + 1
         );
-        let covered = u64::from(plan.chunk_count)
-            * u64::try_from(plan.frames_per_chunk).expect("frames per chunk fits u64");
+        let chunk_count = u64::from(plan.chunk_count);
+        let frames_per_chunk =
+            u64::try_from(plan.frames_per_chunk).expect("frames per chunk fits u64");
+        let frame_count = u64::try_from(plan.frame_count).expect("frame count fits");
         assert!(
-            covered >= u64::try_from(plan.frame_count).expect("frame count fits"),
+            chunk_count * frames_per_chunk >= frame_count,
             "the chunk grid covers every frame in the inclusive range"
+        );
+        assert!(
+            (chunk_count - 1) * frames_per_chunk < frame_count,
+            "the chunk count is the exact ceiling"
         );
     }
 }
