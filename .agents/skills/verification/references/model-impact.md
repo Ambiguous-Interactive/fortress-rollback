@@ -73,8 +73,9 @@ literals, and nested comments do not truncate a mapped function's range. A mappe
 located by its `#[kani::proof]` attribute; duplicate or unrelated same-named functions do not
 count. Attribute-only edits outside a function body (for example `#[ignore]`) are not counted as
 proof updates. The lexer-lite scanner associates single-line attributes directly above an item;
-multi-line attribute blocks are a known limit tracked in #606. Generated build trees under ignored
-paths are not scanned for tests.
+multi-line attribute blocks are a known limit tracked in #606. Macro invocation and `macro_rules!`
+token trees are skipped, so macro-generated tests and proofs are not indexed. Generated build trees
+under ignored paths are not scanned for tests.
 
 ## Proof-strength levels
 
