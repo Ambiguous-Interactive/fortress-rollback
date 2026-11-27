@@ -518,11 +518,6 @@ TEST_ATTR_RE = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
 KANI_ATTR_RE = re.compile(r"#\[kani::proof(?:\(|\])")
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[()\[\]{}<>;!]")
 
-# An attribute block is contiguous, so a bound keeps a malformed file from
-# walking back through the whole item. Sixty-four lines is far beyond any
-# legal attribute list.
-ATTRIBUTE_LINE_LIMIT = 64
-
 
 def _has_attribute(
     lines: list[str],
@@ -561,8 +556,10 @@ def _has_attribute(
         if closing >= 0:
             segment = segment[: closing + 1]
     index = line_number - 2
-    examined = 0
-    while examined < ATTRIBUTE_LINE_LIMIT:
+    # Every pass consumes one line, so the walk terminates at the nearest
+    # non-attribute line or at the start of the file without truncating a
+    # legal (arbitrarily long) attribute block.
+    while True:
         if not segment.strip():
             while index >= 0 and not lines[index].strip():
                 index -= 1
@@ -570,7 +567,6 @@ def _has_attribute(
                 return False
             segment = lines[index]
             index -= 1
-            examined += 1
             continue
         balance = segment.count("[") - segment.count("]")
         if balance != 0:
@@ -582,7 +578,6 @@ def _has_attribute(
                 return False
             segment = lines[index] + "\n" + segment
             index -= 1
-            examined += 1
             continue
         stripped = segment.strip()
         if not (stripped.startswith("#") and stripped.endswith("]")):

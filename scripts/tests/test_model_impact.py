@@ -422,6 +422,18 @@ def test_multiline_attribute_with_a_brace_in_a_string_is_indexed(tmp_path: Path)
     assert "helpers::attributed_test" in index
 
 
+def test_long_multiline_attribute_is_indexed(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    interior = "".join(f"    key{index} = {index},\n" for index in range(70))
+    helpers.write_text(
+        "#[test]\n" f"#[marker {{\n{interior}}}]\n" "fn attributed_test() {}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "helpers::attributed_test" in index
+
+
 def test_module_path_uses_explicit_binary_target_names(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     (repo / "Cargo.toml").write_text(
