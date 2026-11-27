@@ -6434,15 +6434,20 @@ impl<T: Config> P2PSession<T> {
     /// or [`into_replay`](Self::into_replay). Calling this method again without
     /// new confirmed input is safe and does not re-apply a correction.
     ///
+    /// A hot-join joiner may still receive its existing snapshot-apply batch
+    /// (`LoadGameState` plus the one-frame bridge `AdvanceFrame`); that bridge
+    /// applies the snapshot at the frame the joiner already reached, so the
+    /// session boundary is unchanged.
+    ///
     /// Local input added with [`add_local_input`](Self::add_local_input) is left
     /// pending; resume normal play with [`advance_frame`](Self::advance_frame).
     ///
     /// # Errors
     ///
     /// - Returns [`FortressError::NotSynchronized`] if the session is not running.
-    /// - Returns the same structured frame-sync or internal errors that
-    ///   [`advance_frame`](Self::advance_frame) can return while repairing a
-    ///   misprediction.
+    /// - Returns the same structured frame-sync, spectator-stream, save-state, or
+    ///   internal errors that [`advance_frame`](Self::advance_frame) can return
+    ///   while repairing a misprediction.
     ///
     /// [`InvalidRequestKind::MissingLocalInput`]: crate::InvalidRequestKind::MissingLocalInput
     ///
@@ -6465,8 +6470,9 @@ impl<T: Config> P2PSession<T> {
     /// [`Self::recover_confirmed_inputs`].
     ///
     /// Every network, confirmation, rollback, and recording effect is shared;
-    /// the mode flips only the local-input proof/send and the simulation
-    /// advance, so recovery cannot drift from the normal path.
+    /// the mode flips the local-input proof/send, the frame-0 save, the
+    /// simulation advance, and the prediction-stall accounting, so recovery
+    /// cannot drift from the normal path.
     fn drive_frame(&mut self, mode: FrameDriveMode) -> FortressResult<RequestVec<T>> {
         let advancing = mode == FrameDriveMode::Advance;
         let _violation_scope = self.scoped_violation_observer();
@@ -6731,6 +6737,18 @@ impl<T: Config> P2PSession<T> {
                     endpoint.send_input(self.local_inputs.as_slice(), &self.local_connect_status);
                     endpoint.send_all_messages(&mut self.socket);
                 }
+            }
+        } else {
+            // Recovery has no input send to piggyback the flush on, but the
+            // checksum pass, wait recommendation, and spectator stream above
+            // can queue messages after the poll's own final flush. Send them on
+            // this call so recovery leaves the transport in the same state as
+            // an advance.
+            for endpoint in self.player_reg.remotes.values_mut() {
+                endpoint.send_all_messages(&mut self.socket);
+            }
+            for endpoint in self.player_reg.spectators.values_mut() {
+                endpoint.send_all_messages(&mut self.socket);
             }
         }
 
