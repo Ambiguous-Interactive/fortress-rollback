@@ -277,8 +277,16 @@ def _rust_files(root: Path) -> list[Path]:
     else:
         for base_name in ("src", "tests"):
             base = root / base_name
-            if base.is_dir():
-                files.extend(base.rglob("*.rs"))
+            if not base.is_dir():
+                continue
+            for path in base.rglob("*.rs"):
+                parts = path.relative_to(root).parts
+                if any(
+                    part.startswith("target") or part in {".git", "node_modules"}
+                    for part in parts
+                ):
+                    continue
+                files.append(path)
     return sorted(set(files))
 
 
@@ -553,30 +561,32 @@ def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
     ]
 
 
-def kani_proof_index(root: Path) -> dict[str, tuple[Path, ...]]:
-    """Map ``#[kani::proof]`` harness names to every defining file."""
-    found: dict[str, set[Path]] = {}
+def kani_proof_index(root: Path) -> dict[str, tuple[tuple[Path, tuple[str, ...]], ...]]:
+    """Map ``#[kani::proof]`` harness names to every (file, module) definition."""
+    found: dict[str, list[tuple[Path, tuple[str, ...]]]] = {}
     for path in _rust_files(root):
         entries, lines = _function_entries(_read(path) or "")
-        for _module, name, line in entries:
+        for module, name, line in entries:
             if _has_attribute(lines, line, KANI_ATTR_RE):
-                found.setdefault(name, set()).add(path)
+                found.setdefault(name, []).append((path, module))
+    return {name: tuple(sorted(locations)) for name, locations in found.items()}
+
+
+def test_index(root: Path) -> dict[str, tuple[Path, ...]]:
+    """Map module-qualified Rust ``#[test]`` names to every defining file."""
+    found: dict[str, set[Path]] = {}
+    for path in _rust_files(root):
+        for name in _test_names_for_file(_read(path) or "", _module_path(path, root)):
+            found.setdefault(name, set()).add(path)
     return {name: tuple(sorted(paths)) for name, paths in found.items()}
 
 
-def test_index(root: Path) -> dict[str, Path]:
-    """Map module-qualified Rust ``#[test]`` names to their files."""
-    index: dict[str, Path] = {}
-    for path in _rust_files(root):
-        for name in _test_names_for_file(_read(path) or "", _module_path(path, root)):
-            index.setdefault(name, path)
-    return index
-
-
-def _find_test(index: dict[str, Path], name: str) -> tuple[str, Path] | None:
-    """Find a manifest test entry by its exact module-qualified name."""
-    path = index.get(name)
-    return (name, path) if path is not None else None
+def _find_test(index: dict[str, tuple[Path, ...]], name: str) -> tuple[str, Path] | None:
+    """Find a manifest test entry by its exact, unambiguous qualified name."""
+    paths = index.get(name, ())
+    if len(paths) != 1:
+        return None
+    return name, paths[0]
 
 
 def registrations(root: Path) -> tuple[set[str], set[str], set[str]]:
@@ -634,6 +644,7 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
     errors: list[str] = []
     warnings: list[str] = []
     tla, kani, z3 = registrations(root)
+    kani_index = kani_proof_index(root)
     test_idx = test_index(root)
     symbol_cache: dict[Path, str | None] = {}
     if not tla:
@@ -675,12 +686,29 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
         for proof in component.kani:
             if proof not in kani:
                 errors.append(f"{cid}: Kani harness '{proof}' is not registered in {VERIFY_KANI_REL}")
+            kani_locations = kani_index.get(proof, ())
+            if len(kani_locations) > 1:
+                kani_paths = ", ".join(
+                    location.relative_to(root).as_posix()
+                    for location, _module in kani_locations
+                )
+                errors.append(
+                    f"{cid}: Kani harness '{proof}' is defined in multiple files: {kani_paths}"
+                )
         for proof in component.z3:
             if proof not in z3:
                 errors.append(f"{cid}: Z3 proof '{proof}' is not defined in {Z3_REL}")
         for test in component.tests:
-            if _find_test(test_idx, test) is None:
+            test_paths = test_idx.get(test, ())
+            if not test_paths:
                 errors.append(f"{cid}: Rust test '{test}' has no #[test] definition under src/ or tests/")
+            elif len(test_paths) > 1:
+                test_locations = ", ".join(
+                    path.relative_to(root).as_posix() for path in test_paths
+                )
+                errors.append(
+                    f"{cid}: Rust test '{test}' is defined in multiple files: {test_locations}"
+                )
         residual_ids: set[str] = set()
         for residual in component.residuals:
             if residual.residual_id in residual_ids:
@@ -866,9 +894,12 @@ def _file_substance_updated(
 
 
 def _fn_substance(
-    text: str, name: str, module_path: tuple[str, ...] | None = None
+    text: str,
+    name: str,
+    module_path: tuple[str, ...] | None = None,
+    attribute: re.Pattern[str] | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
-    span = _fn_range_text(text, name, module_path)
+    span = _fn_range_text(text, name, module_path, attribute)
     if span is None:
         return None
     lines = text.split("\n")
@@ -882,18 +913,19 @@ def _fn_substance_updated(
     name: str,
     cache: dict[str, str | None],
     module_path: tuple[str, ...] | None = None,
+    attribute: re.Pattern[str] | None = None,
 ) -> bool:
     """Return True when a mapped proof/test function gained substantive content."""
     current = _read(root / path_text)
     if current is None:
         return False
-    current_body = _fn_substance(current, name, module_path)
+    current_body = _fn_substance(current, name, module_path, attribute)
     if current_body is None:
         return False
     base_text = _base_text(root, base, path_text, cache)
     if base_text is None:
         return True
-    return _fn_substance(base_text, name, module_path) != current_body
+    return _fn_substance(base_text, name, module_path, attribute) != current_body
 
 
 def _span_from_line(lines: list[str], start: int) -> tuple[int, int]:
@@ -908,9 +940,12 @@ def _span_from_line(lines: list[str], start: int) -> tuple[int, int]:
 
 
 def _fn_range_text(
-    text: str, name: str, module_path: tuple[str, ...] | None = None
+    text: str,
+    name: str,
+    module_path: tuple[str, ...] | None = None,
+    attribute: re.Pattern[str] | None = None,
 ) -> tuple[int, int] | None:
-    if module_path is None:
+    if module_path is None and attribute is None:
         lines = _strip_structure(text, "rust").split("\n")
         for start, line in enumerate(lines):
             if re.search(rf"\bfn\s+{re.escape(name)}\b", line):
@@ -918,8 +953,13 @@ def _fn_range_text(
         return None
     entries, lines = _function_entries(text)
     for module, fn_name, entry_line in entries:
-        if fn_name == name and module == tuple(module_path):
-            return _span_from_line(lines, entry_line - 1)
+        if fn_name != name:
+            continue
+        if module_path is not None and module != tuple(module_path):
+            continue
+        if attribute is not None and not _has_attribute(lines, entry_line, attribute):
+            continue
+        return _span_from_line(lines, entry_line - 1)
     return None
 
 
@@ -985,8 +1025,8 @@ def _verification_updated(
     root: Path,
     component: Component,
     changed: set[str],
-    kani_index: dict[str, tuple[Path, ...]],
-    test_idx: dict[str, Path],
+    kani_index: dict[str, tuple[tuple[Path, tuple[str, ...]], ...]],
+    test_idx: dict[str, tuple[Path, ...]],
     base: str,
     base_cache: dict[str, str | None],
 ) -> bool:
@@ -1001,9 +1041,15 @@ def _verification_updated(
         locations = kani_index.get(name, ())
         if len(locations) != 1:
             continue
-        location = locations[0]
+        location, module = locations[0]
         if _fn_substance_updated(
-            root, base, location.relative_to(root).as_posix(), name, base_cache
+            root,
+            base,
+            location.relative_to(root).as_posix(),
+            name,
+            base_cache,
+            module,
+            KANI_ATTR_RE,
         ):
             return True
     for test in component.tests:

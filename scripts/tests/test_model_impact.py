@@ -178,6 +178,15 @@ def test_unregistered_kani_harness_fails(tmp_path: Path) -> None:
     assert any("Kani harness 'proof_missing' is not registered" in error for error in report.errors)
 
 
+def test_duplicate_kani_harness_definition_fails(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    (repo / "src" / "other_proof.rs").write_text(
+        "#[kani::proof]\nfn proof_demo() {}\n", encoding="utf-8"
+    )
+    report = run_check(repo)
+    assert any("defined in multiple files" in error for error in report.errors)
+
+
 def test_missing_rust_test_fails(tmp_path: Path) -> None:
     repo = build_repo(tmp_path, _manifest(tests='["demo::tests::missing_test"]'))
     report = run_check(repo)
@@ -197,6 +206,16 @@ def test_underqualified_rust_test_name_fails(tmp_path: Path, name: str) -> None:
     assert any("has no #[test] definition" in error for error in report.errors)
 
 
+def test_duplicate_test_name_across_files_fails(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path, _manifest(tests='["collide::same_test"]'))
+    for root in ("src", "tests"):
+        (repo / root / "collide.rs").write_text(
+            "#[test]\nfn same_test() {}\n", encoding="utf-8"
+        )
+    report = run_check(repo)
+    assert any("defined in multiple files" in error for error in report.errors)
+
+
 def test_test_index_qualifies_nested_inline_modules(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     nested = repo / "src" / "nested.rs"
@@ -205,7 +224,7 @@ def test_test_index_qualifies_nested_inline_modules(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     index = model_impact.test_index(repo)
-    assert index.get("nested::outer::tests::nested_test") == nested
+    assert index.get("nested::outer::tests::nested_test") == (nested,)
 
 
 def test_test_index_does_not_reuse_a_preceding_test_attribute(tmp_path: Path) -> None:
@@ -239,6 +258,7 @@ def test_one_line_test_attribute_before_helper_does_not_leak(tmp_path: Path) -> 
     helpers.write_text("#[test] fn actual_test() {}\n\nfn helper() {}\n", encoding="utf-8")
     index = model_impact.test_index(repo)
     assert "helpers::helper" not in index
+    assert "helper" not in index
 
 
 def _two_module_demo(repo: Path) -> Path:
@@ -673,6 +693,44 @@ def test_comment_only_kani_proof_update_does_not_satisfy_gate(tmp_path: Path) ->
     report = run_affected(repo)
     assert report.impacts[0].verification_updated is False
     assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_same_file_helper_before_kani_proof_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    text = demo.read_text(encoding="utf-8").replace(
+        "pub fn mapped_fn() -> u32 {\n    1\n}",
+        "fn proof_demo() {}\n\npub fn mapped_fn() -> u32 {\n    1\n}",
+    )
+    text = text.replace("    1\n", "    2\n", 1)
+    demo.write_text(
+        text.replace("fn proof_demo() {}", "fn proof_demo() { let _ = 1; }", 1),
+        encoding="utf-8",
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_same_file_kani_proof_body_still_counts_with_a_helper(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(
+        demo.read_text(encoding="utf-8").replace(
+            "pub fn mapped_fn() -> u32 {\n    1\n}",
+            "fn proof_demo() {}\n\npub fn mapped_fn() -> u32 {\n    1\n}",
+        ),
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "add helper before the proof")
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n", 1)
+    demo.write_text(text.replace("assert!(true);", "assert!(1 == 1);"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is True
+    assert report.drifted == ()
 
 
 def test_substantive_kani_proof_update_satisfies_gate(tmp_path: Path) -> None:

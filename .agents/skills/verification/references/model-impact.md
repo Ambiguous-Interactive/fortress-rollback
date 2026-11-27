@@ -41,9 +41,12 @@ python3 scripts/verification/model-impact.py render --check
 `check` fails closed on a missing path, spec, Kani harness, Z3 proof, module-qualified Rust test,
 unregistered TLA check, expired residual `review_by`, expired waiver, or a stale generated table.
 A Rust test entry must match the test's full module path exactly; abbreviated or bare names fail,
-and same-named tests in different modules stay distinct. A newly added spec counts only when it has
-non-comment, non-whitespace content. Symbol regex mismatches are advisory because method-level Rust
-parsing is out of scope for the first pass.
+except for crate-root tests (in `src/lib.rs` or `src/main.rs`), whose qualified name is the bare
+function name. Same-named tests in different modules stay distinct, and a name defined in more
+than one file fails `check` as ambiguous. A newly added spec counts only when it has non-comment,
+non-whitespace content. A Kani harness name must have exactly one `#[kani::proof]` definition;
+duplicates fail `check` with the defining paths. Symbol regex mismatches are advisory because
+method-level Rust parsing is out of scope for the first pass.
 
 ## Drift taxonomy
 
