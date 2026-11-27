@@ -838,6 +838,36 @@ def test_substantive_kani_proof_update_satisfies_gate(tmp_path: Path) -> None:
     assert report.drifted == ()
 
 
+def test_nested_only_z3_proof_fails_check(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    z3 = repo / "tests" / "verification" / "z3.rs"
+    z3.write_text("mod helper {\n    fn z3_proof_demo() {}\n}\n", encoding="utf-8")
+    report = run_check(repo)
+    assert any("has no top-level definition" in error for error in report.errors)
+
+
+def test_nested_same_named_z3_function_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    z3 = repo / "tests" / "verification" / "z3.rs"
+    z3.write_text(
+        "mod helper {\n    fn z3_proof_demo() { let _ = 0; }\n}\n\n"
+        "fn z3_proof_demo() {}\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "nested z3 duplicate")
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    z3.write_text(
+        z3.read_text(encoding="utf-8").replace("let _ = 0;", "let _ = 1;"),
+        encoding="utf-8",
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
 def test_substantive_z3_proof_update_satisfies_gate(tmp_path: Path) -> None:
     repo = build_repo(tmp_path)
     demo = repo / "src" / "demo.rs"

@@ -617,6 +617,17 @@ def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
     ]
 
 
+def z3_proof_index(root: Path) -> dict[str, Path]:
+    """Map top-level Z3 proof functions to the verification test file."""
+    path = root / Z3_REL
+    entries, _lines = _function_entries(_read(path) or "")
+    index: dict[str, Path] = {}
+    for module, name, _line, _column in entries:
+        if module == () and name.startswith("z3_"):
+            index.setdefault(name, path)
+    return index
+
+
 def kani_proof_index(root: Path) -> dict[str, tuple[tuple[Path, tuple[str, ...]], ...]]:
     """Map ``#[kani::proof]`` harness names to every (file, module) definition."""
     found: dict[str, list[tuple[Path, tuple[str, ...]]]] = {}
@@ -701,6 +712,7 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
     warnings: list[str] = []
     tla, kani, z3 = registrations(root)
     kani_index = kani_proof_index(root)
+    z3_index = z3_proof_index(root)
     test_idx = test_index(root)
     symbol_cache: dict[Path, str | None] = {}
     if not tla:
@@ -759,6 +771,10 @@ def check_manifest(manifest: Manifest, root: Path, today: dt.date | None = None)
         for proof in component.z3:
             if proof not in z3:
                 errors.append(f"{cid}: Z3 proof '{proof}' is not defined in {Z3_REL}")
+            elif proof not in z3_index:
+                errors.append(
+                    f"{cid}: Z3 proof '{proof}' has no top-level definition in {Z3_REL}"
+                )
         for test in component.tests:
             test_paths = test_idx.get(test, ())
             if not test_paths:
@@ -1111,6 +1127,7 @@ def _verification_updated(
     component: Component,
     changed: set[str],
     kani_index: dict[str, tuple[tuple[Path, tuple[str, ...]], ...]],
+    z3_index: dict[str, Path],
     test_idx: dict[str, tuple[Path, ...]],
     base: str,
     base_cache: dict[str, str | None],
@@ -1120,7 +1137,9 @@ def _verification_updated(
             return True
     z3_rel = Z3_REL.as_posix()
     for proof in component.z3:
-        if _fn_substance_updated(root, base, z3_rel, proof, base_cache):
+        if proof in z3_index and _fn_substance_updated(
+            root, base, z3_rel, proof, base_cache, ()
+        ):
             return True
     for name in component.kani:
         locations = kani_index.get(name, ())
@@ -1189,6 +1208,7 @@ def affected_components(
     )
     diffs = parse_git_diff(_git(root, "diff", "-U0", "--no-color", base))
     kani_index = kani_proof_index(root)
+    z3_index = z3_proof_index(root)
     test_idx = test_index(root)
     base_cache: dict[str, str | None] = {}
     impacts: list[ComponentImpact] = []
@@ -1210,7 +1230,14 @@ def affected_components(
                 tuple(reasons),
                 _commands(component),
                 _verification_updated(
-                    root, component, changed, kani_index, test_idx, base, base_cache
+                    root,
+                    component,
+                    changed,
+                    kani_index,
+                    z3_index,
+                    test_idx,
+                    base,
+                    base_cache,
                 ),
                 waiver,
             )
