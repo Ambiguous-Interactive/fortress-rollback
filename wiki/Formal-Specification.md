@@ -16,9 +16,9 @@ This document provides a formal specification of Fortress Rollback's core compon
 
 - **v1.8 (2026-11-26):** Extracted the coordinated-drop terminal-epoch table
   (`src/sessions/terminal_epoch.rs`) and added five Kani proofs for monotone
-  advancement, one-ahead/current era separation, the two-generation pruning
-  bound, bounded fallback adoption, and canonical target handles; the epoch
-  paragraph no longer claims preservation "without a new model".
+  advancement, the coordinator/generation identity kernel, the two-generation
+  pruning bound, bounded fallback adoption, and canonical target handles; the
+  epoch paragraph no longer claims preservation "without a new model".
 - **v1.7 (2026-11-26):** Added SAFE-12a and `CoordinatedReadyDigest.tla` for
   the #529/#530 provisional `Ready` digest gate: only the effective authority or
   independently verified local history locks the cut digest, a pre-lock
@@ -823,15 +823,17 @@ proposal remains a discarded peer artifact.
 
 The epoch table's transition kernels are machine-checked in Rust on the
 extracted `TerminalEpochTable` (`src/sessions/terminal_epoch.rs`): five Kani
-harnesses prove (a) `next` only advances monotonically, (b) a one-ahead
-coordinator generation shares no epoch space with the current generation and
-cannot swallow its guard, (c) pruning retains at most the local and local+1
-generations for one target set, (d) fallback adoption requires empty state and
-an inclusive `1_000_000` first-epoch bound, and (e) canonical target handles are
-deterministic, strictly ascending, and duplicate-free. The bounded
-`BTreeMap` construction itself is covered by table-level Rust tests rather than
-Kani, because the heap-backed map is outside the proof budget; the extracted
-module documents that split.
+harnesses prove (a) `next` only advances monotonically, (b) the coordinator and
+generation identity kernel never merges a one-ahead generation with the current
+generation, (c) `record` retains at most the local and local+1 generations for
+one target set, (d) fallback adoption requires empty state and an inclusive
+`1_000_000` first-epoch bound, and (e) canonical target handles are
+deterministic, strictly ascending, duplicate-free, and preserve exactly the
+input handle set. The derived `TerminalEpochKey` equality/order, the
+`BTreeMap` construction and lookup, and the entry-target refresh are covered by
+table-level Rust tests rather than Kani, because the heap-backed key and map are
+outside the proof budget; the verification manifest records that residual and
+the extracted module documents the split.
 
 `specs/tla/CoordinatedPeerDrop.tla` models two serialized operation IDs over two
 membership/target eras with independent per-survivor commit. The runtime defers
@@ -965,7 +967,7 @@ fallback transition is `CoordinatorFailover.tla`.
 | Graceful-drop barrier model | TLA+ | ✅ Implemented (`specs/tla/CoordinatedPeerDrop.tla`) |
 | Coordinated-drop coordinator failover | TLA+ | ✅ Implemented (`specs/tla/CoordinatorFailover.tla` + competing-cut safety companion) |
 | Coordinated-drop split-view participant sets | TLA+ | ✅ Implemented (`specs/tla/CoordinatorSplitView.tla` + manual local-view demo-fail) |
-| Coordinated-drop terminal-epoch replay guard | Rust tests + Kani + exact-byte goldens | ✅ Implemented (`src/sessions/terminal_epoch.rs` five Kani kernels; table tests in `src/sessions/p2p_session.rs`; `src/network/wire_golden_v6.rs`) |
+| Coordinated-drop terminal-epoch replay guard | Rust tests + Kani + exact-byte goldens | ✅ Implemented (`src/sessions/terminal_epoch.rs` five Kani kernels and table tests; integration tests in `src/sessions/p2p_session.rs`; `src/network/wire_golden_v6.rs`) |
 | Coordinated-drop provisional `Ready` digest gate | TLA+ | ✅ Bounded 3-participant/1-cut/2-digest model (`specs/tla/CoordinatedReadyDigest.tla`; `ProvisionalCounts` enforced expected-fail) |
 
 ---
@@ -974,7 +976,7 @@ fallback transition is `CoordinatorFailover.tla`.
 
 | Version | Date       | Changes                                                      |
 | ------- | ---------- | ------------------------------------------------------------ |
-| 1.8     | 2026-11-26 | Extracted `TerminalEpochTable` (`src/sessions/terminal_epoch.rs`) with five Kani proofs: monotone advancement, one-ahead/current separation, the two-generation pruning bound, bounded fallback adoption, and canonical target handles |
+| 1.8     | 2026-11-26 | Extracted `TerminalEpochTable` (`src/sessions/terminal_epoch.rs`) with five Kani proofs: monotone advancement, the coordinator/generation identity kernel, the caller-independent two-generation bound, bounded fallback adoption, and canonical target handles |
 | 1.7     | 2026-11-26 | Added SAFE-12a and `CoordinatedReadyDigest.tla`: only the authority or locally verified history locks the cut digest, provisional Ready reports never count, and the pre-#530 first-Ready-wins rule is an enforced expected-fail |
 | 1.6     | 2026-11-26 | Extracted `ChecksumBasisTracker` (`src/sessions/checksum_basis.rs`) with five Kani proofs, and added `ChecksumBasis.tla` with the `BasisBlind` enforced expected-fail and a non-vacuity witness |
 | 1.5     | 2026-11-26 | Retired the stale Z3 "always trigger"/"terminal" desync claims; added SAFE-7a (basis-token gate), SAFE-7b (converged history shares a token; target of #572), and SAFE-7c (rewrite clears stale latch state); fixed the document version header |

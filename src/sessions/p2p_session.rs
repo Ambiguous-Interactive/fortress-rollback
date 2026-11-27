@@ -2189,11 +2189,12 @@ impl<T: Config> P2PSession<T> {
             prepare.operation.coordinator_generation,
             &prepare.targets,
         );
-        let has_local_state = self.coordinated_drop_epoch_has_state(
-            prepare.operation.coordinator,
-            prepare.operation.coordinator_generation,
-            &prepare.targets,
-        );
+        let has_local_state = local_is_authority
+            && self.coordinated_drop_epoch_has_state(
+                prepare.operation.coordinator,
+                prepare.operation.coordinator_generation,
+                &prepare.targets,
+            );
         match epoch_admission(
             local_is_authority,
             prepare.operation.terminal_epoch,

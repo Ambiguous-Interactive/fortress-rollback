@@ -309,6 +309,13 @@ impl TerminalEpochTable {
         record: TerminalEpochRecord,
         target_set_is_current: impl Fn(&[DropTarget]) -> bool,
     ) -> Result<(), TerminalEpochTableFull> {
+        // The session fences the generation before calling, but enforce the
+        // same rule here so the two-generation bound is a table invariant
+        // rather than only a caller contract. A delayed artifact from a
+        // generation this endpoint has moved past must not create a space.
+        if !epoch_generation_is_current(record.coordinator_generation, record.local_generation) {
+            return Ok(());
+        }
         let key = TerminalEpochKey::from_targets(
             record.coordinator,
             record.coordinator_generation,
@@ -360,6 +367,24 @@ impl TerminalEpochTable {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// The stored targets for one exact space, used to pin entry/key
+    /// consistency across a target-generation refresh.
+    #[cfg(test)]
+    pub(crate) fn entry_targets(
+        &self,
+        coordinator: u16,
+        coordinator_generation: u16,
+        targets: &[DropTarget],
+    ) -> Option<&[DropTarget]> {
+        self.entries
+            .get(&TerminalEpochKey::from_targets(
+                coordinator,
+                coordinator_generation,
+                targets,
+            ))
+            .map(|entry| entry.targets.as_slice())
     }
 
     /// Whether any live space is scoped to exactly `handles`.
@@ -673,6 +698,21 @@ mod kani_proofs {
             assert!(found, "canonicalization never loses a distinct handle");
             input_index += 1;
         }
+
+        index = 0;
+        while index < length {
+            let handle = canonical.get(index).copied();
+            let mut found = false;
+            let mut input_index = 0;
+            while input_index < original.len() {
+                if original.get(input_index).copied() == handle {
+                    found = true;
+                }
+                input_index += 1;
+            }
+            assert!(found, "canonicalization never invents a handle");
+            index += 1;
+        }
     }
 }
 
@@ -743,6 +783,64 @@ mod tests {
         let mut short = [2, 1];
         assert_eq!(canonicalize_handles(&mut short, 5), 2);
         assert_eq!(short, [1, 2]);
+    }
+
+    #[test]
+    fn record_ignores_a_generation_outside_the_local_pair() {
+        let targets = [target(4, 0)];
+        let mut table = TerminalEpochTable::default();
+
+        table
+            .record(record(0, 2, &targets, 1, 0, 4), |_| true)
+            .expect("a stale artifact is ignored rather than stored");
+        assert!(!table.has_state(0, 2, &targets));
+        assert_eq!(table.next(0, 2, &targets), 0);
+
+        table
+            .record(record(0, 0, &targets, 1, 0, 4), |_| true)
+            .expect("the local generation is admissible");
+        table
+            .record(record(0, 1, &targets, 1, 0, 4), |_| true)
+            .expect("the one-ahead generation is admissible");
+        assert_eq!(
+            table.len(),
+            2,
+            "only the local and one-ahead generations are retained"
+        );
+    }
+
+    #[test]
+    fn target_generation_refresh_keeps_the_entry_handles_consistent() {
+        let mut table = TerminalEpochTable::default();
+        let initial = [target(1, 0), target(2, 0)];
+        table
+            .record(record(0, 0, &initial, 3, 0, 4), |_| true)
+            .expect("the initial target generation is admissible");
+
+        let refreshed = [target(1, 1), target(2, 1)];
+        table
+            .record(record(0, 0, &refreshed, 3, 0, 4), |_| true)
+            .expect("a reactivated target generation keeps the same space");
+
+        let stored = table
+            .entry_targets(0, 0, &refreshed)
+            .expect("the space is live");
+        assert_eq!(
+            stored
+                .iter()
+                .map(|target| target.handle)
+                .collect::<Vec<_>>(),
+            vec![1, 2],
+            "the stored targets still name the key's handle set"
+        );
+        assert_eq!(
+            stored
+                .iter()
+                .map(|target| target.generation)
+                .collect::<Vec<_>>(),
+            vec![1, 1],
+            "the refreshed target generations are retained"
+        );
     }
 
     #[test]
