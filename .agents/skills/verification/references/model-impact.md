@@ -62,9 +62,12 @@ parsing is out of scope for the first pass.
 A change to test code alone does not trigger a symbol-mapped component: the gate compares the
 changed line numbers with the mapped function's line range. A file-level mapping with no symbols
 is intentionally coarser and flags any change to that file. Comment and whitespace edits to a
-mapped spec or proof function do not satisfy the update requirement; the gate compares
-comment-stripped content. Braces inside strings, char literals, and comments do not truncate a
-mapped function's range. Generated build trees under ignored paths are not scanned for tests.
+mapped spec or proof function do not satisfy the update requirement; the gate compares token and
+literal signatures after stripping comments. Braces inside normal, raw, and C raw strings, char
+literals, and nested comments do not truncate a mapped function's range. A mapped Kani harness is
+located by its `#[kani::proof]` attribute, so an unrelated same-named function cannot satisfy the
+kernel. Attribute-only edits outside a function body (for example `#[ignore]`) are not counted as
+proof updates. Generated build trees under ignored paths are not scanned for tests.
 
 ## Proof-strength levels
 

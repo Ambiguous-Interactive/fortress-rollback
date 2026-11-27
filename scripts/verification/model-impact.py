@@ -46,7 +46,6 @@ END_MARKER = END
 STATUSES = {"modeled", "bounded", "unmodeled", "stale"}
 TLA_ARRAYS = ("SPECS", "EXPECTED_FAILURE_CHECKS", "ADDITIONAL_CHECKS", "TRACE_CHECKS")
 DEFINITION_RE = r"\b(?:fn|struct|enum|trait|type|const|static|mod|union)\s+{name}\b"
-FN_RE = re.compile(r"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+(\w+)")
 
 
 class ManifestError(Exception):
@@ -267,7 +266,7 @@ def _rust_files(root: Path) -> list[Path]:
     """
     try:
         listing = _git(root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
-    except GitError:
+    except (GitError, OSError):
         listing = ""
     files: list[Path] = []
     if listing:
@@ -300,7 +299,7 @@ def _rust_raw_string_span(text: str, start: int) -> tuple[int, int] | None:
     """Return the span of a raw Rust string literal starting at *start*."""
     if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
         return None
-    index = start + 1 if text[start] == "b" else start
+    index = start + 1 if text[start] in {"b", "c"} else start
     if index >= len(text) or text[index] != "r":
         return None
     index += 1
@@ -452,7 +451,7 @@ def _strip_structure(text: str, language: str) -> str:
     return _sanitize(text, language, keep_strings=False)
 
 
-COMPARE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d[\w.]*|[^\sA-Za-z0-9_]")
+COMPARE_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|\d+|[^\sA-Za-z0-9_]")
 
 
 def _normalized_substance(
@@ -464,21 +463,13 @@ def _normalized_substance(
     return tuple(COMPARE_TOKEN_RE.findall(structure)), tuple(literals)
 
 
-def function_index(root: Path) -> dict[str, Path]:
-    """Map every Rust ``fn`` name under src/tests to its first defining file."""
-    index: dict[str, Path] = {}
-    for path in _rust_files(root):
-        for match in FN_RE.finditer(_strip_structure(_read(path) or "", "rust")):
-            index.setdefault(match.group(1), path)
-    return index
-
-
 TEST_ATTR_RE = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
-TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[{};]")
+KANI_ATTR_RE = re.compile(r"#\[kani::proof(?:\(|\])")
+TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[()\[\]{}<>;]")
 
 
-def _has_test_attribute(lines: list[str], line_number: int) -> bool:
-    """Return True when only attributes separate the fn from a test attribute."""
+def _has_attribute(lines: list[str], line_number: int, pattern: re.Pattern[str]) -> bool:
+    """Return True when only attributes separate the fn from *pattern*."""
     index = line_number - 2
     attributes: list[str] = []
     while index >= 0:
@@ -486,11 +477,15 @@ def _has_test_attribute(lines: list[str], line_number: int) -> bool:
         if not stripped:
             index -= 1
             continue
-        if not stripped.startswith("#["):
+        if not (stripped.startswith("#[") and stripped.endswith("]")):
             break
         attributes.append(stripped)
         index -= 1
-    return any(TEST_ATTR_RE.search(attribute) for attribute in attributes)
+    return any(pattern.search(attribute) for attribute in attributes)
+
+
+def _has_test_attribute(lines: list[str], line_number: int) -> bool:
+    return _has_attribute(lines, line_number, TEST_ATTR_RE)
 
 
 def _module_path(path: Path, root: Path) -> tuple[str, ...]:
@@ -515,7 +510,7 @@ def _function_entries(
 ) -> tuple[list[tuple[tuple[str, ...], str, int]], list[str]]:
     """Return inline-module, name, and line entries for every Rust ``fn``."""
     structure = _strip_structure(text, "rust")
-    lines = structure.splitlines()
+    lines = structure.split("\n")
     words = list(TOKEN_RE.finditer(structure))
     entries: list[tuple[tuple[str, ...], str, int]] = []
     depth = 0
@@ -538,9 +533,10 @@ def _function_entries(
             depth -= 1
             while modules and modules[-1][1] == depth:
                 modules.pop()
-        elif word == "fn" and index + 1 < len(words):
+        elif word == "fn" and index + 2 < len(words):
             name = words[index + 1].group(0)
-            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            following = words[index + 2].group(0)
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and following in {"(", "<"}:
                 line = structure.count("\n", 0, words[index].start()) + 1
                 entries.append((tuple(module for module, _ in modules), name, line))
         index += 1
@@ -555,6 +551,17 @@ def _test_names_for_file(text: str, base: tuple[str, ...]) -> list[str]:
         for module, name, line in entries
         if _has_test_attribute(lines, line)
     ]
+
+
+def kani_proof_index(root: Path) -> dict[str, Path]:
+    """Map ``#[kani::proof]`` harness names to their first defining file."""
+    index: dict[str, Path] = {}
+    for path in _rust_files(root):
+        entries, lines = _function_entries(_read(path) or "")
+        for _module, name, line in entries:
+            if _has_attribute(lines, line, KANI_ATTR_RE):
+                index.setdefault(name, path)
+    return index
 
 
 def test_index(root: Path) -> dict[str, Path]:
@@ -864,7 +871,7 @@ def _fn_substance(
     span = _fn_range_text(text, name, module_path)
     if span is None:
         return None
-    lines = text.splitlines()
+    lines = text.split("\n")
     return _normalized_substance("\n".join(lines[span[0] - 1 : span[1]]), "rust")
 
 
@@ -904,7 +911,7 @@ def _fn_range_text(
     text: str, name: str, module_path: tuple[str, ...] | None = None
 ) -> tuple[int, int] | None:
     if module_path is None:
-        lines = _strip_structure(text, "rust").splitlines()
+        lines = _strip_structure(text, "rust").split("\n")
         for start, line in enumerate(lines):
             if re.search(rf"\bfn\s+{re.escape(name)}\b", line):
                 return _span_from_line(lines, start)
@@ -978,7 +985,7 @@ def _verification_updated(
     root: Path,
     component: Component,
     changed: set[str],
-    fn_index: dict[str, Path],
+    kani_index: dict[str, Path],
     test_idx: dict[str, Path],
     base: str,
     base_cache: dict[str, str | None],
@@ -991,7 +998,7 @@ def _verification_updated(
         if _fn_substance_updated(root, base, z3_rel, proof, base_cache):
             return True
     for name in component.kani:
-        location = fn_index.get(name)
+        location = kani_index.get(name)
         if location is not None and _fn_substance_updated(
             root, base, location.relative_to(root).as_posix(), name, base_cache
         ):
@@ -1046,7 +1053,7 @@ def affected_components(
         if line.strip()
     )
     diffs = parse_git_diff(_git(root, "diff", "-U0", "--no-color", base))
-    fn_index = function_index(root)
+    kani_index = kani_proof_index(root)
     test_idx = test_index(root)
     base_cache: dict[str, str | None] = {}
     impacts: list[ComponentImpact] = []
@@ -1068,7 +1075,7 @@ def affected_components(
                 tuple(reasons),
                 _commands(component),
                 _verification_updated(
-                    root, component, changed, fn_index, test_idx, base, base_cache
+                    root, component, changed, kani_index, test_idx, base, base_cache
                 ),
                 waiver,
             )

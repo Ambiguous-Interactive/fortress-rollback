@@ -82,6 +82,10 @@ def build_repo(tmp_path: Path, manifest: str | None = None) -> Path:
 
     (repo / "src" / "demo.rs").write_text(
         "pub fn mapped_fn() -> u32 {\n    1\n}\n\n"
+        "#[kani::proof]\n"
+        "fn proof_demo() {\n"
+        "    assert!(true);\n"
+        "}\n\n"
         "#[cfg(test)]\nmod tests {\n"
         "    #[test]\n"
         "    fn demo_test() {\n"
@@ -213,6 +217,27 @@ def test_test_index_does_not_reuse_a_preceding_test_attribute(tmp_path: Path) ->
     )
     index = model_impact.test_index(repo)
     assert "helpers::actual_test" in index
+    assert "helpers::helper" not in index
+
+
+def test_macro_template_fn_is_not_indexed_as_a_test(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    config = repo / "src" / "config.rs"
+    config.write_text(
+        "#[test]\nfn real_test() {}\n\n"
+        "pastey::paste! {\n    #[test]\n    fn [<test_ $ty>]() {}\n}\n",
+        encoding="utf-8",
+    )
+    index = model_impact.test_index(repo)
+    assert "config::real_test" in index
+    assert "config::test_" not in index
+
+
+def test_one_line_test_attribute_before_helper_does_not_leak(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    helpers = repo / "src" / "helpers.rs"
+    helpers.write_text("#[test] fn actual_test() {}\n\nfn helper() {}\n", encoding="utf-8")
+    index = model_impact.test_index(repo)
     assert "helpers::helper" not in index
 
 
@@ -391,8 +416,21 @@ def test_test_only_change_does_not_trigger_symbol_drift(tmp_path: Path) -> None:
         "    let marker = '}';\n    do_work();\n",
         "    let marker = 1; // }\n    do_work();\n",
         "    /* } */\n    do_work();\n",
+        '    let marker = r#"}"#;\n    do_work();\n',
+        '    let marker = cr#"a" } b"#;\n    do_work();\n',
+        "    /* outer /* } */ still */\n    do_work();\n",
+        "    fn inner<'a>(value: &'a u8) -> &'a u8 { value }\n    do_work();\n",
     ],
-    ids=["string", "char", "line-comment", "block-comment"],
+    ids=[
+        "string",
+        "char",
+        "line-comment",
+        "block-comment",
+        "raw-string",
+        "c-raw-string",
+        "nested-comment",
+        "lifetime",
+    ],
 )
 def test_fn_range_ignores_braces_in_literals_and_comments(body: str) -> None:
     text = f"fn mapped_fn() {{\n{body}}}\n"
@@ -507,7 +545,7 @@ def test_new_substantive_spec_satisfies_gate(tmp_path: Path) -> None:
     manifest = _manifest(specs='["specs/tla/Demo.tla", "specs/tla/New.tla"]')
     repo = build_repo(tmp_path, manifest)
     (repo / "specs" / "tla" / "New.tla").write_text(
-        "---- MODULE New ----\n====\n", encoding="utf-8"
+        "---- MODULE New ----\nVARIABLE ticks\n====\n", encoding="utf-8"
     )
     demo = repo / "src" / "demo.rs"
     demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
@@ -532,6 +570,14 @@ def test_internal_whitespace_spec_update_does_not_satisfy_gate(tmp_path: Path) -
     assert [impact.component.component_id for impact in report.drifted] == ["demo"]
 
 
+def test_form_feed_in_string_does_not_misalign_substance() -> None:
+    text = 'fn mapped_fn() {\n    let marker = "a\fb";\n    step_one();\n    step_two(); }\n'
+    changed = text.replace("step_two", "step_THREE")
+    assert model_impact._fn_substance(text, "mapped_fn") != model_impact._fn_substance(
+        changed, "mapped_fn"
+    )
+
+
 def test_substance_signature_ignores_whitespace_and_comments_but_not_literals() -> None:
     base = 'X == "a"  \\* note\n'
     same = 'X  ==  "a"\n'
@@ -551,6 +597,9 @@ def test_substance_signature_ignores_whitespace_and_comments_but_not_literals() 
     assert model_impact._normalized_substance(rust, "rust") != model_impact._normalized_substance(
         rust_changed, "rust"
     )
+    assert model_impact._normalized_substance(
+        "let x = 1.0.to_string();", "rust"
+    ) == model_impact._normalized_substance("let x = 1.0 .to_string();", "rust")
 
 
 def test_comment_only_test_update_does_not_satisfy_gate(tmp_path: Path) -> None:
@@ -583,6 +632,57 @@ def test_comment_only_z3_proof_update_does_not_satisfy_gate(tmp_path: Path) -> N
     report = run_affected(repo)
     assert report.impacts[0].verification_updated is False
     assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_new_shadow_kani_function_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    (repo / "src" / "aaa.rs").write_text("fn proof_demo() {}\n", encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_comment_only_kani_proof_update_does_not_satisfy_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n")
+    demo.write_text(
+        text.replace(
+            "    assert!(true);",
+            "    // comment-only touch\n    assert!(true);",
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is False
+    assert [impact.component.component_id for impact in report.drifted] == ["demo"]
+
+
+def test_substantive_kani_proof_update_satisfies_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    text = demo.read_text(encoding="utf-8").replace("    1\n", "    2\n")
+    demo.write_text(text.replace("assert!(true);", "assert!(1 == 1);"), encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is True
+    assert report.drifted == ()
+
+
+def test_substantive_z3_proof_update_satisfies_gate(tmp_path: Path) -> None:
+    repo = build_repo(tmp_path)
+    demo = repo / "src" / "demo.rs"
+    demo.write_text(demo.read_text(encoding="utf-8").replace("    1\n", "    2\n"), encoding="utf-8")
+    z3 = repo / "tests" / "verification" / "z3.rs"
+    z3.write_text("fn z3_proof_demo() {\n    assert!(1 == 1);\n}\n", encoding="utf-8")
+
+    report = run_affected(repo)
+    assert report.impacts[0].verification_updated is True
+    assert report.drifted == ()
 
 
 # --- render: stable and checked --------------------------------------------
