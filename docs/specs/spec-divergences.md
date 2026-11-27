@@ -57,7 +57,7 @@ runtime refinement link:
 | `checksum-basis` | bounded | `ChecksumExchange.tla`, `ChecksumBasis.tla`; 5 Kani; 2 Z3; 3 Rust tests | `src/sessions/checksum_basis.rs`, `src/sessions/p2p_session.rs`, `src/network/messages.rs` | none |
 | `checksum-latch` | bounded | `ChecksumExchange.tla`, `ChecksumBasis.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
 | `provisional-ready` | bounded | `CoordinatedReadyDigest.tla`; 3 Rust tests | `src/sessions/p2p_session.rs` | none |
-| `terminal-epoch` | unmodeled | 2 Rust tests | `src/sessions/p2p_session.rs` | terminal-epoch-proof (2027-02-01) |
+| `terminal-epoch` | bounded | 5 Kani; 6 Rust tests | `src/sessions/terminal_epoch.rs`, `src/sessions/p2p_session.rs` | none |
 | `coordinated-barrier` | modeled | `CoordinatedPeerDrop.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
 | `coordinator-failover` | modeled | `CoordinatorFailover.tla`, `CoordinatorFailoverCompeting.tla`; 2 Rust tests | `src/sessions/p2p_session.rs` | none |
 | `participant-split-view` | modeled | `CoordinatorSplitView.tla`; 1 Rust test | `src/sessions/p2p_session.rs` | none |

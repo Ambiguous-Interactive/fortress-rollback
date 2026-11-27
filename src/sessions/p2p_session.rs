@@ -24,6 +24,9 @@ use crate::sessions::event_drain::enqueue_event_bounded;
 use crate::sessions::player_registry::PlayerRegistry;
 use crate::sessions::session_trait::Session;
 use crate::sessions::sync_health::SyncHealth;
+use crate::sessions::terminal_epoch::{
+    epoch_admission, EpochAdmission, TerminalEpochRecord, TerminalEpochTable,
+};
 use crate::sync_layer::SyncLayer;
 use crate::telemetry::{
     InvariantChecker, InvariantViolation, SessionTelemetry, ViolationKind, ViolationObserver,
@@ -379,7 +382,8 @@ const COORDINATED_DROP_FALLBACK_GRACE: web_time::Duration = web_time::Duration::
 /// target set for the session. A million membership operations is far beyond
 /// any session's realistic lifetime, so a value above this bound is treated as
 /// a hostile future proposal and rejected.
-const COORDINATED_DROP_MAX_ADOPTED_EPOCH: u32 = 1_000_000;
+#[cfg(test)]
+const COORDINATED_DROP_MAX_ADOPTED_EPOCH: u32 = crate::sessions::terminal_epoch::MAX_ADOPTED_EPOCH;
 
 /// One participant's announcement that it can currently serve a drop backfill.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -466,28 +470,7 @@ struct TerminalTargetWatermark {
 /// fresh epoch space; the older generation's artifacts are rejected by the
 /// per-prepare coordinator-generation fence. Target-generation changes carry
 /// `next` forward for the same handle set, so a reactivated slot cannot reuse
-/// an old epoch.
-#[derive(Clone, Debug)]
-struct TerminalEpochEntry {
-    /// Canonical target handles and the generations `next` applies to.
-    targets: Vec<DropTarget>,
-    /// The next acceptable terminal epoch. Never decreases for one authority.
-    next: u32,
-}
-
-/// Identity of one authority-scoped terminal-epoch space.
-///
-/// The canonical target handle set is shared, but the coordinator generation
-/// is part of the space: a participant may legitimately hold both its current
-/// era and the next one during a rejoin window, and one entry must not swallow
-/// the other. Pruning keeps at most two generations per target set.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct TerminalEpochKey {
-    handles: Vec<u16>,
-    coordinator: u16,
-    coordinator_generation: u16,
-}
-
+/// an old epoch. The state machine lives in [`TerminalEpochTable`].
 #[derive(Debug)]
 struct CoordinatedDropState<A> {
     active: Option<CoordinatedDropAttempt<A>>,
@@ -528,7 +511,7 @@ struct CoordinatedDropState<A> {
     /// canonical target handle set plus the coordinator generation. At most two
     /// acceptable generations per remote endpoint, so the map is bounded by
     /// twice the roster (`alloc-bound` at insertion).
-    terminal_epochs: BTreeMap<TerminalEpochKey, TerminalEpochEntry>,
+    terminal_epochs: TerminalEpochTable,
     /// Recently rejected superseded prepares, bounded to one per player.
     rejected: VecDeque<RejectedDropOperation>,
     /// Targets of an uncertified attempt that a failed-closed session abandoned.
@@ -570,7 +553,7 @@ impl<A> Default for CoordinatedDropState<A> {
             certified_dropped: std::collections::BTreeSet::new(),
             closed: VecDeque::new(),
             terminal_targets: BTreeMap::new(),
-            terminal_epochs: BTreeMap::new(),
+            terminal_epochs: TerminalEpochTable::default(),
             rejected: VecDeque::new(),
             halted_targets: std::collections::BTreeSet::new(),
             retiring: BTreeMap::new(),
@@ -2053,16 +2036,6 @@ impl<T: Config> P2PSession<T> {
         }
     }
 
-    /// Canonical map key for one target set's epoch state.
-    fn coordinated_drop_target_handles(targets: &[DropTarget]) -> Vec<u16> {
-        // alloc-bound: the key is one entry per target handle, and a target set
-        // is validated against the roster before it reaches this helper.
-        let mut handles: Vec<u16> = targets.iter().map(|target| target.handle).collect();
-        handles.sort_unstable();
-        handles.dedup();
-        handles
-    }
-
     /// Whether a stored epoch entry still names the current canonical handle set
     /// of one remote endpoint.
     ///
@@ -2096,19 +2069,6 @@ impl<T: Config> P2PSession<T> {
         stored.next().is_none()
     }
 
-    /// Canonical key for one authority generation's epoch space.
-    fn coordinated_drop_epoch_key(
-        coordinator: u16,
-        coordinator_generation: u16,
-        targets: &[DropTarget],
-    ) -> TerminalEpochKey {
-        TerminalEpochKey {
-            handles: Self::coordinated_drop_target_handles(targets),
-            coordinator,
-            coordinator_generation,
-        }
-    }
-
     /// The next acceptable terminal epoch for one authority generation and
     /// target set.
     ///
@@ -2122,11 +2082,9 @@ impl<T: Config> P2PSession<T> {
         coordinator_generation: u16,
         targets: &[DropTarget],
     ) -> u32 {
-        let key = Self::coordinated_drop_epoch_key(coordinator, coordinator_generation, targets);
         self.coordinated_drop
             .terminal_epochs
-            .get(&key)
-            .map_or(0, |entry| entry.next)
+            .next(coordinator, coordinator_generation, targets)
     }
 
     /// Whether this endpoint has ever recorded an epoch in the exact authority
@@ -2137,8 +2095,11 @@ impl<T: Config> P2PSession<T> {
         coordinator_generation: u16,
         targets: &[DropTarget],
     ) -> bool {
-        let key = Self::coordinated_drop_epoch_key(coordinator, coordinator_generation, targets);
-        self.coordinated_drop.terminal_epochs.contains_key(&key)
+        self.coordinated_drop.terminal_epochs.has_state(
+            coordinator,
+            coordinator_generation,
+            targets,
+        )
     }
 
     /// Records that an authority epoch was consumed by an admitted operation.
@@ -2157,13 +2118,8 @@ impl<T: Config> P2PSession<T> {
         targets: &[DropTarget],
         next: u32,
     ) -> Result<(), DropAbortReason> {
-        let key = Self::coordinated_drop_epoch_key(
-            operation.coordinator,
-            operation.coordinator_generation,
-            targets,
-        );
         // alloc-bound: the copied target list is bounded by `num_players`, and
-        // the entry map holds at most two generations per canonical target
+        // the entry table holds at most two generations per canonical target
         // handle set, which is itself bounded by the roster.
         let mut copied = Vec::new();
         copied
@@ -2185,48 +2141,24 @@ impl<T: Config> P2PSession<T> {
         ) {
             return Ok(());
         }
-        if let Some(entry) = self.coordinated_drop.terminal_epochs.get_mut(&key) {
-            entry.next = entry.next.max(next);
-            entry.targets = copied;
-            return Ok(());
-        }
-        // A target set has one current coordinator and at most two acceptable
-        // generations (local and local+1). Drop older coordinators and
-        // generations so a long-lived session cannot fill the bounded map with
-        // dead spaces. A coordinator change starts a fresh space; the
-        // coordinator-generation fence rejects its predecessor's artifacts.
+        let capacity = self.num_players.saturating_mul(2).max(1);
+        let player_reg = &self.player_reg;
         self.coordinated_drop
             .terminal_epochs
-            .retain(|existing, _entry| {
-                existing.handles != key.handles
-                    || (existing.coordinator == key.coordinator
-                        && (existing.coordinator_generation == local_generation
-                            || existing.coordinator_generation == local_generation.wrapping_add(1)))
-            });
-        if self.coordinated_drop.terminal_epochs.len() >= self.num_players.saturating_mul(2).max(1)
-        {
-            // A canonical target set is the fixed handle set of one remote
-            // endpoint, so reclaim entries whose endpoint or handle set is no
-            // longer current. The live map is then bounded by the roster; twice
-            // that leaves headroom before refusing the operation rather than
-            // evicting a live epoch.
-            let player_reg = &self.player_reg;
-            self.coordinated_drop.terminal_epochs.retain(|_key, entry| {
-                Self::coordinated_drop_target_set_is_current(player_reg, &entry.targets)
-            });
-        }
-        if self.coordinated_drop.terminal_epochs.len() >= self.num_players.saturating_mul(2).max(1)
-        {
-            return Err(DropAbortReason::ResourceLimit);
-        }
-        self.coordinated_drop.terminal_epochs.insert(
-            key,
-            TerminalEpochEntry {
-                targets: copied,
-                next,
-            },
-        );
-        Ok(())
+            .record(
+                TerminalEpochRecord {
+                    coordinator: operation.coordinator,
+                    coordinator_generation: operation.coordinator_generation,
+                    targets: copied,
+                    next,
+                    local_generation,
+                    capacity,
+                },
+                |stored_targets| {
+                    Self::coordinated_drop_target_set_is_current(player_reg, stored_targets)
+                },
+            )
+            .map_err(|_err| DropAbortReason::ResourceLimit)
     }
 
     /// Whether a validated prepare may proceed past the terminal-epoch gate.
@@ -2240,7 +2172,8 @@ impl<T: Config> P2PSession<T> {
     /// the coordinator's earlier operations, so it has no local state for that
     /// generation. The retained candidate is the only epoch evidence it has.
     /// Adopt a bounded first epoch rather than rejecting a legitimate retry
-    /// forever; a value above [`COORDINATED_DROP_MAX_ADOPTED_EPOCH`] is still a
+    /// forever; a value above
+    /// [`crate::sessions::terminal_epoch::MAX_ADOPTED_EPOCH`] is still a
     /// hostile future proposal.
     fn coordinated_drop_admit_epoch(
         &mut self,
@@ -2256,39 +2189,40 @@ impl<T: Config> P2PSession<T> {
             prepare.operation.coordinator_generation,
             &prepare.targets,
         );
-        if local_is_authority {
-            if prepare.operation.terminal_epoch == authority_next {
-                return true;
-            }
-            let acting_fallback = acting == Some(local_participant);
-            let no_local_state = !self.coordinated_drop_epoch_has_state(
-                prepare.operation.coordinator,
-                prepare.operation.coordinator_generation,
-                &prepare.targets,
-            );
-            if acting_fallback
-                && no_local_state
-                && prepare.operation.terminal_epoch <= COORDINATED_DROP_MAX_ADOPTED_EPOCH
-            {
-                return true;
-            }
-            self.coordinated_drop_note_rejected(prepare.operation, &prepare.targets);
-            self.coordinated_drop_broadcast(
-                DropControlMessage::Abort(DropAbort {
-                    operation: prepare.operation,
-                    reason: DropAbortReason::Superseded,
-                    terminal_epoch: authority_next,
-                    targets: prepare.targets.clone(),
-                }),
-                &prepare.targets,
-            );
-            return false;
+        let has_local_state = self.coordinated_drop_epoch_has_state(
+            prepare.operation.coordinator,
+            prepare.operation.coordinator_generation,
+            &prepare.targets,
+        );
+        match epoch_admission(
+            local_is_authority,
+            prepare.operation.terminal_epoch,
+            authority_next,
+            has_local_state,
+            acting == Some(local_participant),
+        ) {
+            EpochAdmission::Admit | EpochAdmission::Adopt => true,
+            EpochAdmission::Reject => {
+                if local_is_authority {
+                    self.coordinated_drop_note_rejected(prepare.operation, &prepare.targets);
+                    self.coordinated_drop_broadcast(
+                        DropControlMessage::Abort(DropAbort {
+                            operation: prepare.operation,
+                            reason: DropAbortReason::Superseded,
+                            terminal_epoch: authority_next,
+                            targets: prepare.targets.clone(),
+                        }),
+                        &prepare.targets,
+                    );
+                } else {
+                    Self::coordinated_drop_discard_artifact(
+                        "prepare",
+                        DropAbortReason::GenerationChanged,
+                    );
+                }
+                false
+            },
         }
-        if prepare.operation.terminal_epoch < authority_next {
-            Self::coordinated_drop_discard_artifact("prepare", DropAbortReason::GenerationChanged);
-            return false;
-        }
-        true
     }
 
     /// Records a terminal coordinated-drop operation so replayed control
@@ -20812,8 +20746,7 @@ mod tests {
             !session
                 .coordinated_drop
                 .terminal_epochs
-                .keys()
-                .any(|key| key.handles == vec![5]),
+                .contains_handle_set(&[5]),
             "stale handle sets are reclaimed"
         );
         assert_eq!(

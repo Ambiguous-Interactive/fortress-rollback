@@ -413,6 +413,12 @@ TIER1_PROOFS=(
     "proof_checksum_basis_lower_boundary_replaces_term"
     "proof_checksum_basis_higher_or_equal_redetection_idempotent"
     "proof_checksum_basis_token_unchanged_below_boundary"
+    # Terminal epoch kernels (src/sessions/terminal_epoch.rs)
+    "proof_terminal_epoch_next_is_monotone"
+    "proof_terminal_epoch_one_ahead_does_not_swallow_current"
+    "proof_terminal_epoch_at_most_two_generations_per_target_set"
+    "proof_terminal_epoch_fallback_adoption_is_bounded_and_only_when_empty"
+    "proof_terminal_epoch_entry_targets_match_key_handles"
     # Core frame/handle proofs (src/lib.rs)
     "proof_frame_new_valid"
     "proof_frame_null_consistency"
