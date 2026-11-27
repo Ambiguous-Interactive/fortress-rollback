@@ -498,6 +498,73 @@ mod tests {
         );
     }
 
+    fn attempt_with_buffered_grid() -> CoordinatedDropAttempt<()> {
+        let operation = DropOperationId {
+            coordinator: 0,
+            coordinator_generation: 0,
+            sequence: 1,
+            target_set_digest: 0,
+            participant_set_digest: 0,
+            terminal_epoch: 0,
+        };
+        let chunk = DropBackfill {
+            operation,
+            donor: 1,
+            range_start: Frame::new(0),
+            chunk_index: 1,
+            chunk_count: 2,
+            start_frame: Frame::new(128),
+            frame_count: 1,
+            bytes: vec![0],
+        };
+        let now = web_time::Instant::now();
+        CoordinatedDropAttempt {
+            operation,
+            target_addr: (),
+            targets: Vec::new(),
+            participants: vec![0, 1, 2],
+            quorum: 2,
+            local_participant: 0,
+            held_at: Frame::new(127),
+            phase: CoordinatedDropPhase::Backfill,
+            reports: BTreeMap::new(),
+            ready: ReadyTranscripts::default(),
+            committed_acks: BTreeSet::new(),
+            cut: Some(Frame::new(127)),
+            pending_commit: None,
+            backfill_chunks: BTreeMap::from([(1, chunk.clone())]),
+            relayed_backfill: BTreeMap::from([(1, chunk)]),
+            next_backfill_chunk: 2,
+            expected_backfill_chunks: Some(2),
+            expected_backfill_start: Some(Frame::new(0)),
+            backfill_grid_source: Some(BackfillGridSource::Announced),
+            backfill_donor: Some(1),
+            donor_announcements: BTreeMap::new(),
+            acting_coordinator: Some(2),
+            coordinator_heard_at: None,
+            started_at: now,
+            last_broadcast_at: now,
+        }
+    }
+
+    #[test]
+    fn reset_backfill_grid_clears_only_the_uninstalled_grid_identity() {
+        let mut attempt = attempt_with_buffered_grid();
+        reset_backfill_grid(&mut attempt);
+
+        assert!(attempt.backfill_chunks.is_empty());
+        assert!(attempt.relayed_backfill.is_empty());
+        assert_eq!(attempt.next_backfill_chunk, 0);
+        assert_eq!(attempt.expected_backfill_chunks, None);
+        assert_eq!(attempt.expected_backfill_start, None);
+        assert_eq!(attempt.backfill_grid_source, None);
+        assert_eq!(attempt.backfill_donor, None);
+        assert_eq!(attempt.operation.sequence, 1);
+        assert_eq!(attempt.cut, Some(Frame::new(127)));
+        assert_eq!(attempt.participants, vec![0, 1, 2]);
+        assert_eq!(attempt.acting_coordinator, Some(2));
+    }
+
     #[test]
     fn backfill_plan_rejects_a_range_that_ends_before_it_starts() {
         assert_eq!(
