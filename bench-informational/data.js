@@ -1,374 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795741594789,
+  "lastUpdate": 1795748397076,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Informational Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": true,
-          "id": "0980729199572ff5cd51bf6cf52c6214d8a35d46",
-          "message": "fix: keep lossy graceful removal live through reordered backfill (#469)\n\n## Description\n\nFollow-up to #468. Closes #460 by fixing the two lossy-retirement\nfailure classes and making lossy graceful removal a green-tier\nsimulation row.\n\n**N=3 certificate wedge (backfill reorder).** A donor's backfill chunk\ncan be delivered ahead of the inventory reports that choose the donor.\n`coordinated_drop_accept_backfill` treated an unattributable chunk as\n`ConflictingHistory` and fail-closed the attempt; the driver also\ndeclared `MissingHistory` as soon as `required_start` was set but no\ndonor was yet visible in the received reports. Both are transient\norderings, not protocol violations:\n- A chunk whose donor is not yet known is ignored; the selected donor\nretransmits every poll while the attempt is active.\n- \"No donor\" is terminal only once every participant's inventory is\nknown (or the missing reporters are locally unresponsive); otherwise the\ndriver waits and the 2s attempt timeout remains the bound.\n\nExact repro (seed 428, N=3, Swarm, `GracefulRemove { by: 2, target: 0\n}`) now keeps both survivors `Running` after the heal with one confirmed\nhistory: `failures=[]`, `final_confirmed=[430, 1398, 1399]`.\n\n**N=2 removed-target tail (design option 1).** A gracefully removed\ntarget can keep confirming its own real inputs for a few frames after\nthe survivors froze its slot. That post-cut tail is private to the\nprocess leaving the match and must not define the canonical exposed\nhistory. The oracle now caps a gracefully removed target's\nconfirmed-input authorship at the survivor-visible receipt cut and its\nstate comparison at `cut + 1`; frames at or below the cut keep full\ncoverage. This is documented in `Oracle::cap_retired_confirmed_inputs`\nand the `dead` field docs.\n\n**Nightly quarantine narrowed.** Non-clean nightly schedules now keep\ngenerated `GracefulRemove` events instead of rewriting them to stalls.\n`PeerKill`/`SpectatorHostKill` remain quarantined: after a kill a 2-peer\nmesh has no strict majority and correctly fails closed, so the\nrecover-after-heal expectation is unsatisfiable there (follow-up issue).\nA sweep of 92 lossy graceful-removal nightly rows (N=2/3/4 ×\nMild/Rough/ReliableFifo/Swarm × seeds 0..40, 5000 steps) passes.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy** (all new failures are\nreported or typed; no new panics in production code)\n- [x] I have added tests that prove my fix is effective\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json,hot-join -- -D warnings` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated `CHANGELOG.md` for user-facing changes\n- [ ] I have updated relevant examples in the `examples/` directory (not\napplicable)\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `lossy_graceful_removal_rows_keep_one_history_and_recover` — the exact\n#460 repro seeds (N=2: 133 Rough, 203 Swarm, 273 Mild, 378 Mild; N=3:\n428 Swarm) in the PR-green fleet.\n- `non_clean_nightly_lifecycle_quarantines_only_crash_retirement` —\nreplaces the old all-retirement rewrite assertion; GracefulRemove now\nstays, crash/host-kill retirement remains quarantined.\n- Oracle unit docs/ceilings exercised through the full simulation suite.\n\n**Validation evidence:**\n\n- 92-row lossy graceful-removal nightly sweep (N=2/3/4, 4 noise\nprofiles, seeds 0..40, 5000 steps): 0 failures.\n- `cargo nextest run --workspace --features tokio,json`: 3254 passed, 75\nskipped.\n- `cargo nextest run --workspace --features hot-join,tokio,json`: 3549\npassed, 76 skipped.\n- `python3 scripts/ci/agent-preflight.py --full`: exit 0.\n- Exact repro before/after (seed 428): `ConflictingHistory` fail-closed\n+ survivors stuck at 433/430 → `failures=[]` + 1398/1399.\n\n## Related Issues\n\nFixes #460\nRelates to #461 (concurrent different-target graceful removal\nserialization remains a separate design decision)\nRelates to #468 (previous advance-path batch)",
-          "timestamp": "2026-11-18T01:35:21Z",
-          "tree_id": "c253505da86024c3a03fcb21eda5c2c950dbc5cf",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/0980729199572ff5cd51bf6cf52c6214d8a35d46"
-        },
-        "date": 1794966435837,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Frame/new",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_null",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_valid",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/10",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/100",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1000",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/4",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/8",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/16",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/64",
-            "value": 30,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/256",
-            "value": 99,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/4",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/8",
-            "value": 21,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/16",
-            "value": 26,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/64",
-            "value": 36,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/256",
-            "value": 106,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/4",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/8",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/16",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/64",
-            "value": 20,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/256",
-            "value": 21,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/8",
-            "value": 64,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/8",
-            "value": 85,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/8",
-            "value": 111,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/16",
-            "value": 104,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/16",
-            "value": 152,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/16",
-            "value": 238,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/32",
-            "value": 185,
-            "range": "± 6",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/32",
-            "value": 283,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/32",
-            "value": 433,
-            "range": "± 12",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/8",
-            "value": 104,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/8",
-            "value": 124,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/8",
-            "value": 140,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/16",
-            "value": 153,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/16",
-            "value": 199,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/16",
-            "value": 266,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/32",
-            "value": 281,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/32",
-            "value": 359,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/32",
-            "value": 515,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/idle",
-            "value": 235,
-            "range": "± 9",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/active",
-            "value": 310,
-            "range": "± 9",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/fighting",
-            "value": 456,
-            "range": "± 9",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/analog",
-            "value": 574,
-            "range": "± 46",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/2",
-            "value": 73,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/4",
-            "value": 94,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/2",
-            "value": 494,
-            "range": "± 8",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/4",
-            "value": 841,
-            "range": "± 11",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/7",
-            "value": 1275,
-            "range": "± 7",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "P2PSession/metrics",
-            "value": 23,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message/encoded_len",
-            "value": 1,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=2",
-            "value": 19,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=4",
-            "value": 60,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=8",
-            "value": 210,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=16",
-            "value": 806,
-            "range": "± 33",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=8",
-            "value": 39099,
-            "range": "± 1795",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=16",
-            "value": 185951,
-            "range": "± 1542",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -18299,6 +17933,372 @@ window.BENCHMARK_DATA = {
             "name": "H-16P advance_frame/warmed_mesh/N=16",
             "value": 206462,
             "range": "± 706",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "7df920036ced927f522969b403d2497147b0315e",
+          "message": "refactor: extract ReadyTranscripts from p2p_session (#576) (#596)\n\n## Description\n\nExtracts the coordinated-drop `Ready` bookkeeping from `P2PSession` into\na\n`pub(crate)` `ReadyTranscripts` typestate in\n`src/sessions/ready_transcripts.rs`.\nThe struct now owns the locked cut digest, the locked and provisional\ntranscripts, and the counted set. `Provisional` and `Locked` transcripts\nare\ndistinct types, the counted set is private, and only promotion against\nthe\nlocked digest can count a provisional report. That makes the #529\ninvalid state\nunrepresentable rather than merely tested: a non-authority `Ready`\nreceived\nbefore the digest is locked stays provisional and never contributes to\nthe\nstrict-majority quorum.\n\nThis is phase 2 of #576 and follows the merged `checksum_basis` (#572)\nand\n`terminal_epoch` (#574) extractions. It adds three Kani harnesses on the\nreal\nmodule functions, nine module characterization tests, and keeps the\nsession-level authority and quorum decisions in `p2p_session`. The lock\nowns\nthe selected cut as well as the digest, so a matching digest under\nanother cut\nis rejected before any state changes.\n\nNo public API, wire, protocol, or behavior change. The admission,\npromotion,\ncommit-adoption, resync, and retransmission paths preserve their\nexisting\nordering and relay decisions.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [x] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [ ] 🧪 Test (adding or updating tests)\n- [ ] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [ ] `none` — no mapped production path or symbol changed\n- [x] `updated: Kani + manifest + formal spec` — `provisional-ready`\nmaps the new\n`ready_admission`, `admit`, `lock_digest`, and `promote_matching`\nsymbols to\n  three Kani proofs, module tests, and the existing\n  `CoordinatedReadyDigest.tla` model. `model-impact check` passes.\n- [ ] `waived: <reason + approver>` — a named maintainer approved the\nexception and it is recorded in the tracked issue/PR\n\n- [x] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (state which below).\n\n**RED mutation:** flipping the admission guard to `None if !authority =>\nCount`\n(the #529 rule) makes 7 targeted tests fail, including all three\n`p2p_session` integration tests, and makes\n`proof_ready_transcripts_promotion_requires_matching_digest` fail at the\nfirst assertion. The mutation was restored and the file sha256\nre-checked.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**:\n  - No `unwrap()` in production code\n  - No `expect()` in production code\n  - No `panic!()` or `todo!()`\n  - All fallible operations return `Result`\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly\n(`docs/specs/formal-spec.md`,\n`docs/specs/verification-manifest.toml`,\n`docs/specs/spec-divergences.md`)\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes —\nnot\napplicable: internal extraction, no public API or user-observable\nbehavior\n- [ ] I have updated relevant examples in the `examples/` directory —\nnot applicable\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `sessions::ready_transcripts::tests` (9 module tests): provisional\nadmission,\n  mismatch discard, locked-digest conflict, wrong-cut conflict,\nparticipant-retry conflict, pre-lock count refusal, commit-adoption\nordering,\n  resync cut/digest rules, and locked-transcript ordering.\n- 12 targeted integration tests pass, including\n  `non_authority_ready_cannot_lock_the_digest_or_count`,\n\n`matching_provisional_ready_is_promoted_when_authority_locks_the_digest`,\nand\n\n`local_history_locks_the_digest_despite_a_conflicting_provisional_ready`.\n\n**Evidence (exact commands):**\n\n```text\ncargo fmt --all -- --check                          PASS\ncargo clippy --workspace --all-targets --features tokio,json\n                                                    PASS (no warnings)\ncargo tfull                                        3810 passed, 0 failed, 77 skipped\ncargo nextest run --workspace --features hot-join,tokio,json\n                                                   3811 passed, 0 failed, 77 skipped\ncargo test --doc                                   160 passed, 0 failed, 51 ignored\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features hot-join,tokio,json,sync-send --document-private-items\n                                                    PASS\ncargo check --target wasm32-unknown-unknown --no-default-features\n                                                    PASS\ncargo check --target wasm32-unknown-emscripten --no-default-features\n                                                    PASS\npython3 scripts/api/public_api_census.py --check   PASS (2779 symbols)\n./scripts/verification/verify-tla.sh CoordinatedReadyDigest\n                                                   PASS (2 passed, 0 failed)\n.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix\n                                                   PASS (all checks)\npython3 scripts/hooks/check-plan-hygiene.py        PASS\n```\n\n**Kani (Kani 0.68.0 local; repository pin 0.67.0 runs the same harnesses\nin CI):**\n\n```text\nproof_ready_admission_count_requires_authority_or_lock       SUCCESSFUL\nproof_ready_transcripts_provisional_never_counts             SUCCESSFUL\nproof_ready_transcripts_promotion_requires_matching_digest   SUCCESSFUL\n```\n\nThe local Kani invocation needed\n`RUSTFLAGS=\"-A semicolon-in-expressions-from-non-local-macros\"` because\nthe\npinned repository toolchain and the locally installed Kani nightly\ndisagree on\nthat pre-existing lint; no repository code suppresses the lint.\n\n**Mutation evidence:**\n\n```text\nmutated: None if !authority => Admission::Count\ncargo nextest run -E 'test(/ready_transcripts|non_authority_ready|provisional/)'\n  12 tests run: 5 passed, 7 failed\ncargo kani --harness proof_ready_transcripts_promotion_requires_matching_digest\n  VERIFICATION: FAILED (assertion failed: ready.admit(... false).is_ok())\nrestored: sha256 279d5f03... matches the pre-mutation copy\n```\n\n## Risks and rollback\n\n- **Risk:** the extraction keeps `Ready` relay decisions in the caller;\na\n  missed relay would delay convergence. The admission path returns\n`newly_locked || newly_recorded`, and the full 3,810-test suite plus the\n  focused integration tests pass.\n- **Residual risk:** the `BTreeMap` composition, certificate-adoption\nordering,\nand the session-level authority decision are module/integration tested,\nnot\nKani-proved; the manifest records this as `ready-transcript-map` (review\nby\n  2027-02-01).\n- **Rollback:** revert this squash commit. It changes no persistent\nstate,\nwire format, or public API, so a revert restores the inline bookkeeping\n  without migration.\n\n## Related Issues\n\nRelates to #576 (phase 2: `ready_transcripts`). Refs #529 and #530 for\nthe\nprovisional-`Ready` gate. The earlier phases are #572 (`checksum_basis`)\nand\n#574 (`terminal_epoch`).",
+          "timestamp": "2026-11-27T02:47:10Z",
+          "tree_id": "673a1151cb6d99e3261837be56e81aa6fe337cf1",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/7df920036ced927f522969b403d2497147b0315e"
+        },
+        "date": 1795748396955,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Frame/new",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_null",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_valid",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/10",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/100",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1000",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/4",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/8",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/16",
+            "value": 23,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/64",
+            "value": 39,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/256",
+            "value": 107,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/4",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/8",
+            "value": 29,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/16",
+            "value": 31,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/64",
+            "value": 47,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/256",
+            "value": 122,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/4",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/8",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/16",
+            "value": 24,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/64",
+            "value": 25,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/256",
+            "value": 28,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/8",
+            "value": 78,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/8",
+            "value": 95,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/8",
+            "value": 127,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/16",
+            "value": 140,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/16",
+            "value": 191,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/16",
+            "value": 292,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/32",
+            "value": 252,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/32",
+            "value": 353,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/32",
+            "value": 548,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/8",
+            "value": 142,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/8",
+            "value": 156,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/8",
+            "value": 187,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/16",
+            "value": 257,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/16",
+            "value": 310,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/16",
+            "value": 399,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/32",
+            "value": 481,
+            "range": "± 9",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/32",
+            "value": 574,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/32",
+            "value": 767,
+            "range": "± 10",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/idle",
+            "value": 329,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/active",
+            "value": 455,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/fighting",
+            "value": 647,
+            "range": "± 8",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/analog",
+            "value": 821,
+            "range": "± 27",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/2",
+            "value": 95,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/4",
+            "value": 133,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/2",
+            "value": 421,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/4",
+            "value": 689,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/7",
+            "value": 980,
+            "range": "± 26",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "P2PSession/metrics",
+            "value": 35,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message/encoded_len",
+            "value": 2,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=2",
+            "value": 20,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=4",
+            "value": 62,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=8",
+            "value": 238,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=16",
+            "value": 1053,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=8",
+            "value": 49790,
+            "range": "± 395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=16",
+            "value": 232086,
+            "range": "± 2047",
             "unit": "ns/iter"
           }
         ]
