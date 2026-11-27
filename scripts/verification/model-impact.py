@@ -25,6 +25,7 @@ import json
 import re
 import subprocess
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
@@ -490,7 +491,14 @@ def _sanitize(
     return "".join(out)
 
 
+@lru_cache(maxsize=8)
 def _strip_structure(text: str, language: str) -> str:
+    """Strip comments and literals, cached because one file is reused per fn.
+
+    The impact query normalizes many mapped functions in the same file; the
+    sanitized structure is a pure function of the text, so caching it turns the
+    per-test full-file scan into one scan per current/base revision.
+    """
     return _sanitize(text, language, keep_strings=False)
 
 
@@ -510,6 +518,27 @@ TEST_ATTR_RE = re.compile(r"#\[(?:tokio::)?test(?:\(|\])")
 KANI_ATTR_RE = re.compile(r"#\[kani::proof(?:\(|\])")
 TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[()\[\]{}<>;!]")
 
+# Modifiers allowed between an attribute and `fn`. Any other identifier after
+# the closing bracket means the attribute belongs to an item that ended on the
+# same line, not to the following `fn`.
+FUNCTION_MODIFIERS = frozenset(
+    {"pub", "async", "const", "unsafe", "extern", "move", "default"}
+)
+
+
+def _last_item_boundary(text: str) -> int:
+    """Return the last ``}``/``;`` outside an attribute's brackets, if any."""
+    depth = 0
+    boundary = -1
+    for index, character in enumerate(text):
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth = max(0, depth - 1)
+        elif depth == 0 and character in "};":
+            boundary = index
+    return boundary
+
 
 def _has_attribute(
     lines: list[str],
@@ -517,31 +546,84 @@ def _has_attribute(
     pattern: re.Pattern[str],
     column: int | None = None,
 ) -> bool:
-    """Return True when only attributes separate the fn from *pattern*."""
-    current_index = line_number - 1
-    if 0 <= current_index < len(lines):
-        current = lines[current_index]
-        if column is None:
-            fn_match = re.search(r"\bfn\b", current)
-            prefix_end = fn_match.start() if fn_match is not None else len(current)
-        else:
-            prefix_end = column
-        prefix = current[:prefix_end]
-        boundary = max(prefix.rfind("}"), prefix.rfind(";"))
-        if pattern.search(prefix[boundary + 1 :]):
-            return True
+    """Return True when only attribute blocks separate the fn from *pattern*.
+
+    Attribute blocks may span several lines (for example a multi-line
+    ``#[cfg_attr(...)]``), so the walk balances square brackets instead of
+    requiring each attribute to fit on one line. It stops at the first item
+    boundary or at a line that cannot belong to an attribute block, so a
+    preceding function's marker never leaks onto the next item.
+    """
+    if not 0 <= line_number - 1 < len(lines):
+        return False
+    current = lines[line_number - 1]
+    if column is None:
+        fn_match = re.search(r"\bfn\b", current)
+        prefix_end = fn_match.start() if fn_match is not None else len(current)
+    else:
+        prefix_end = column
+    prefix = current[:prefix_end]
+    boundary = _last_item_boundary(prefix)
+    # An item that ended on the fn line owns every attribute before the
+    # boundary; only the text after it can belong to this `fn`.
+    line_has_boundary = boundary >= 0
+    segment = prefix[boundary + 1 :]
+    # The only attribute that can share the fn line precedes the modifiers
+    # (`pub`, `async`, `const`, `unsafe`, `extern`). Keep the leading attribute
+    # text and drop the trailing modifiers.
+    attribute_start = segment.find("#[")
+    if attribute_start >= 0:
+        segment = segment[attribute_start:]
+        closing = segment.rfind("]")
+        if closing >= 0:
+            segment = segment[: closing + 1]
+    elif "]" in segment:
+        # A multi-line block may close on the fn line (`)] fn foo()`). Keep
+        # the closing text so the walk continues onto the opening lines.
+        segment = segment[: segment.rfind("]") + 1]
+    else:
+        segment = ""
     index = line_number - 2
-    attributes: list[str] = []
-    while index >= 0:
-        stripped = lines[index].strip()
-        if not stripped:
+    # Every pass consumes one line, so the walk terminates at the nearest
+    # non-attribute line or at the start of the file without truncating a
+    # legal (arbitrarily long) attribute block.
+    while True:
+        if not segment.strip():
+            if line_has_boundary:
+                return False
+            while index >= 0 and not lines[index].strip():
+                index -= 1
+            if index < 0:
+                return False
+            segment = lines[index]
             index -= 1
             continue
-        if not (stripped.startswith("#[") and stripped.endswith("]")):
-            break
-        attributes.append(stripped)
-        index -= 1
-    return any(pattern.search(attribute) for attribute in attributes)
+        balance = segment.count("[") - segment.count("]")
+        if balance != 0:
+            # An unbalanced block continues on the previous line. The final
+            # shape check prevents an item body from being mistaken for one.
+            while index >= 0 and not lines[index].strip():
+                index -= 1
+            if index < 0:
+                return False
+            segment = lines[index] + "\n" + segment
+            index -= 1
+            continue
+        stripped = segment.strip()
+        if not (stripped.startswith("#") and stripped.endswith("]")):
+            return False
+        tail = segment[segment.rfind("]") + 1 :]
+        if any(
+            word not in FUNCTION_MODIFIERS
+            for word in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", tail)
+        ):
+            # The closing bracket was followed by another item on the same
+            # line, so this attribute is not adjacent to our `fn`.
+            return False
+        if pattern.search(segment):
+            return True
+        segment = ""
+    return False
 
 
 def _has_test_attribute(
@@ -550,21 +632,117 @@ def _has_test_attribute(
     return _has_attribute(lines, line_number, TEST_ATTR_RE, column)
 
 
-def _module_path(path: Path, root: Path) -> tuple[str, ...]:
-    """Derive the Rust module path a file's top-level items live in."""
+_PACKAGE_NAME_CACHE: dict[str, str | None] = {}
+_BINARY_TARGET_CACHE: dict[str, dict[str, str]] = {}
+
+
+def _package_binary_name(root: Path) -> str:
+    """Return the default binary target name for ``src/main.rs``.
+
+    Cargo names a package's default binary after the package, with hyphens
+    turned into underscores for the crate identity used by test IDs. The
+    package name is read once per root; a package without ``Cargo.toml`` falls
+    back to ``main`` so the file still maps to a distinct crate root instead of
+    colliding with the library root.
+    """
+    key = str(root.resolve())
+    if key not in _PACKAGE_NAME_CACHE:
+        name: str | None = None
+        package = _manifest_table(root).get("package")
+        if isinstance(package, dict):
+            candidate = package.get("name")
+            if isinstance(candidate, str) and candidate:
+                name = candidate.replace("-", "_")
+        _PACKAGE_NAME_CACHE[key] = name
+    return _PACKAGE_NAME_CACHE[key] or "main"
+
+
+def _manifest_table(root: Path) -> dict[str, Any]:
+    """Read the root ``Cargo.toml``, or an empty table when it is unreadable."""
     try:
-        parts = list(path.relative_to(root).parts)
-    except ValueError:
-        return ()
-    if not parts or parts[0] not in {"src", "tests"}:
-        return ()
-    parts = parts[1:]
+        data = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _binary_targets(root: Path) -> dict[str, str]:
+    """Map binary source paths to their explicit ``[[bin]]`` target names.
+
+    An explicit ``[[bin]]`` entry can rename ``src/main.rs`` or a file under
+    ``src/bin/``, so the file stem is not authoritative when an entry matches.
+    """
+    key = str(root.resolve())
+    if key not in _BINARY_TARGET_CACHE:
+        targets: dict[str, str] = {}
+        bins = _manifest_table(root).get("bin", [])
+        if isinstance(bins, list):
+            for entry in bins:
+                if not isinstance(entry, dict):
+                    continue
+                name = entry.get("name")
+                path = entry.get("path")
+                if isinstance(name, str) and name and isinstance(path, str) and path:
+                    targets[Path(path).as_posix()] = name.replace("-", "_")
+        _BINARY_TARGET_CACHE[key] = targets
+    return _BINARY_TARGET_CACHE[key]
+
+
+def _binary_name(root: Path, relative: Path, default: str) -> str:
+    return _binary_targets(root).get(relative.as_posix(), default)
+
+
+def _module_tail(parts: list[str]) -> tuple[str, ...]:
+    """Map path parts below a crate root to that crate's module path."""
     if not parts:
         return ()
     stem = Path(parts[-1]).stem
     if stem in {"lib", "main", "mod"}:
         return tuple(parts[:-1])
     return tuple(parts[:-1] + [stem])
+
+
+def _module_path(path: Path, root: Path) -> tuple[str, ...]:
+    """Derive the Rust module path a file's top-level items live in.
+
+    Library modules keep their path from ``src/``. Cargo target roots are
+    qualified by the crate identity: a binary lives at its own target name
+    (``src/bin/tool.rs`` and ``src/bin/tool/main.rs`` are both ``tool::*``),
+    and ``src/main.rs`` is the package's default binary, not the library root.
+    """
+    try:
+        parts = list(path.relative_to(root).parts)
+    except ValueError:
+        return ()
+    if not parts or parts[0] not in {"src", "tests"}:
+        return ()
+    kind, rest = parts[0], parts[1:]
+    if not rest:
+        return ()
+    if kind == "src":
+        if rest[0] == "bin" and len(rest) >= 2:
+            binary = rest[1]
+            if binary.endswith(".rs"):
+                default = Path(binary).stem.replace("-", "_")
+                name = _binary_name(root, Path(*parts), default)
+                return (name, *_module_tail(rest[2:]))
+            default = binary.replace("-", "_")
+            name = _binary_name(root, Path("src", "bin", binary, "main.rs"), default)
+            return (name, *_module_tail(rest[2:]))
+        if rest == ["lib.rs"]:
+            return ()
+        if rest == ["main.rs"]:
+            default = _package_binary_name(root)
+            return (_binary_name(root, Path(*parts), default),)
+        return _module_tail(rest)
+    # A file directly under `tests/` is its own integration target, even when
+    # it is named `lib.rs`, `main.rs`, or `mod.rs`; those names are only
+    # crate-root markers under `src/`.
+    if len(rest) == 1:
+        return (Path(rest[0]).stem.replace("-", "_"),)
+    if len(rest) == 2 and rest[1] == "main.rs":
+        return (rest[0].replace("-", "_"),)
+    return _module_tail(rest)
 
 
 DELIMITER_CLOSE = {"(": ")", "[": "]", "{": "}"}
@@ -596,6 +774,11 @@ def _function_entries(
     depth = 0
     modules: list[tuple[str, int]] = []
     index = 0
+    # Function positions are increasing, so the line cursor advances instead of
+    # rescanning the prefix for every definition.
+    line = 1
+    line_start = 0
+    cursor = 0
     while index < len(words):
         word = words[index].group(0)
         if word == "macro_rules":
@@ -638,8 +821,12 @@ def _function_entries(
             following = words[index + 2].group(0)
             if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) and following in {"(", "<"}:
                 position = words[index].start()
-                line = structure.count("\n", 0, position) + 1
-                column = position - structure.rfind("\n", 0, position) - 1
+                line += structure.count("\n", cursor, position)
+                newline = structure.rfind("\n", cursor, position)
+                if newline >= 0:
+                    line_start = newline + 1
+                column = position - line_start
+                cursor = position
                 entries.append(
                     (tuple(module for module, _ in modules), name, line, column)
                 )
@@ -1047,15 +1234,58 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout
 
 
+_PREFIX_CACHE: dict[str, str] = {}
+
+
+def _git_prefix(root: Path) -> str:
+    """Return the repository-relative prefix of *root* (with a trailing slash).
+
+    Git reports ``diff --name-only`` paths from the repository root while
+    ``ls-files`` reports them from the invocation directory. Resolving the
+    prefix once lets the impact query normalize both to the manifest's root.
+    """
+    key = str(root.resolve())
+    if key not in _PREFIX_CACHE:
+        _PREFIX_CACHE[key] = _git(root, "rev-parse", "--show-prefix").strip()
+    return _PREFIX_CACHE[key]
+
+
+def _relative_to_root(path_text: str, prefix: str) -> str | None:
+    """Strip the repository prefix from a repo-root-relative path."""
+    if not prefix:
+        return path_text
+    if path_text.startswith(prefix):
+        return path_text[len(prefix) :]
+    return None
+
+
+def _path_exists_at_base(root: Path, base: str, path_text: str) -> bool:
+    """Return whether *path_text* exists in *base*.
+
+    ``git ls-tree`` fails when *base* is not a revision, so a bad base or a
+    broken repository propagates instead of masquerading as an absent file.
+    """
+    try:
+        listing = _git(root, "ls-tree", "--name-only", base, "--", f":(literal){path_text}")
+    except GitError as error:
+        raise GitError(f"cannot inspect {path_text} at {base}: {error}") from error
+    return bool(listing.strip())
+
+
 def _base_text(
     root: Path, base: str, path_text: str, cache: dict[str, str | None]
 ) -> str | None:
     """Return the file content at *base*, or None when it did not exist."""
     if path_text not in cache:
-        try:
-            cache[path_text] = _git(root, "show", f"{base}:{path_text}")
-        except GitError:
+        if not _path_exists_at_base(root, base, path_text):
             cache[path_text] = None
+        else:
+            try:
+                # ``rev:./path`` is resolved from the invocation directory, so
+                # a ``--root`` below the repository top still reads the file.
+                cache[path_text] = _git(root, "show", f"{base}:./{path_text}")
+            except GitError as error:
+                raise GitError(f"cannot read {path_text} at {base}: {error}") from error
     return cache[path_text]
 
 
@@ -1302,17 +1532,22 @@ def affected_components(
 ) -> ImpactReport:
     """Map the diff from *base* to components and detect missing updates."""
     today = today or dt.date.today()
-    changed = {
-        line.strip()
-        for line in _git(root, "diff", "--name-only", "--no-color", base).splitlines()
-        if line.strip()
-    }
+    prefix = _git_prefix(root)
+    changed: set[str] = set()
+    for line in _git(root, "diff", "--name-only", "--no-color", base).splitlines():
+        relative = _relative_to_root(line.strip(), prefix)
+        if relative:
+            changed.add(relative)
     changed.update(
         line.strip()
         for line in _git(root, "ls-files", "--others", "--exclude-standard").splitlines()
         if line.strip()
     )
-    diffs = parse_git_diff(_git(root, "diff", "-U0", "--no-color", base))
+    diffs: dict[str, FileDiff] = {}
+    for path_text, diff in parse_git_diff(_git(root, "diff", "-U0", "--no-color", base)).items():
+        relative = _relative_to_root(path_text, prefix)
+        if relative is not None:
+            diffs[relative] = diff._replace(path=relative)
     kani_index = kani_proof_index(root)
     z3_index = z3_proof_index(root)
     test_idx = test_index(root)

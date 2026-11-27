@@ -41,14 +41,17 @@ python3 scripts/verification/model-impact.py render --check
 `check` fails closed on a missing path, spec, Kani harness, Z3 proof, module-qualified Rust test,
 unregistered TLA check, expired residual `review_by`, expired waiver, or a stale generated table.
 A Rust test entry must match the test's full module path exactly; abbreviated or bare names fail,
-except for crate-root tests (in `src/lib.rs` or `src/main.rs`), whose qualified name is the bare
-function name. Same-named tests in different modules stay distinct, and a name defined in more
-than one file fails `check` as ambiguous. Scanner limitation: a standalone integration test file
-`tests/foo.rs` is keyed as `foo::...` from its filename, not as a crate-root test; use that key if
-mapping it (module-root handling is tracked in #606). A newly added spec counts only when it has
-non-comment, non-whitespace content. A Kani harness name must have exactly one `#[kani::proof]` definition;
-duplicates fail `check` with the defining paths. Symbol regex mismatches are advisory because
-method-level Rust parsing is out of scope for the first pass.
+except for library-root tests (in `src/lib.rs`), whose qualified name is the bare function name.
+Cargo target roots are qualified by their crate identity: `src/main.rs` uses the package's default
+binary name (or an explicit `[[bin]] name`), `src/bin/tool.rs` and `src/bin/tool/main.rs` both use
+`tool::...` (again honoring an explicit `[[bin]] name`), and an integration target `tests/foo.rs`
+uses `foo::...`. Same-named tests in different modules stay distinct, and a
+name defined in more than one file fails `check` as ambiguous. A newly added spec counts only when it
+has non-comment, non-whitespace content. A Kani harness name must have exactly one `#[kani::proof]`
+definition; duplicates fail `check` with the defining paths. Symbol regex mismatches are advisory
+because method-level Rust parsing is out of scope for the first pass. Git reads are normalized with
+`git rev-parse --show-prefix`, so `--root` may point below the repository top; a missing base
+revision or an unreadable path fails closed instead of being treated as a new file.
 
 ## Drift taxonomy
 
@@ -72,10 +75,11 @@ literal signatures after stripping comments. Braces inside normal, raw, and C ra
 literals, and nested comments do not truncate a mapped function's range. A mapped Kani harness is
 located by its `#[kani::proof]` attribute; duplicate or unrelated same-named functions do not
 count. Attribute-only edits outside a function body (for example `#[ignore]`) are not counted as
-proof updates. The lexer-lite scanner associates single-line attributes directly above an item;
-multi-line attribute blocks are a known limit tracked in #606. Macro invocation and `macro_rules!`
-token trees are skipped, so macro-generated tests and proofs are not indexed. Generated build trees
-under ignored paths are not scanned for tests.
+proof updates. The lexer-lite scanner associates attribute blocks directly above an item, including
+multi-line blocks such as `#[should_panic(expected = ...)]` and `#[cfg_attr(...)]` and a block that
+shares the `fn` line; a preceding item's attribute never leaks onto the next item. Macro invocation
+and `macro_rules!` token trees are skipped, so macro-generated tests and proofs are not indexed.
+Generated build trees under ignored paths are not scanned for tests.
 
 ## Proof-strength levels
 
