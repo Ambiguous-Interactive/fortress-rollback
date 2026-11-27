@@ -276,12 +276,14 @@ def test_macro_rules_template_is_not_indexed_as_a_test(tmp_path: Path) -> None:
     assert "macros::phantom" not in index
 
 
-def test_macro_invocation_template_is_not_indexed_as_a_test(tmp_path: Path) -> None:
+@pytest.mark.parametrize("opening,closing", [("{", "}"), ("(", ")"), ("[", "]")])
+def test_macro_invocation_template_is_not_indexed_as_a_test(
+    tmp_path: Path, opening: str, closing: str
+) -> None:
     repo = build_repo(tmp_path)
     macros = repo / "src" / "macros.rs"
     macros.write_text(
-        "macro_rules! unused { ($($t:tt)*) => {}; }\n\n"
-        "unused! { #[test] fn phantom() {} }\n",
+        f"consume!{opening}#[test] fn phantom() {{{closing}}};\n",
         encoding="utf-8",
     )
     index = model_impact.test_index(repo)

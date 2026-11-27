@@ -542,17 +542,21 @@ def _module_path(path: Path, root: Path) -> tuple[str, ...]:
     return tuple(parts[:-1] + [stem])
 
 
-def _brace_block_end(words: list[re.Match[str]], opener: int) -> int:
-    """Return the index of the brace that closes *opener*."""
-    depth = 0
+DELIMITER_CLOSE = {"(": ")", "[": "]", "{": "}"}
+
+
+def _token_tree_end(words: list[re.Match[str]], opener: int) -> int:
+    """Return the index of the delimiter that closes *opener*."""
+    stack: list[str] = []
     for position in range(opener, len(words)):
         part = words[position].group(0)
-        if part == "{":
-            depth += 1
-        elif part == "}":
-            depth -= 1
-            if depth == 0:
-                return position
+        if part in DELIMITER_CLOSE:
+            stack.append(DELIMITER_CLOSE[part])
+        elif part in {")", "]", "}"}:
+            if stack and stack[-1] == part:
+                stack.pop()
+                if not stack:
+                    return position
     return len(words) - 1
 
 
@@ -579,15 +583,15 @@ def _function_entries(
                 None,
             )
             if brace_index is not None:
-                index = _brace_block_end(words, brace_index) + 1
+                index = _token_tree_end(words, brace_index) + 1
                 continue
         if (
             index + 2 < len(words)
             and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", word)
             and words[index + 1].group(0) == "!"
-            and words[index + 2].group(0) == "{"
+            and words[index + 2].group(0) in DELIMITER_CLOSE
         ):
-            index = _brace_block_end(words, index + 2) + 1
+            index = _token_tree_end(words, index + 2) + 1
             continue
         if word == "mod" and index + 2 < len(words):
             name_word = words[index + 1].group(0)
