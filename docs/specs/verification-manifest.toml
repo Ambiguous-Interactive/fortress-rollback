@@ -103,24 +103,26 @@ residuals = [{ id = "terminal-epoch-key-ord", description = "the full TerminalEp
 id = "coordinated-barrier"
 status = "modeled"
 owner = "maintainer"
-last_reviewed = "2026-11-26"
-paths = ["src/sessions/p2p_session.rs"]
-symbols = ["src/sessions/p2p_session.rs::coordinated_drop_target_digest", "src/sessions/p2p_session.rs::coordinated_drop_participant_digest", "src/sessions/p2p_session.rs::coordinated_drop_cut_digest"]
+last_reviewed = "2026-11-27"
+paths = ["src/sessions/coordinated_drop.rs", "src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/coordinated_drop.rs::backfill_plan", "src/sessions/p2p_session.rs::coordinated_drop_target_digest", "src/sessions/p2p_session.rs::coordinated_drop_participant_digest", "src/sessions/p2p_session.rs::coordinated_drop_cut_digest"]
 specs = ["specs/tla/CoordinatedPeerDrop.tla"]
-tests = ["sessions::p2p_session::tests::commit_before_local_cut_adopts_the_certificate", "sessions::p2p_session::tests::coordinated_drop_commit_rejects_empty_participant_certificate"]
-scope = "one target input stream, two fixed survivors, one operation; endpoint/multi-handle composition stays in Rust tests"
+kani = ["proof_coordinated_drop_backfill_plan_covers_every_frame"]
+tests = ["sessions::coordinated_drop::tests::backfill_plan_uses_one_kib_chunks_and_counts_the_inclusive_range", "sessions::coordinated_drop::tests::backfill_plan_splits_a_wide_frame_into_single_frame_chunks", "sessions::coordinated_drop::tests::backfill_plan_rejects_a_zero_width_frame", "sessions::coordinated_drop::tests::backfill_plan_rejects_a_range_that_ends_before_it_starts", "sessions::coordinated_drop::tests::reset_backfill_grid_clears_only_the_uninstalled_grid_identity", "sessions::p2p_session::tests::commit_before_local_cut_adopts_the_certificate", "sessions::p2p_session::tests::coordinated_drop_commit_rejects_empty_participant_certificate"]
+scope = "one target input stream, two fixed survivors, one operation; endpoint/multi-handle composition stays in Rust tests; the chunk-grid arithmetic is Kani-proved and its donor/sender use is covered by table tests"
 residuals = []
 
 [[component]]
 id = "coordinator-failover"
 status = "modeled"
 owner = "maintainer"
-last_reviewed = "2026-11-26"
-paths = ["src/sessions/p2p_session.rs"]
-symbols = ["src/sessions/p2p_session.rs::coordinated_drop_fallback_coordinator", "src/sessions/p2p_session.rs::coordinated_drop_effective_coordinator", "src/sessions/p2p_session.rs::coordinated_drop_silent_since"]
+last_reviewed = "2026-11-27"
+paths = ["src/sessions/coordinated_drop.rs", "src/sessions/p2p_session.rs"]
+symbols = ["src/sessions/coordinated_drop.rs::fallback_coordinator", "src/sessions/coordinated_drop.rs::effective_coordinator", "src/sessions/p2p_session.rs::coordinated_drop_silent_since"]
 specs = ["specs/tla/CoordinatorFailover.tla", "specs/tla/CoordinatorFailoverCompeting.tla"]
-tests = ["sessions::p2p_session::tests::coordinator_report_for_another_operation_does_not_suppress_failover", "sessions::p2p_session::tests::repeated_request_preserves_the_earlier_failover_grace"]
-scope = "fixed deterministic fallback candidate, one operation, fixed receipts; reachability-based candidate selection is out of scope"
+kani = ["proof_coordinated_drop_fallback_is_not_the_coordinator", "proof_coordinated_drop_effective_coordinator_precedence"]
+tests = ["sessions::coordinated_drop::tests::fallback_coordinator_is_the_first_survivor_after_the_coordinator", "sessions::coordinated_drop::tests::effective_coordinator_prefers_the_acting_authority", "sessions::p2p_session::tests::coordinator_report_for_another_operation_does_not_suppress_failover", "sessions::p2p_session::tests::repeated_request_preserves_the_earlier_failover_grace"]
+scope = "fixed deterministic fallback candidate, one operation, fixed receipts; the fallback and acting-precedence kernels are Kani-proved in the extracted module; reachability-based candidate selection is out of scope"
 residuals = []
 
 [[component]]
