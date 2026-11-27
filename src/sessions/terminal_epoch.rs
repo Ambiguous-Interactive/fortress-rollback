@@ -50,6 +50,28 @@ pub(crate) const fn epoch_generation_is_current(
         || existing_generation == local_generation.wrapping_add(1)
 }
 
+/// Coordinator identity component of one epoch space.
+///
+/// This is a field of [`TerminalEpochKey`], so its derived equality and order
+/// are part of the key identity the `BTreeMap` compares. It is a separate type
+/// so Kani can prove the generation distinction without constructing a
+/// heap-backed handle set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct EpochSpaceIdentity {
+    coordinator: u16,
+    coordinator_generation: u16,
+}
+
+impl EpochSpaceIdentity {
+    /// Creates the identity of one coordinator generation.
+    pub(crate) const fn new(coordinator: u16, coordinator_generation: u16) -> Self {
+        Self {
+            coordinator,
+            coordinator_generation,
+        }
+    }
+}
+
 /// Whether a stored epoch space survives inserting a new space for the same
 /// canonical target set.
 ///
@@ -57,13 +79,12 @@ pub(crate) const fn epoch_generation_is_current(
 /// one-ahead generations remain. This keeps at most two generations per target
 /// set in the bounded table.
 pub(crate) const fn epoch_space_is_retained(
-    existing_coordinator: u16,
-    existing_generation: u16,
-    inserted_coordinator: u16,
+    existing: EpochSpaceIdentity,
+    inserted: EpochSpaceIdentity,
     local_generation: u16,
 ) -> bool {
-    existing_coordinator == inserted_coordinator
-        && epoch_generation_is_current(existing_generation, local_generation)
+    existing.coordinator == inserted.coordinator
+        && epoch_generation_is_current(existing.coordinator_generation, local_generation)
 }
 
 /// Sorts `handles[..len]` ascending and removes duplicates in place, returning
@@ -159,16 +180,14 @@ impl CanonicalTargetSet {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct TerminalEpochKey {
     handles: CanonicalTargetSet,
-    coordinator: u16,
-    coordinator_generation: u16,
+    authority: EpochSpaceIdentity,
 }
 
 impl TerminalEpochKey {
     fn from_targets(coordinator: u16, coordinator_generation: u16, targets: &[DropTarget]) -> Self {
         Self {
             handles: CanonicalTargetSet::from_targets(targets),
-            coordinator,
-            coordinator_generation,
+            authority: EpochSpaceIdentity::new(coordinator, coordinator_generation),
         }
     }
 
@@ -334,12 +353,7 @@ impl TerminalEpochTable {
         let local_generation = record.local_generation;
         self.entries.retain(|existing, _entry| {
             existing.handles != key.handles
-                || epoch_space_is_retained(
-                    existing.coordinator,
-                    existing.coordinator_generation,
-                    key.coordinator,
-                    local_generation,
-                )
+                || epoch_space_is_retained(existing.authority, key.authority, local_generation)
         });
         if self.entries.len() >= record.capacity {
             // A canonical target set is the fixed handle set of one remote
@@ -398,35 +412,7 @@ impl TerminalEpochTable {
 #[cfg_attr(any(), mutants::skip)]
 mod kani_proofs {
     use super::*;
-
-    /// Mirrors the coordinator and generation portion of the derived equality
-    /// on [`TerminalEpochKey`].
-    ///
-    /// The table's key also compares the canonical handle set. The one-ahead
-    /// and current eras in these proofs share that set by construction, so this
-    /// kernel is the load-bearing identity rule. Constructing a real key builds
-    /// a heap `Vec`, which the Kani budget cannot model; the table-level tests
-    /// `current_and_one_ahead_eras_keep_separate_epochs` and
-    /// `table_prunes_a_behind_era_when_the_local_view_advanced` pin the real
-    /// key's derived behavior.
-    fn epoch_keys_match(
-        first_coordinator: u16,
-        first_generation: u16,
-        second_coordinator: u16,
-        second_generation: u16,
-    ) -> bool {
-        first_coordinator == second_coordinator && first_generation == second_generation
-    }
-
-    /// The value a space holds after one lookup. A distinct key never advances
-    /// another key's epoch.
-    fn next_after_insertion(matched: bool, current: u32, proposed: u32) -> u32 {
-        if matched {
-            advance_next(current, proposed)
-        } else {
-            current
-        }
-    }
+    use std::cmp::Ordering;
 
     /// Recording an epoch only advances a space; it never lowers `next`.
     #[kani::proof]
@@ -457,77 +443,45 @@ mod kani_proofs {
         );
     }
 
-    /// The one-ahead era and the current era are distinct spaces. A one-ahead
-    /// insertion must not advance the current era's next epoch (the #525
-    /// regression). The old handles-only key dropped the generation, so
-    /// `epoch_keys_match` returned true and the higher one-ahead epoch
-    /// swallowed the current era.
+    /// The production [`EpochSpaceIdentity`] — the authority component of
+    /// [`TerminalEpochKey`] — distinguishes consecutive generations in both
+    /// derived equality and order. A one-ahead era therefore cannot collapse
+    /// into the current era's map entry (the #525 regression). The full key
+    /// composition and `BTreeMap` lookup are table-tested; this harness covers
+    /// the production identity type the map compares.
     #[kani::proof]
     fn proof_terminal_epoch_one_ahead_does_not_swallow_current() {
         let coordinator: u16 = kani::any();
         let current_generation: u16 = kani::any();
-        let ahead_generation = current_generation.wrapping_add(1);
+        let current = EpochSpaceIdentity::new(coordinator, current_generation);
+        let ahead = EpochSpaceIdentity::new(coordinator, current_generation.wrapping_add(1));
 
-        assert!(
-            !epoch_keys_match(
-                coordinator,
-                current_generation,
-                coordinator,
-                ahead_generation
-            ),
+        assert_ne!(
+            current, ahead,
             "a differing generation must not share an epoch space"
         );
-        assert!(
-            epoch_keys_match(
-                coordinator,
-                current_generation,
-                coordinator,
-                current_generation
-            ),
+        assert_eq!(
+            current,
+            EpochSpaceIdentity::new(coordinator, current_generation),
             "the same generation is the same space"
         );
-        let other_coordinator: u16 = kani::any();
-        kani::assume(other_coordinator != coordinator);
-        assert!(
-            !epoch_keys_match(
-                coordinator,
-                current_generation,
-                other_coordinator,
-                current_generation
-            ),
-            "a differing coordinator must not share an epoch space"
+        assert_ne!(
+            current.cmp(&ahead),
+            Ordering::Equal,
+            "the map order must distinguish generations"
         );
 
-        let current_next: u32 = kani::any();
-        let ahead_next: u32 = kani::any();
-        kani::assume(current_next < ahead_next);
-        assert_eq!(
-            next_after_insertion(
-                epoch_keys_match(
-                    coordinator,
-                    current_generation,
-                    coordinator,
-                    ahead_generation
-                ),
-                current_next,
-                ahead_next
-            ),
-            current_next,
-            "the one-ahead era must not swallow the current era's epoch"
+        let other_coordinator: u16 = kani::any();
+        kani::assume(other_coordinator != coordinator);
+        let other = EpochSpaceIdentity::new(other_coordinator, current_generation);
+        assert_ne!(
+            current, other,
+            "a differing coordinator must not share an epoch space"
         );
-        assert_eq!(
-            next_after_insertion(
-                epoch_keys_match(
-                    coordinator,
-                    current_generation,
-                    coordinator,
-                    current_generation
-                ),
-                current_next,
-                ahead_next
-            ),
-            ahead_next,
-            "the exact space advances monotonically"
+        assert_ne!(
+            current.cmp(&other),
+            Ordering::Equal,
+            "the map order must distinguish coordinators"
         );
     }
 
@@ -541,20 +495,17 @@ mod kani_proofs {
         let existing_generation: u16 = kani::any();
         let inserted_coordinator: u16 = kani::any();
 
-        let retained = epoch_space_is_retained(
-            existing_coordinator,
-            existing_generation,
-            inserted_coordinator,
-            local_generation,
-        );
+        let existing = EpochSpaceIdentity::new(existing_coordinator, existing_generation);
+        let inserted = EpochSpaceIdentity::new(inserted_coordinator, existing_generation);
+        let retained = epoch_space_is_retained(existing, inserted, local_generation);
         if retained {
             assert!(
-                existing_coordinator == inserted_coordinator,
+                existing.coordinator == inserted.coordinator,
                 "a coordinator change prunes the old coordinator's spaces"
             );
             assert!(
-                existing_generation == local_generation
-                    || existing_generation == local_generation.wrapping_add(1),
+                existing.coordinator_generation == local_generation
+                    || existing.coordinator_generation == local_generation.wrapping_add(1),
                 "a retained generation is the local or the one-ahead era"
             );
         }
@@ -581,9 +532,8 @@ mod kani_proofs {
         kani::assume(existing_coordinator != inserted_coordinator);
         assert!(
             !epoch_space_is_retained(
-                existing_coordinator,
-                local_generation,
-                inserted_coordinator,
+                EpochSpaceIdentity::new(existing_coordinator, local_generation),
+                EpochSpaceIdentity::new(inserted_coordinator, local_generation),
                 local_generation
             ),
             "a new coordinator retains none of the old spaces"
