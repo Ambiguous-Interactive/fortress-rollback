@@ -623,7 +623,7 @@ jobs:
 
       - name: Install wasm-bindgen CLI for browser runtime tests
         if: matrix.target == 'wasm32-unknown-unknown'
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: wasm-bindgen-cli@0.2.130
 
@@ -686,7 +686,7 @@ jobs:
 
       - name: Install wasmtime for the wasip1 runtime probe
         if: matrix.target == 'wasm32-wasip1'
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@fe3acb53a98b62c772db35de75ce0e4595e7ca8c # v2.90.8
         with:
           tool: wasmtime
 
