@@ -389,7 +389,9 @@ def _state_lock(
     def fence() -> None:
         try:
             current = owner.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeError):
+            # External corruption of the owner entry is indistinguishable from
+            # a lost lock: neither permits the caller to mutate budget state.
             raise BudgetError("the session budget lock was lost") from None
         if current != token:
             raise BudgetError("the session budget lock was lost")
@@ -402,7 +404,9 @@ def _state_lock(
         try:
             if owner.read_text(encoding="utf-8") == token:
                 shutil.rmtree(lock_dir, ignore_errors=True)
-        except OSError:
+        except (OSError, UnicodeError):
+            # Release is best effort. A corrupted owner cannot match our token
+            # and must not mask the fence failure that reported the lost lock.
             pass
 
 
