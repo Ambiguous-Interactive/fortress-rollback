@@ -676,6 +676,188 @@ def test_lock_corrupt_owner_bytes_are_a_budget_error(tmp_path: Path) -> None:
     assert lock_dir.exists()
 
 
+def _stale_lock(
+    tmp_path: Path, *, owner_bytes: bytes | None = None
+) -> tuple[Path, Path, Path]:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    owner = lock_dir / "owner"
+    if owner_bytes is not None:
+        owner.write_bytes(owner_bytes)
+    else:
+        owner.write_text("stale", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(owner, (old, old))
+    return path, lock_dir, owner
+
+
+def test_lock_stale_reap_replacement_owner_directory_is_a_budget_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, lock_dir, _owner = _stale_lock(tmp_path)
+    real_rename = os.rename
+    replaced = False
+
+    def replacing_rename(
+        source: str | os.PathLike[str], destination: str | os.PathLike[str]
+    ) -> None:
+        nonlocal replaced
+        real_rename(source, destination)
+        if Path(source) == lock_dir and not replaced:
+            replaced = True
+            # Replace the moved owner with a directory between the rename and
+            # the re-read, so read_text raises IsADirectoryError.
+            (Path(destination) / "owner").unlink()
+            (Path(destination) / "owner").mkdir()
+
+    monkeypatch.setattr(session_budget.os, "rename", replacing_rename)
+
+    with pytest.raises(
+        session_budget.BudgetError,
+        match="cannot inspect the replacement session budget lock",
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert isinstance(excinfo.value.__cause__, OSError)
+    # The moved directory is restored and left for the normal stale path.
+    assert lock_dir.is_dir()
+    assert (lock_dir / "owner").is_dir()
+
+
+def test_lock_stale_reap_replacement_owner_non_utf8_is_a_budget_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, lock_dir, _owner = _stale_lock(tmp_path)
+    real_rename = os.rename
+    replaced = False
+
+    def corrupting_rename(
+        source: str | os.PathLike[str], destination: str | os.PathLike[str]
+    ) -> None:
+        nonlocal replaced
+        real_rename(source, destination)
+        if Path(source) == lock_dir and not replaced:
+            replaced = True
+            (Path(destination) / "owner").write_bytes(b"\xff\xfe\xfd")
+
+    monkeypatch.setattr(session_budget.os, "rename", corrupting_rename)
+
+    with pytest.raises(
+        session_budget.BudgetError,
+        match="cannot inspect the replacement session budget lock",
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert isinstance(excinfo.value.__cause__, UnicodeError)
+    assert lock_dir.is_dir()
+    assert (lock_dir / "owner").read_bytes() == b"\xff\xfe\xfd"
+
+
+def test_lock_stale_reap_replacement_owner_stat_failure_is_a_budget_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path, lock_dir, _owner = _stale_lock(tmp_path)
+    real_stat = Path.stat
+
+    def failing_stat(
+        self: Path, *args: object, **kwargs: object
+    ) -> os.stat_result:
+        if self.name == "owner" and ".stale." in self.parent.name:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", failing_stat)
+
+    with pytest.raises(
+        session_budget.BudgetError,
+        match="cannot inspect the replacement session budget lock",
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+    assert lock_dir.is_dir()
+
+
+def test_lock_owner_lstat_failure_is_a_budget_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    owner = lock_dir / "owner"
+    owner.write_text("owner", encoding="utf-8")
+    real_lstat = Path.lstat
+
+    def failing_lstat(self: Path) -> os.stat_result:
+        if self == owner:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_lstat(self)
+
+    monkeypatch.setattr(Path, "lstat", failing_lstat)
+
+    with pytest.raises(
+        session_budget.BudgetError,
+        match="cannot inspect the session budget lock owner",
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+
+
+def test_lock_directory_stat_failure_is_a_budget_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    real_stat = Path.stat
+
+    def failing_stat(
+        self: Path, *args: object, **kwargs: object
+    ) -> os.stat_result:
+        if self == lock_dir:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", failing_stat)
+
+    with pytest.raises(
+        session_budget.BudgetError,
+        match="cannot inspect the session budget lock at",
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert isinstance(excinfo.value.__cause__, PermissionError)
+
+
+def test_fence_and_release_map_a_non_utf8_owner_to_a_lost_lock(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+
+    with pytest.raises(session_budget.BudgetError, match="lock was lost") as excinfo:
+        with session_budget._state_lock(path) as fence:
+            # External corruption during an active lease must fail closed as a
+            # lost lock, and the release path must not raise a raw UnicodeError
+            # that masks the fence failure.
+            (lock_dir / "owner").write_bytes(b"\xff\xfe\xfd")
+            fence()
+
+    assert isinstance(excinfo.value.__context__, UnicodeError)
+    assert excinfo.value.__suppress_context__
+    assert excinfo.value.__cause__ is None
+    # Release is best effort and never removes a path it cannot prove it owns;
+    # the corrupted lock is left for the normal stale-lock recovery path.
+    assert lock_dir.exists()
+
+
 def test_lock_owner_open_failure_leaves_a_replacement_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
