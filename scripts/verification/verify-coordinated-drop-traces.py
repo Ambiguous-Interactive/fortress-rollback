@@ -121,6 +121,34 @@ def validate_runtime_traces(cases: dict[str, TraceCase]) -> None:
             f"extra={sorted(set(cases) - set(TRACE_FILES))}"
         )
     for case in cases.values():
+        prepares = [
+            row for row in case.rows if row["action"].get("kind") == "PrepareAdmitted"
+        ]
+        if not prepares:
+            raise fail(f"{case.path}: trace has no prepare admission")
+        first = prepares[0]["action"]
+        operation = first.get("operation")
+        counts = (first.get("participants"), first.get("targets"))
+        if not isinstance(operation, dict) or any(
+            type(count) is not int or count < 1 for count in counts
+        ):
+            raise fail(f"{case.path}: prepare metadata is malformed")
+        for row in prepares:
+            action = row["action"]
+            if action.get("operation") != operation:
+                raise fail(f"{case.path}: prepare rows disagree on operation identity")
+            if (action.get("participants"), action.get("targets")) != counts:
+                raise fail(
+                    f"{case.path}: prepare rows disagree on participant/target counts"
+                )
+            state = row["state"]
+            if (
+                state["participantCount"] != counts[0]
+                or state["targetCount"] != counts[1]
+            ):
+                raise fail(
+                    f"{case.path}: prepare counts do not match the projected state"
+                )
         names = {row["action"].get("kind") for row in case.rows}
         required = {
             "PrepareAdmitted",

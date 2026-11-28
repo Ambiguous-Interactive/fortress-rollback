@@ -428,3 +428,30 @@ def test_normalize_uses_promotion_for_a_provisional_that_counts() -> None:
         row["action"] != "SendReady" or row.get("to") != 0
         for row in normalized[promote_index:]
     )
+
+
+def test_validate_runtime_traces_rejects_inconsistent_prepare_metadata() -> None:
+    def prepare(sequence: int, local: int) -> dict[str, Any]:
+        operation = _operation()
+        operation["sequence"] = sequence
+        return {
+            "action": {
+                "kind": "PrepareAdmitted",
+                "operation": operation,
+                "participants": 3,
+                "targets": 1,
+            },
+            "state": _state(
+                active=True,
+                phase="Inventory",
+                localParticipant=local,
+                participantCount=3,
+                targetCount=1,
+            ),
+        }
+
+    case = _case([prepare(1, 0), prepare(2, 1)])
+    with pytest.raises(
+        trace_verifier.TraceError, match="disagree on operation identity"
+    ):
+        trace_verifier.validate_runtime_traces({"runtime-drop.ndjson": case})
