@@ -26,6 +26,8 @@ mod common;
 mod simulation {
     pub mod baseline_sweep;
     pub mod census;
+    #[cfg(feature = "trace-validation")]
+    pub mod coordinated_drop_trace_validation;
     pub mod corpus_replay;
     pub mod differential;
     pub mod fleet;

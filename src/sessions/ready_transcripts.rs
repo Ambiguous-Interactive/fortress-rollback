@@ -173,6 +173,14 @@ impl ReadyTranscripts {
             .map(|(&participant, transcript)| (participant, transcript.cut(), transcript.digest()))
     }
 
+    /// Provisional transcripts in participant order, for trace validation.
+    #[cfg(feature = "trace-validation")]
+    pub(crate) fn provisional_transcripts(&self) -> impl Iterator<Item = (u16, Frame, u64)> + '_ {
+        self.provisional
+            .iter()
+            .map(|(&participant, transcript)| (participant, transcript.cut(), transcript.digest()))
+    }
+
     /// Establishes the expected cut and digest, then promotes matching
     /// provisional reports.
     ///

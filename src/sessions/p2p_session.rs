@@ -27,6 +27,11 @@ use crate::sessions::coordinated_drop::{
     FallbackDropPrepare, PendingTargetCommit, RejectedDropOperation, TerminalTargetWatermark,
     UnseenCommitEvidence, COORDINATED_DROP_COMMIT_RETRY_WINDOW, COORDINATED_DROP_FALLBACK_GRACE,
 };
+#[cfg(feature = "trace-validation")]
+use crate::sessions::coordinated_drop_trace::{
+    CoordinatedDropTraceEvent, CoordinatedDropTraceOverflow, CoordinatedDropTraceRecorder,
+    CoordinatedDropTraceState, MAX_COORDINATED_DROP_TRACE_EVENTS,
+};
 use crate::sessions::event_drain::enqueue_event_bounded;
 use crate::sessions::player_registry::PlayerRegistry;
 use crate::sessions::ready_transcripts::ReadyTranscripts;
@@ -379,6 +384,9 @@ where
     sometimes_state_seen: AtomicU8,
     /// Operation-identified, non-retracting graceful-drop barrier (D14).
     coordinated_drop: CoordinatedDropState<T::Address>,
+    /// Opt-in bounded recorder for coordinated-drop trace validation.
+    #[cfg(feature = "trace-validation")]
+    coordinated_drop_trace: Option<CoordinatedDropTraceRecorder>,
     /// Cumulative count of accepted current-history donor announcements
     /// (participants that became able to donate after their inventory report).
     /// Doc-hidden diagnostic only; saturating.
@@ -1933,6 +1941,13 @@ impl<T: Config> P2PSession<T> {
         {
             return;
         }
+        #[cfg(feature = "trace-validation")]
+        if let Some(recorder) = self.coordinated_drop_trace.as_mut() {
+            recorder.record_rejection(
+                operation.into(),
+                u16::try_from(targets.len()).unwrap_or(u16::MAX),
+            );
+        }
         // Build the replacement payload first, then trim immediately before
         // insertion. A failed allocation must not evict a journal entry whose
         // replacement cannot be recorded.
@@ -2680,6 +2695,8 @@ impl<T: Config> P2PSession<T> {
         {
             self.drive_coordinated_drop();
         }
+        #[cfg(feature = "trace-validation")]
+        self.record_coordinated_drop_trace();
         Ok(())
     }
 
@@ -5934,6 +5951,8 @@ impl<T: Config> P2PSession<T> {
             exposed_confirmed_high_water: AtomicI32::new(Frame::NULL.as_i32()),
             sometimes_state_seen: AtomicU8::new(0),
             coordinated_drop: CoordinatedDropState::default(),
+            #[cfg(feature = "trace-validation")]
+            coordinated_drop_trace: None,
             coordinated_drop_donor_announcements: 0,
             coordinated_drop_announced_backfill_chunks: 0,
             coordinated_drop_backfill_chunks: 0,
@@ -6627,6 +6646,8 @@ impl<T: Config> P2PSession<T> {
         if self.coordinated_drop_may_change_confirmation() {
             self.confirmed_frame_cache = None;
         }
+        #[cfg(feature = "trace-validation")]
+        self.record_coordinated_drop_trace();
 
         // emit network stats telemetry for each running remote endpoint
         if let Some(telemetry) = &self.telemetry {
@@ -11353,6 +11374,113 @@ impl<T: Config> P2PSession<T> {
                 handle: player_handle,
             }
             .into()),
+        }
+    }
+
+    /// Activates the opt-in coordinated-drop trace recorder.
+    ///
+    /// The recorder reserves its complete capacity before the session starts
+    /// polling and never allocates while the session is running.
+    #[cfg(feature = "trace-validation")]
+    pub(crate) fn activate_coordinated_drop_trace(
+        &mut self,
+        capacity: usize,
+    ) -> Result<(), FortressError> {
+        if !(1..=MAX_COORDINATED_DROP_TRACE_EVENTS).contains(&capacity) {
+            return Err(InvalidRequestKind::ConfigValueOutOfRange {
+                field: "coordinated_drop_trace_capacity",
+                min: 1,
+                max: MAX_COORDINATED_DROP_TRACE_EVENTS as u64,
+                actual: u64::try_from(capacity).unwrap_or(u64::MAX),
+            }
+            .into());
+        }
+        let recorder = CoordinatedDropTraceRecorder::try_new(capacity)?;
+        self.coordinated_drop_trace = Some(recorder);
+        Ok(())
+    }
+
+    /// Returns the unstable bounded coordinated-drop refinement trace.
+    ///
+    /// The outer option is `None` when the builder did not enable tracing. The
+    /// inner result reports terminal fixed-capacity overflow without returning
+    /// a partial trace as if it were complete. This verification-only surface
+    /// is compiled out unless `trace-validation` is enabled.
+    #[cfg(feature = "trace-validation")]
+    #[doc(hidden)]
+    pub fn coordinated_drop_trace(
+        &self,
+    ) -> Option<Result<&[CoordinatedDropTraceEvent], CoordinatedDropTraceOverflow>> {
+        self.coordinated_drop_trace
+            .as_ref()
+            .map(CoordinatedDropTraceRecorder::result)
+    }
+
+    /// Projects the current coordinated-drop state into the trace projection.
+    #[cfg(feature = "trace-validation")]
+    fn coordinated_drop_trace_state(&self) -> CoordinatedDropTraceState {
+        let mut state = CoordinatedDropTraceState::empty();
+        if let Some(active) = self.coordinated_drop.active.as_ref() {
+            state.active = true;
+            state.operation = Some(active.operation.into());
+            state.phase = Some(active.phase.into());
+            state.local_participant = active.local_participant;
+            state.authority = active
+                .effective_coordinator()
+                .unwrap_or(active.local_participant);
+            state.quorum = u16::try_from(active.quorum).unwrap_or(u16::MAX);
+            state.participant_count = u16::try_from(active.participants.len()).unwrap_or(u16::MAX);
+            state.target_count = u16::try_from(active.targets.len()).unwrap_or(u16::MAX);
+            state.cut = active.cut;
+            state.digest = active.ready.digest();
+            state.backfill_installed = active.next_backfill_chunk;
+            state.committed = active.phase == CoordinatedDropPhase::Committed;
+            for (participant, cut, digest) in active.ready.locked_transcripts() {
+                let index = usize::from(participant);
+                if let Some(slot) = state.counted.get_mut(index) {
+                    *slot = true;
+                    if let Some(value) = state.counted_cut.get_mut(index) {
+                        *value = cut.as_i32();
+                    }
+                    if let Some(value) = state.counted_digest.get_mut(index) {
+                        *value = digest;
+                    }
+                }
+            }
+            for (participant, cut, digest) in active.ready.provisional_transcripts() {
+                let index = usize::from(participant);
+                if let Some(slot) = state.provisional.get_mut(index) {
+                    *slot = true;
+                    if let Some(value) = state.provisional_cut.get_mut(index) {
+                        *value = cut.as_i32();
+                    }
+                    if let Some(value) = state.provisional_digest.get_mut(index) {
+                        *value = digest;
+                    }
+                }
+            }
+        }
+        for (&handle, fence) in &self.coordinated_drop.committed {
+            let index = handle.as_usize();
+            if let Some(slot) = state.frozen.get_mut(index) {
+                *slot = true;
+                if let Some(value) = state.frozen_cut.get_mut(index) {
+                    *value = fence.cut.as_i32();
+                }
+            }
+        }
+        state
+    }
+
+    /// Publishes one post-poll coordinated-drop snapshot to the recorder.
+    #[cfg(feature = "trace-validation")]
+    fn record_coordinated_drop_trace(&mut self) {
+        if self.coordinated_drop_trace.is_none() {
+            return;
+        }
+        let observed = self.coordinated_drop_trace_state();
+        if let Some(recorder) = self.coordinated_drop_trace.as_mut() {
+            recorder.observe(&observed);
         }
     }
 

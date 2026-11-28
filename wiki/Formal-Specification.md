@@ -957,6 +957,23 @@ fail-closed `ConflictingHistory` in `coordinated_drop_mark_ready` and
 selection and backfill are `CoordinatedPeerDrop.tla`; the coordinator/acting
 fallback transition is `CoordinatorFailover.tla`.
 
+`specs/tla/CoordinatedDropTrace.tla` adds the runtime refinement boundary for
+this gate. The opt-in `trace-validation` recorder in
+`src/sessions/coordinated_drop_trace.rs` projects a bounded post-poll snapshot,
+and `tests/simulation/coordinated_drop_trace_validation.rs` produces three
+traces from a deterministic three-survivor SimNet drop. Each trace row is
+constrained through the real `CoordinatedReadyDigest` Ready/commit actions;
+prepare, cut selection, backfill, phase, and freeze rows are explicit boundary
+actions that leave the digest-gate state unchanged. The wrapper
+`verify-coordinated-drop-traces.py` accepts all three runtime traces, rejects a
+derived non-authority Ready counted without a locked digest under
+`AuthorityLocked`, and accepts the same mutation under the pre-#530
+`ProvisionalCounts` control. That control is the red evidence that the
+mutation is not rejected merely because it differs from the runtime trace.
+Known gaps: one successful operation, no backfill-forcing loss, no failover or
+abort trace, and retransmission/poll order are not modeled. See
+`specs/tla/traces/coordinated-drop-v1/README.md`.
+
 The Rust bookkeeping is the extracted `ReadyTranscripts`
 (`src/sessions/ready_transcripts.rs`). Its `Provisional` and `Locked`
 transcript types are distinct, the counted set is private, and only
@@ -1011,6 +1028,7 @@ that residual.
 | Production state transitions | Rust tests | ✅ Implemented (`src/network/protocol/mod.rs`) |
 | Bounded config-handshake safety and fair-delivery convergence | TLA+ | ✅ Implemented (`SyncHandshakeV1.tla`, `SyncHandshakeV1Fair.tla`, and `SyncHandshakeV1Mismatch.tla`) |
 | Hand-authored and runtime config-handshake trace contract | TLA+ / NDJSON | ✅ Bounded runtime-to-model refinement and mutation controls; documented fields excluded (`specs/tla/traces/sync-handshake-v1/`) |
+| Runtime coordinated-drop trace contract | TLA+ / NDJSON | ✅ Three-survivor runtime traces, digest-gate mutation, and pre-#530 control; documented gaps (`specs/tla/traces/coordinated-drop-v1/`) |
 | SAFE-4 (rollback consistency) | TLA+ | ✅ Implemented (`specs/tla/Rollback.tla`)         |
 | Frame arithmetic              | Z3   | ✅ Model only (`tests/verification/z3.rs`; classified in `verification-manifest.toml`) |
 | Queue index math              | Z3   | ✅ Model only (`tests/verification/z3.rs`; classified in `verification-manifest.toml`) |
