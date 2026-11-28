@@ -1,374 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795844240901,
+  "lastUpdate": 1795846931574,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Informational Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "2a1a26c2c90cb727380359df0c4f11ef97e20039",
-          "message": "fix: acknowledge live-target removals and attribute current-history donors (#486)\n\n## Description\n\nCloses the three coordinated graceful-removal follow-ups filed from\n#481, and closes the dependency-migration evaluation issue as not\napplicable. All three bugs are in the live-target / lossy-inventory path\nof the D14 graceful-removal certificate.\n\n### Commit delivery to a live removed target (#482)\n\nA survivor disconnects the target endpoint as soon as it applies the\ncertificate, but drop-control datagrams are best-effort and were queued\nexactly once. A live removed target whose copy was lost kept `Running`\non a dropped history until its own peer timeout.\n\n- Survivors now keep a bounded (`<= num_players`) per-target retirement\nfence and retransmit the commit into the endpoint's `Disconnected`\nshutdown window. Retransmission stops on the target's acknowledgement,\nafter a one-second retry window, or as soon as the endpoint shuts down /\nleaves `Disconnected`.\n- A target that receives a committed certificate for an operation it\nnever opened acknowledges with a dedicated `TargetAck` report from its\nsmallest local handle and fails closed. Acknowledgements are advisory:\nthey only stop retransmission and never extend any survivor's confirmed\nfrontier.\n- Duplicate acknowledgements that arrive after the fence cleared are\nignored; they no longer fail the already-committed certificate closed.\n- A hot-join replacement at the same address is a new generation:\nretransmission stops when the endpoint leaves `Disconnected`, and a\nserving host clears the fence when it re-arms the slot. A fresh joiner\nnever receives the departed generation's certificate.\n- A session that has failed closed (`halt_confirmed_ceiling` set) never\ncertifies a removal. A poisoned joiner could otherwise inject a solo\ntarget certificate into a healthy mesh.\n\n### Current-history donor announcements (#483)\n\nInventory reports are start-of-attempt snapshots. A survivor that became\nable to donate afterwards (its missing target frames arrived through\nordinary replication/retransmission) sent chunks that every other\nreceiver discarded, and the attempt failed closed with `MissingHistory`.\n\n- A newly-able donor announces its current retained range as a\n`DropReport` with the new `DropReportStage::Donor` (`cut` = earliest\nservable frame, `cut_digest` = the digest it computes for the certified\ncut). The stage is an additive member of the existing report enum; the\nv3 wire golden registers it.\n- Receivers validate the operation, participant set, agreed cut, and\ndigest, re-derive the canonical chunk count from `[start, cut]` and the\ntarget set, lock one chunk grid per operation, and reject conflicting\nannouncements or chunks instead of mixing donors.\n- A no-donor attempt waits until the two-second operation deadline for a\nlate announcement before failing closed. Inventory completeness\ndescribes the snapshot, not future donation ability, so there is no\nseparate grace period.\n- Inventory-selected donors keep the existing fast path and send no\nannouncement. An inventory-selected donor that stops responding is\nfiltered out, letting a participant that acquired the range after the\nsnapshot announce and supply it.\n- Every backfill chunk carries the producing donor and the start of its\nwhole range. Relays preserve both, and a receiver locks the grid to one\ndonor: chunks from another donor are discarded even when the layout is\nidentical, so two donors cannot interleave earlier inputs.\n\n### Harness oracle fidelity (#484)\n\nFor `RunOptions::live_graceful_target`, the harness capped a target's\nconfirmed inputs at the request-time minimum survivor receipt. The\ncertified cut is the maximum target receipt across survivors, so the\noracle ignored shared history between the two. The cap is now deferred\nto retirement and derived from the certified cut observed on a survivor\n(the request-time receipt remains only a fallback).\n\n`RunReport::donor_announcements` and the doc-hidden\n`P2PSession::diagnostic_donor_announcements_accepted` provide\nnon-vacuity evidence for the donor path.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [x] 🧪 Test (adding or updating tests)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective\n- [x] `cargo fmt && cargo clippy --workspace --all-targets --features\ntokio,json,hot-join,violation-census` passes with no warnings\n- [x] `cargo nextest run` passes\n\n### If Applicable\n\n- [x] Documentation updated (`docs/user-guide.md`, `remove_player`\nrustdoc)\n- [x] `CHANGELOG.md` entry added under **Pre-existing:** Fixed\n- [x] No new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n- `committed_drop_retransmits_until_a_live_target_acknowledges`: drops\nthe first commit datagrams at a `MeshBus` transport boundary, asserts\nthe target stays `Running` while it has no certificate, then leaves\n`Running` after the retransmission and asserts the acknowledgement\nclears the fence.\n-\n`committed_drop_retry_state_is_bounded_when_the_target_never_acknowledges`\n- `duplicate_target_ack_after_the_retry_fence_cleared_is_ignored`\n- `donor_announcement_attributes_current_history_backfill`\n- `backfill_chunk_reordered_ahead_of_its_donor_announcement_is_retried`\n- `conflicting_donor_announcements_fail_closed`\n- `backfill_chunks_from_different_start_grids_fail_closed`\n- CAP row\n`reordered_inventory_removal_certifies_without_missing_history` (lossy,\nduplicated, retransmission-delayed N=4 live-target removal,\nreplay-pinned)\n- Harness/oracle regression rows updated for the corrected live-target\ncap (`full_ring_receipt_stagger_fails_closed_at_retained_boundary`,\n`pct_lagging_survivor_does_not_fake_a_freeze_divergence`)\n\n**Validation evidence:**\n\n- `cargo nextest run --workspace --features\ntokio,json,hot-join,violation-census --no-fail-fast` -> 3610 passed, 0\nfailed, 77 skipped.\n- `cargo tfull` -> 3308 passed, 0 failed, 76 skipped.\n- `cargo clippy --workspace --all-targets --features\ntokio,json,hot-join,violation-census -- -D warnings` -> clean.\n- `python3 scripts/ci/agent-preflight.py --full --auto-fix` -> all\nchecks passed.\n- Cross-target checks: `wasm32-unknown-unknown`,\n`wasm32-unknown-emscripten`, `wasm32-wasip1`,\n`aarch64-unknown-linux-gnu`, `i686-unknown-linux-gnu`\n(`--no-default-features --features hot-join`).\n- `cargo update --dry-run`: no compatible dependency updates available\n(the six lagging crates are major-version bumps).\n\n**Review follow-up (CodeRabbit on this PR):**\n\n- Direct donor retransmissions are relayed again (so a lost forwarded\ncopy is repaired) while relayed duplicates are not re-relayed, bounding\npropagation to one extra hop. Pinned by\n`relayed_donor_duplicates_are_bounded_but_direct_retries_relay`.\n- One target acknowledgement now clears every pending retry fence for\nthe same removed endpoint and commit (multi-handle endpoints acknowledge\nonce with their smallest local handle). Pinned by\n`target_ack_clears_every_handle_of_the_removed_endpoint`.\n- Once a donor has announced, the no-donor grace no longer fails the\nattempt; the announced range stays recoverable until the two-second\noperation deadline. Pinned by\n`announced_donor_defers_missing_history_until_the_operation_deadline`.\n\n**Mutation-gate hardening (fixes the current main mutation-summary\nfailure class):**\n\n- Added a table-driven malformed-inventory-report matrix\n(`malformed_inventory_reports_fail_closed_without_mutation`), a\nprepare-routing test\n(`coordinated_drop_send_prepare_targets_only_running_participants`), a\ncommitted-attempt deferral test\n(`prepare_during_a_committed_attempt_is_deferred`), and a matching\nreclaimed-floor overlap control in the input-queue test.\n\n\n**Review follow-up (CodeRabbit round 3):**\n\n- **Wire protocol v3.** The donor/target-ack report stages are\nincompatible with released v2 decoders, and a v2 peer could complete the\nv2 handshake and then drop them. `PROTOCOL_VERSION` is now `3`,\n`MIN_SUPPORTED_PROTOCOL_VERSION` follows it, and\n`src/network/wire_golden_v3.rs` is the active immutable byte suite;\n`wire_golden_v2.rs` is a rejection suite. See the **Breaking:**\nchangelog entry.\n- Target acknowledgements use a dedicated `DropReportStage::TargetAck`,\nso a target (or an omitted session that failed closed) can never be\ncounted as survivor commit evidence. Disconnected endpoints admit only\n`TargetAck`.\n- Multi-chunk backfill validation uses the chunk's explicit\n`range_start` and `donor`, checks the chunk sits at `range_start +\nchunk_index * frames_per_chunk`, locks one donor and range per\noperation, and validates each chunk's frame count. A 16-player two-chunk\nregression pins it.\n- The initial commit is flushed to the retiring target endpoint before a\nhot-join rearm can replace its send queue.\n- A donor may announce an earlier range after a delayed inventory\nreport; the not-yet-installed grid resets instead of failing the honest\nupdate.\n- A rearmed survivor slot clears that address's retirement retries.\n- A failed-closed session closes its uncertified attempt locally without\nemitting witness reports.\n- Racing current-history donors now have a deterministic choice: the\nlowest participant that announced a covering range. Other donors' grids\nare discarded, not failed closed.\n- Diagnostic docs distinguish accepted announcements from completed\nbackfills; the acknowledgement test stays strictly inside the retry\nwindow.\n\n\n**Review follow-up (final rounds):**\n\n- Every `TargetAck` is consumed before the rejected-operation journal,\nso an acknowledgement\nalways clears its retry fence. A multi-handle endpoint's acknowledgement\nis attributed by\n  endpoint address, matching the fence keyed by the removed handle.\n- Announced-donor selection filters unresponsive endpoints; a changed\nselection rebinds the\nuninstalled grid, and before any grid locks the first valid announced\ngrid supplies the range\n  so divergent survivor views cannot discard each other's only chunks.\n- Unseen removal certificates need a second endpoint's corroboration\n(the sole peer suffices in a\ntwo-player session) and must name a coordinator generation the receiver\nhas not moved past; a\nbounded per-identity replay watermark rejects delayed duplicates after\nthe closed journal\nevicts them. A competing known commit needs the same evidence before it\ncan make an active\n  attempt yield.\n- `RunReport` records every installed backfill chunk by donor source;\nthe reordered-removal row\n  asserts a non-vacuous installed suffix.\n- The live-target oracle cap now finalizes at the end of the run so a\nlate-observable certified\n  cut always wins.\n- Validation at `9190785`: `nextest --lib` 1947 passed, `--test\nsimulation` 472 passed, CI profile\n(`--profile ci --features tokio,json`) 3312 passed, `cargo tfull` 3326\npassed, clippy\n`-D warnings` clean, agent preflight passed, wiki dry-run\nbyte-identical.\n\n## Related Issues\n\nCloses #482\nCloses #483\nCloses #484\nRelates to #481, #474, #473\n\n**Review follow-up (CodeRabbit round 8):**\n\n- Commit retransmissions stop as soon as the endpoint leaves the\ndeparted generation's `Disconnected` window. A serving host rearms the\nslot at commit, so the fence clears before any retry and a replacement\ngeneration can never accept the old `DropCommit`. Pinned by\n`hot_join_rearm_stops_commit_retries` and\n`commit_retries_stop_when_the_disconnected_window_closes`.\n- Retirement delivery is deduplicated by address per poll while the\nper-handle fences stay for acknowledgement and cleanup.\n`target_ack_clears_every_handle_of_the_removed_endpoint` also pins a\ndifferent commit at the same address.\n- The donor fallback and the current-history announcement path are\nexercised end to end;\n`lossy_graceful_removal_rows_keep_one_history_and_recover` asserts a\nnonzero `donor_announcements` entry.\n- The no-donor docs name the two-second operation deadline as the only\nterminal verdict, consistent with the earlier Major finding on the\ninventory snapshot.\n\n**Review follow-up (CodeRabbit rounds 9-11):**\n\n- `TargetAck` is consumed before any operation journal, so a committed\nor rejected operation no longer swallows the target's acknowledgement.\nAcknowledgements are attributed by the sender endpoint's address, so an\nack from a co-located handle clears the removed handle's fence for the\nsame commit.\n- Before a grid is locked, the first valid announced grid supplies the\nrange (`selected_announced || no_grid_locked`), so survivors that\ndisagree about the inventory donor's reachability cannot wedge the\nbackfill. Once locked, one donor owns the grid; a changed selection\nrebinds only the uninstalled grid.\n- An unseen certificate needs distinct-endpoint corroboration (two\nendpoints, or the sole peer in a two-player session), a valid\ncoordinator generation, and must be newer than the per-coordinator\nreplay watermark. A single peer can no longer halt an active session;\ndelayed duplicates below a retained cut are rejected.\n- Installed backfills are counted separately\n(`RunReport::backfill_chunks` and `announced_backfill_chunks`); the\nreordered row asserts nonzero installed backfill, and the\nannounced-install path is pinned by\n`donor_announcement_attributes_current_history_backfill`. Generated rows\nstill do not install an announced chunk end-to-end, tracked as #488.\n- The live-target harness cap is finalized at run end: the certified cut\nwins when any survivor observed it, and the request-time ceiling is only\nthe no-certificate fallback.\n- The guide and synced wiki describe the target acknowledgement as the\ndedicated `TargetAck` stage only; no paragraph references a `Committed`\nreport.\n- Closes #487 (ordered `PeerDropped` evidence per survivor).",
-          "timestamp": "2026-11-19T07:44:19Z",
-          "tree_id": "f05ccff5a5c2a330abd2ab747e7b220b3ce6e146",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/2a1a26c2c90cb727380359df0c4f11ef97e20039"
-        },
-        "date": 1795074967381,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Frame/new",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_null",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame/is_valid",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/10",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/100",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Frame arithmetic/add/1000",
-            "value": 0,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/4",
-            "value": 15,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/8",
-            "value": 15,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/16",
-            "value": 16,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/64",
-            "value": 20,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/zeros/256",
-            "value": 72,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/4",
-            "value": 17,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/8",
-            "value": 16,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/16",
-            "value": 15,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/64",
-            "value": 25,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE encode/random/256",
-            "value": 93,
-            "range": "± 5",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/4",
-            "value": 14,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/8",
-            "value": 14,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/16",
-            "value": 15,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/64",
-            "value": 15,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "RLE decode/zeros/256",
-            "value": 16,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/8",
-            "value": 34,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/8",
-            "value": 41,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/8",
-            "value": 52,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/16",
-            "value": 56,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/16",
-            "value": 72,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/16",
-            "value": 112,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_4b/32",
-            "value": 109,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_4b/32",
-            "value": 161,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_4b/32",
-            "value": 220,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/8",
-            "value": 54,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/8",
-            "value": 61,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/8",
-            "value": 71,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/16",
-            "value": 103,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/16",
-            "value": 127,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/16",
-            "value": 160,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/idle_encode_8b/32",
-            "value": 197,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/active_encode_8b/32",
-            "value": 241,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression pipeline/fighting_encode_8b/32",
-            "value": 292,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/idle",
-            "value": 158,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/active",
-            "value": 214,
-            "range": "± 2",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/fighting",
-            "value": 284,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Compression ratio analysis/roundtrip/analog",
-            "value": 366,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/2",
-            "value": 54,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_no_rollback/4",
-            "value": 72,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/2",
-            "value": 360,
-            "range": "± 3",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/4",
-            "value": 600,
-            "range": "± 4",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncTestSession/advance_frame_with_rollback/7",
-            "value": 903,
-            "range": "± 5",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "P2PSession/metrics",
-            "value": 15,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message/encoded_len",
-            "value": 1,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=2",
-            "value": 11,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=4",
-            "value": 29,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=8",
-            "value": 109,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P confirmed_frame/steady_mesh/N=16",
-            "value": 398,
-            "range": "± 16",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=8",
-            "value": 27679,
-            "range": "± 52",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "H-16P advance_frame/warmed_mesh/N=16",
-            "value": 129316,
-            "range": "± 459",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -18299,6 +17933,372 @@ window.BENCHMARK_DATA = {
             "name": "H-16P advance_frame/warmed_mesh/N=16",
             "value": 180777,
             "range": "± 3757",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "a7073f097611f5b785235c2f4e706c01d456fb9b",
+          "message": "fix(sessions): restore hot-join clippy after the trace recorder (#623) (#624)\n\n## Description\n\nRestores the red `Hot Join Feature` lane on `main` after #621. The\nrequired `Run hot-join clippy`\nstep failed with two independent diagnostics; both are fixed here\nwithout changing runtime\nbehavior:\n\n1. `clippy::branches_sharing_code` at\n`src/sessions/coordinated_drop_trace.rs:295`: both arms of\nthe operation-change branch reset attempt-local state. The reset is now\nhoisted above the\n`if let`; the `Some` arm seeds the new operation and the `None` arm\nrecords `AttemptCleared`.\n2. `clippy::large_stack_arrays` / `clippy::large_futures`: the inline\n`Option<CoordinatedDropTraceRecorder>` added roughly 6.5 KiB to every\n`P2PSession` whenever\n`trace-validation` was enabled, even when no recorder was activated. The\nrecorder is now boxed,\n   restoring the pre-#621 session size for dormant sessions.\n\nA unit test now characterizes the `AttemptCleared` transition\n(previously untested): attempt-local\nprojection fields clear while session-global frozen targets survive.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [x] `none` — no mapped production path or symbol changed\n- [ ] `updated: <spec/proof>` — the model, proof, or mapped test is\nupdated in this PR\n- [ ] `waived: <reason + approver>` — a named maintainer approved the\nexception and it is recorded in the tracked issue/PR\n\n- [ ] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (state which below)\n\n`python3 scripts/verification/model-impact.py affected --base\norigin/main` → `No mapped\nverification impact`.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**:\n  - No `unwrap()` in production code\n  - No `expect()` in production code\n  - No `panic!()` or `todo!()`\n  - All fallible operations return `Result`\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes\n- [ ] I have updated relevant examples in the `examples/` directory\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n-\n`sessions::coordinated_drop_trace::tests::recorder_clears_attempt_local_state_but_keeps_frozen_targets`\n\n**Manual testing performed:**\n\n- Red at `c3fb5695` with the exact lane command:\n`cargo clippy --workspace --all-targets --features\nhot-join,tokio,json,sync-send,paranoid,trace-validation,violation-census\n-- -D warnings`\n→ exit 101, `branches_sharing_code`; after that fix the same command\nreached\n`large_stack_arrays` in `tests/sessions/desync_harvest.rs` and\n`large_futures` in\n  `tests/tokio_session.rs` (all caused by enabling `trace-validation`).\n- Green: the same command now exits 0.\n- `cargo tf` → 3020 passed, 512 skipped.\n- `cargo tfull` → 3821 passed, 77 skipped.\n- `cargo test --doc` → 160 passed, 52 ignored.\n- `RUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features\nhot-join,tokio,json,sync-send --document-private-items` → exit 0.\n- `.venv/bin/python scripts/ci/agent-preflight.py --full --auto-fix` →\nall checks passed.\n- WASM: `cargo check -p fortress-rollback --target\nwasm32-unknown-unknown --no-default-features --features\nhot-join,trace-validation` → exit 0;\n`cargo check -p wasm-browser-smoke --features hot-join --target\nwasm32-unknown-unknown --lib --tests` → exit 0.\n- Targeted mutation: skipping `reset_attempt_local` on the clear\ntransition makes the new unit test\n  fail at `assert!(!event.state.active)` (0 passed, 1 failed).\n\n## Goal, Risks, and Rollback\n\n**Goal:** the `Hot Join Feature` clippy lane is green on the fix-forward\nhead and on `main`.\n\n**Risks:** the recorder is now one additional allocation at activation,\nbefore polling begins; the\nmodule's no-allocation-while-running contract is unchanged. No wire,\nhash, protocol, or default-build\nbehavior changes; every new surface remains behind `trace-validation`.\n\n**Rollback:** revert this commit; the only consumer is the\n`trace-validation` verification path.\n\n## Related Issues\n\nFixes #623.\nRelates to #621.",
+          "timestamp": "2026-11-28T06:09:58Z",
+          "tree_id": "576dca0b45ea19e352908c942a93bc43a2441b0f",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/a7073f097611f5b785235c2f4e706c01d456fb9b"
+        },
+        "date": 1795846931487,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Frame/new",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_null",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame/is_valid",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/10",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/100",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Frame arithmetic/add/1000",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/4",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/8",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/16",
+            "value": 17,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/64",
+            "value": 22,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/zeros/256",
+            "value": 77,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/4",
+            "value": 18,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/8",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/16",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/64",
+            "value": 27,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE encode/random/256",
+            "value": 100,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/4",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/8",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/16",
+            "value": 15,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/64",
+            "value": 16,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "RLE decode/zeros/256",
+            "value": 17,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/8",
+            "value": 36,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/8",
+            "value": 44,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/8",
+            "value": 55,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/16",
+            "value": 60,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/16",
+            "value": 78,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/16",
+            "value": 119,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_4b/32",
+            "value": 125,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_4b/32",
+            "value": 167,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_4b/32",
+            "value": 241,
+            "range": "± 16",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/8",
+            "value": 58,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/8",
+            "value": 67,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/8",
+            "value": 77,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/16",
+            "value": 135,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/16",
+            "value": 151,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/16",
+            "value": 192,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/idle_encode_8b/32",
+            "value": 320,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/active_encode_8b/32",
+            "value": 361,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression pipeline/fighting_encode_8b/32",
+            "value": 408,
+            "range": "± 18",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/idle",
+            "value": 172,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/active",
+            "value": 212,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/fighting",
+            "value": 309,
+            "range": "± 20",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Compression ratio analysis/roundtrip/analog",
+            "value": 379,
+            "range": "± 51",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/2",
+            "value": 56,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_no_rollback/4",
+            "value": 75,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/2",
+            "value": 390,
+            "range": "± 11",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/4",
+            "value": 633,
+            "range": "± 102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncTestSession/advance_frame_with_rollback/7",
+            "value": 953,
+            "range": "± 19",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "P2PSession/metrics",
+            "value": 16,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message/encoded_len",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=2",
+            "value": 11,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=4",
+            "value": 32,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=8",
+            "value": 122,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P confirmed_frame/steady_mesh/N=16",
+            "value": 474,
+            "range": "± 23",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=8",
+            "value": 28506,
+            "range": "± 465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "H-16P advance_frame/warmed_mesh/N=16",
+            "value": 134019,
+            "range": "± 2869",
             "unit": "ns/iter"
           }
         ]
