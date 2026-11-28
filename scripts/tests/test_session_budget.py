@@ -727,6 +727,28 @@ def test_lock_owner_open_failure_leaves_a_replacement_lock(
         assert moved.stat().st_mtime == 0
 
 
+def test_lock_symlink_owner_is_a_budget_error(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    target = tmp_path / "target-owner"
+    target.write_text("token", encoding="utf-8")
+    owner = lock_dir / "owner"
+    try:
+        owner.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation is unavailable")
+
+    with pytest.raises(
+        session_budget.BudgetError, match="is not a regular file"
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert str(owner) in str(excinfo.value)
+    assert lock_dir.exists()
+
+
 def test_write_state_fence_rejects_a_lost_lock(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     lock_dir = path.with_name(f"{path.name}.lock")

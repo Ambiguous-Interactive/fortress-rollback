@@ -294,7 +294,9 @@ def _state_lock(
 
         last_filesystem_error = None
         try:
-            owner_metadata = owner.stat()
+            # Inspect the entry itself: a symlink to a regular file is still a
+            # corrupted lock entry and must fail closed.
+            owner_metadata = owner.lstat()
         except FileNotFoundError:
             try:
                 modified = lock_dir.stat().st_mtime
