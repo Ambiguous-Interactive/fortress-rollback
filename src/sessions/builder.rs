@@ -123,6 +123,9 @@ where
     /// Fixed record capacity for the unstable handshake refinement recorder.
     #[cfg(feature = "trace-validation")]
     handshake_trace_capacity: Option<usize>,
+    /// Fixed record capacity for the unstable coordinated-drop refinement recorder.
+    #[cfg(feature = "trace-validation")]
+    coordinated_drop_trace_capacity: Option<usize>,
     /// Whether this session serves hot-joins (host role). Set via
     /// [`with_hot_join`](Self::with_hot_join) or implied by
     /// [`add_reserved_player`](Self::add_reserved_player).
@@ -178,6 +181,8 @@ impl<T: Config> std::fmt::Debug for SessionBuilder<T> {
             disconnect_behavior,
             #[cfg(feature = "trace-validation")]
             handshake_trace_capacity,
+            #[cfg(feature = "trace-validation")]
+            coordinated_drop_trace_capacity,
             #[cfg(feature = "hot-join")]
             accept_hot_join,
             #[cfg(feature = "hot-join")]
@@ -216,7 +221,12 @@ impl<T: Config> std::fmt::Debug for SessionBuilder<T> {
             .field("recording", recording)
             .field("disconnect_behavior", disconnect_behavior);
         #[cfg(feature = "trace-validation")]
-        debug.field("handshake_trace_capacity", handshake_trace_capacity);
+        debug
+            .field("handshake_trace_capacity", handshake_trace_capacity)
+            .field(
+                "coordinated_drop_trace_capacity",
+                coordinated_drop_trace_capacity,
+            );
         #[cfg(feature = "hot-join")]
         debug
             .field("accept_hot_join", accept_hot_join)
@@ -266,6 +276,8 @@ impl<T: Config> SessionBuilder<T> {
             disconnect_behavior: DisconnectBehavior::default(),
             #[cfg(feature = "trace-validation")]
             handshake_trace_capacity: None,
+            #[cfg(feature = "trace-validation")]
+            coordinated_drop_trace_capacity: None,
             #[cfg(feature = "hot-join")]
             accept_hot_join: false,
             #[cfg(feature = "hot-join")]
@@ -305,6 +317,40 @@ impl<T: Config> SessionBuilder<T> {
             .into());
         }
         self.handshake_trace_capacity = Some(capacity);
+        Ok(self)
+    }
+
+    /// Sets the fixed record capacity for the unstable coordinated-drop
+    /// refinement recorder.
+    ///
+    /// This verification-only option is compiled out unless the
+    /// `trace-validation` feature is enabled. It applies to the constructed P2P
+    /// session and activates before the first poll. Normal applications must
+    /// not depend on this hidden API.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidRequestKind::ConfigValueOutOfRange`] when `capacity` is
+    /// zero or exceeds the semantic session ceiling of 256 records.
+    #[cfg(feature = "trace-validation")]
+    #[doc(hidden)]
+    pub fn with_coordinated_drop_trace_capacity(
+        mut self,
+        capacity: usize,
+    ) -> Result<Self, FortressError> {
+        if !(1..=crate::sessions::coordinated_drop_trace::MAX_COORDINATED_DROP_TRACE_EVENTS)
+            .contains(&capacity)
+        {
+            return Err(InvalidRequestKind::ConfigValueOutOfRange {
+                field: "coordinated_drop_trace_capacity",
+                min: 1,
+                max: crate::sessions::coordinated_drop_trace::MAX_COORDINATED_DROP_TRACE_EVENTS
+                    as u64,
+                actual: u64::try_from(capacity).unwrap_or(u64::MAX),
+            }
+            .into());
+        }
+        self.coordinated_drop_trace_capacity = Some(capacity);
         Ok(self)
     }
 
@@ -1656,7 +1702,7 @@ impl<T: Config> SessionBuilder<T> {
             ack_resends: self.hot_join_ack_resends,
         };
 
-        P2PSession::<T>::new(
+        let session = P2PSession::<T>::new(
             self.num_players,
             self.max_prediction,
             Box::new(socket),
@@ -1673,7 +1719,16 @@ impl<T: Config> SessionBuilder<T> {
             self.disconnect_behavior,
             #[cfg(feature = "hot-join")]
             hot_join,
-        )
+        )?;
+        #[cfg(feature = "trace-validation")]
+        let session = {
+            let mut session = session;
+            if let Some(capacity) = self.coordinated_drop_trace_capacity {
+                session.activate_coordinated_drop_trace(capacity)?;
+            }
+            session
+        };
+        Ok(session)
     }
 
     /// Consumes the builder to construct a hot-joiner [`P2PSession`] that joins a
@@ -2724,6 +2779,40 @@ mod tests {
                         field: "handshake_trace_capacity",
                         min: 1,
                         max: MAX_HANDSHAKE_TRACE_EVENTS as u64,
+                        actual: invalid as u64,
+                    },
+                }
+            );
+        }
+    }
+
+    #[cfg(feature = "trace-validation")]
+    #[test]
+    fn coordinated_drop_trace_capacity_accepts_semantic_session_bound() {
+        let bound = crate::sessions::coordinated_drop_trace::MAX_COORDINATED_DROP_TRACE_EVENTS;
+        let builder = SessionBuilder::<TestConfig>::new()
+            .with_coordinated_drop_trace_capacity(bound)
+            .expect("semantic session bound is valid");
+
+        assert_eq!(builder.coordinated_drop_trace_capacity, Some(bound));
+    }
+
+    #[cfg(feature = "trace-validation")]
+    #[test]
+    fn coordinated_drop_trace_capacity_rejects_zero_and_above_semantic_bound() {
+        let bound = crate::sessions::coordinated_drop_trace::MAX_COORDINATED_DROP_TRACE_EVENTS;
+        for invalid in [0, bound + 1] {
+            let error = SessionBuilder::<TestConfig>::new()
+                .with_coordinated_drop_trace_capacity(invalid)
+                .expect_err("out-of-range trace capacity must fail");
+
+            assert_eq!(
+                error,
+                FortressError::InvalidRequestStructured {
+                    kind: InvalidRequestKind::ConfigValueOutOfRange {
+                        field: "coordinated_drop_trace_capacity",
+                        min: 1,
+                        max: bound as u64,
                         actual: invalid as u64,
                     },
                 }

@@ -277,6 +277,10 @@ pub mod sessions {
     /// Kani).
     #[doc(hidden)]
     pub(crate) mod coordinated_drop;
+    /// Bounded runtime events for coordinated-drop trace validation.
+    #[cfg(feature = "trace-validation")]
+    #[doc(hidden)]
+    pub mod coordinated_drop_trace;
     #[doc(hidden)]
     pub mod event_drain;
     /// Hot-join snapshot serialization and capture/apply helpers.
@@ -423,6 +427,11 @@ pub mod __internal {
     pub use crate::network::protocol::{
         HandshakeReplyDisposition, HandshakeRequestDisposition, HandshakeRequestIdDisposition,
         HandshakeTraceAction, HandshakeTraceConfig, HandshakeTraceEvent, HandshakeTraceOverflow,
+    };
+    #[cfg(feature = "trace-validation")]
+    pub use crate::sessions::coordinated_drop_trace::{
+        CoordinatedDropTraceAction, CoordinatedDropTraceEvent, CoordinatedDropTraceOperation,
+        CoordinatedDropTraceOverflow, CoordinatedDropTracePhase, CoordinatedDropTraceState,
     };
 
     // Session internals

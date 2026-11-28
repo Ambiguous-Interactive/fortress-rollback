@@ -107,6 +107,7 @@ ADDITIONAL_CHECKS=(
 # The wrapper includes three positive traces and one exact expected-reject mutation.
 TRACE_CHECKS=(
     "SyncHandshakeV1TraceContract"
+    "CoordinatedDropTraceContract"
 )
 
 # Track results
@@ -129,6 +130,7 @@ print_usage() {
     echo "  $0                      # Verify all specs"
     echo "  $0 SyncHandshakeV1      # Verify single spec"
     echo "  $0 SyncHandshakeV1TraceContract  # Verify hand-authored trace contract"
+    echo "  $0 CoordinatedDropTraceContract  # Verify runtime coordinated-drop trace"
     echo "  $0 --quick              # Quick verification"
     echo "  $0 --quick --fail-fast  # CI mode: quick, stop on first failure"
 }
@@ -145,6 +147,7 @@ print_specs() {
         echo "  $spec  $status"
     done
     echo "  SyncHandshakeV1TraceContract  ✓ (NDJSON trace suite)"
+    echo "  CoordinatedDropTraceContract  ✓ (runtime coordinated-drop trace suite)"
 }
 
 check_java() {
@@ -390,6 +393,32 @@ verify_sync_handshake_trace_contract() {
     local -a command=(
         python3
         "$PROJECT_ROOT/scripts/verification/verify-sync-handshake-traces.py"
+        --jar "$TLA_TOOLS_JAR"
+    )
+    if [[ "$verbose" == "true" ]]; then
+        command+=(--verbose)
+    fi
+
+    echo -e "${BLUE}Verifying $label...${NC}"
+    if "${command[@]}"; then
+        echo -e "${GREEN}✓ $label passed${NC}"
+        RESULTS[$label]="PASS"
+        ((PASSED++))
+        return 0
+    fi
+
+    echo -e "${RED}✗ $label failed${NC}"
+    RESULTS[$label]="FAIL"
+    ((FAILED++))
+    return 1
+}
+
+verify_coordinated_drop_trace_contract() {
+    local verbose="${1:-false}"
+    local label="CoordinatedDropTraceContract"
+    local -a command=(
+        python3
+        "$PROJECT_ROOT/scripts/verification/verify-coordinated-drop-traces.py"
         --jar "$TLA_TOOLS_JAR"
     )
     if [[ "$verbose" == "true" ]]; then
@@ -728,7 +757,8 @@ main() {
             exit 1
         fi
 
-        if [[ "$target_spec" == "SyncHandshakeV1TraceContract" ]]; then
+        if [[ "$target_spec" == "SyncHandshakeV1TraceContract" || \
+            "$target_spec" == "CoordinatedDropTraceContract" ]]; then
             specs_to_verify=()
         else
             specs_to_verify=("$target_spec")
@@ -774,6 +804,17 @@ main() {
     elif [[ -z "$target_spec" || "$target_spec" == "SyncHandshakeV1" || \
         "$target_spec" == "SyncHandshakeV1TraceContract" ]]; then
         if ! verify_sync_handshake_trace_contract "$verbose"; then
+            any_failed=true
+        fi
+        echo ""
+    fi
+
+    # Runtime coordinated-drop refine the digest gate and commit/freeze boundary.
+    if [[ "$any_failed" == "true" && "$fail_fast" == "true" ]]; then
+        :
+    elif [[ -z "$target_spec" || "$target_spec" == "CoordinatedReadyDigest" || \
+        "$target_spec" == "CoordinatedDropTraceContract" ]]; then
+        if ! verify_coordinated_drop_trace_contract "$verbose"; then
             any_failed=true
         fi
         echo ""
