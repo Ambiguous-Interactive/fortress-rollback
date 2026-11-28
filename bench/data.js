@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795825909100,
+  "lastUpdate": 1795844238599,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "62c777a2f81389e56b1014eb290fe4159ca8db19",
-          "message": "fix: close coordinated-removal review findings and harness liveness guard (#481)\n\n## Description\n\nAddresses the unresolved review findings from the coordinated\ngraceful-removal work merged in #474, #475, #478, and #479, and improves\nthe certificate's availability under a one-way requester -> coordinator\nfault without reopening split-winner admission.\n\nProduction fixes:\n- A non-coordinator requester broadcasts its `Prepare` to the\noperation's participants. Non-coordinator participants forward it to the\noperation coordinator without admitting it, so a lost\nrequester-to-coordinator link does not stall the removal while a relay\npath exists. Only participants receive prepares; non-participants would\nfail closed on exact-membership validation under asymmetric timeout\nviews.\n- Preserve the original admission source when a prepare is deferred\nbehind a committed certificate instead of recomputing it as the\ncoordinator.\n- Relay a validated coordinator cut announcement through participants,\npreserving the coordinator identity. The first transition and direct\ncoordinator retries are forwarded; relayed duplicates are not\nre-relayed, bounding propagation.\n- Consult the rejected-operation journal before the terminal-operation\nhistory. A superseded operation lives in both collections, and the\njournal is the only path that answers a retransmitted prepare with a\nfresh `Superseded` abort after the first abort is lost.\n- Build the replacement journal payload and reserve it before trimming,\nso a failed allocation cannot evict an entry whose replacement cannot be\nrecorded.\n- Reject a conflicting backfill overlap that only survives in the\nreclaimed rollback-floor slot. `confirmed_input` can still return that\nvalue even when it is not contiguous with the ring, so accepting a\ndifferent backfill value silently contradicted local history.\n\nSimulation/harness:\n- New CAP row 5 `coordinator_link_loss_relays_prepare_and_commits`\n(replay-pinned): peer 2 -> coordinator 0 is blocked from step 100 to 400\nwhile peer 3 is removed at step 120. Direct-only prepares fail closed\nwith `Timeout; phase=Inventory`; the relay commits and all survivors\nrecover after the heal.\n- Record each live removal target's `Running` interval before the\nretirement guard can skip it. The previous write was unreachable, so\n`live_target_premature_exit` could never fire and an early target exit\nwas silently treated as an initial-sync exception.\n- Pin relay and fresh-abort behavior with cumulative per-kind send\ncounters, plus transactional input-queue conflict tests.\n- Require per-target `PeerDropped` evidence in the lossy\nconcurrent-removal row.\n- Remove the broad `coordinated graceful drop` failure allowlist from\nthe H-RING row.\n- Refresh the D14 PCT lagging-survivor expected vector after the\nadditional relay traffic; the regression still has the intended lagging\nshape.\n\nDocs:\n- Qualify the concurrent-removal ordering guarantee per\noperation/coordinator and document the relay path.\n- Document the inventory-failure path, the `Running -> Synchronizing`\nfailed-removal signal (with a bounded initial-sync wait and rebuild\naction), and the journal-retention limit on repeated aborts.\n- Clarify rollback sequencing after a commit and the checksum-history\nbehavior after certified-cut re-simulation.\n- Regenerate the wiki mirrors.\n\nDependencies:\n- `cargo update`: regex 1.13.2, regex-automata 0.4.19, regex-syntax\n0.8.12, smallvec 1.16.6. Workspace lock freshness check passes.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 📚 Documentation (changes to documentation only)\n- [x] 🔧 CI/Build (dependency lockfile refresh)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**\n- [x] I have added tests that prove my fix is effective\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly\n- [x] I have added an entry to `CHANGELOG.md` for user-facing changes\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n- `coordinator_link_loss_relays_prepare_and_commits` (red/green CAP row)\n- `superseded_closed_operation_answers_retransmission_with_fresh_abort`\n- `rejected_prepare_is_remembered_and_cannot_reopen` (fresh-abort\nassertions)\n- `non_coordinator_prepare_requires_the_coordinator_source` (relay\nassertion)\n- `reclaimed_floor_overlap_conflict_is_rejected`\n- `evicted_prefix_then_retained_conflict_rejects_transactionally`\n- H-RING allowlist narrowed; lossy removal row requires per-target drop\nevidence; PCT vector refreshed.\n\n**Evidence:**\n- `cargo tfull`: 3272 passed, 76 skipped.\n- `cargo test --doc`: 168 passed, 55 ignored.\n- Targeted\n`coordinator_cut_announcement_requires_exact_shape_and_authority` passes\non native, aarch64, and i686.\n- `cargo test --test simulation`: 471 passed, 28 ignored.\n- Nightly live-target regression: 5 seed rows + lossy concurrent row\npassed.\n- Nightly shards 0-7 at seed base 12345 on `fe245d6`: all green (125\nseeds per shard).\n- Cross-target `cargo check --lib` (default + no-default):\n`wasm32-unknown-unknown`, `wasm32-wasip1`, `wasm32-unknown-emscripten`,\n`i686-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.\n- `cargo clippy --workspace --all-targets --features tokio,json`: clean.\n- `cargo doc --no-deps --features tokio,json` and link check: clean.\n- `python3 scripts/ci/agent-preflight.py --full --auto-fix`: all checks\npass.\n- `python3 scripts/release/workspace_locks.py check`: passes.\n\nAll review threads are resolved; the latest OpenAI review reports 0\nfindings and every CodeRabbit actionable item has been fixed.\nCodeRabbit's optional full re-review is currently rate-limited, but all\nreported findings are addressed and every review thread is resolved.\n\n## Related Issues\n\nRelates to #473, #474, #475, #477, #478, #479.\n\nFollow-up issues for design-level findings:\n- #482 reliable target-bound commit delivery for a live removed target.\n- #483 receiver-recognized current-history backfill donor.\n- #484 live-target oracle ceiling should use the certified cut.",
-          "timestamp": "2026-11-18T20:26:58Z",
-          "tree_id": "3b3fb9176c6c35c0868a3fc87d84e7b1a4210894",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/62c777a2f81389e56b1014eb290fe4159ca8db19"
-        },
-        "date": 1795034331450,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 38131,
-            "range": "± 401",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 24421,
-            "range": "± 414",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 1091,
-            "range": "± 0",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 1244,
-            "range": "± 1",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 2782,
-            "range": "± 175",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 2995,
             "range": "± 189",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "c3fb569504b4508f5c8a85b74367b34ff4affac2",
+          "message": "verification: add coordinated-drop trace validation (#577) (#621)\n\n## Description\n\nImplements #577: a runtime-to-model refinement gate for the coordinated\ngraceful drop.\n\nThe new opt-in `trace-validation` recorder\n(`src/sessions/coordinated_drop_trace.rs`) projects a\nbounded post-poll snapshot into prepare, phase, cut, digest,\ncounted/provisional Ready, backfill,\ncommit, and frozen-target events. The session reserves the complete\nrecorder capacity before polling\nand never allocates while running. A deterministic four-player SimNet\nproducer drives a\nthree-survivor coordinated removal, writes three ephemeral NDJSON\ntraces, and fails on a missing\nevent or overflow.\n\n`specs/tla/CoordinatedDropTrace.tla` constrains every row through the\nreal\n`CoordinatedReadyDigest`\n`MarkReady`/`SendReady`/`DeliverReady`/`PromoteProvisional`/\n`DiscardMismatchedProvisional`/`Certify`/`Accept` actions. Prepare, cut\nselection, backfill, phase,\nand freeze rows are explicit boundary actions that leave the digest-gate\nstate unchanged.\n`scripts/verification/verify-coordinated-drop-traces.py` generates the\ntraces into a temporary\ndirectory, validates the exact three-file manifest, renders the\ngenerated TLA trace module, and runs\nTLC. `verify-tla.sh CoordinatedDropTraceContract` and the full suite run\nthe same gate.\n\n### Review follow-up\n\nThe first review pass found that the normalizer was synthesizing the\nauthority's Ready quorum at\ncommit time, which could hide missing runtime evidence. The producer now\nmerges the three\nsurvivors' newly appended events after every poll into one NDJSON trace,\nand the wrapper only uses\nrecorded `ReadyCounted` events. A participant `Accept` now fails closed\nunless the authority's\n`Certify` was already observed; no quorum deliveries are invented. A\nprovisional reporter that later\ncounts is normalized to `PromoteProvisional` instead of a second\ndelivery. The recorder also resets\nall attempt-local projection fields when a new operation begins, while\npreserving session-global\nfrozen targets.\n\n### Red evidence\n\n- The new derived mutation counts a non-authority Ready without a locked\ndigest. Under\n  `FIX_MODE = \"AuthorityLocked\"` TLC rejects it.\n- The same mutation is accepted under the pre-#530 `FIX_MODE =\n\"ProvisionalCounts\"` control. This is\nthe control that proves the trace contract has teeth rather than\nrejecting every mutation.\n- All three runtime traces are accepted. Runtime traces stay ephemeral\nand are never checked in.\n\n### Size rationale\n\nThe issue was scoped as a two-session item (recorder/producer plus\nTLA/wrapper). This change lands\nboth halves together so the recorder is not left without a consumer. The\nproduction-affecting Rust\ndiff is 246 lines (`lib.rs`, `builder.rs`, `p2p_session.rs`,\n`ready_transcripts.rs`); the rest is the\nfeature-gated recorder, the producer test, the TLA trace module, the\nwrapper, and docs. The default\nbuild is unchanged because every new behavior is behind\n`trace-validation`.\n\n## Type of Change\n\n- [ ] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [x] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [x] `none` — no mapped production path or symbol changed\n- [ ] `updated: <spec/proof>` — the model, proof, or mapped test is\nupdated in this PR\n- [ ] `waived: <reason + approver>` — a named maintainer approved the\nexception and it is recorded in the tracked issue/PR\n\n- [x] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (state which below)\n\n`python3 scripts/verification/model-impact.py affected --base\norigin/main`: no mapped verification impact.\nThe new trace gate adds the RED mutation and `ProvisionalCounts` control\ndescribed above.\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**:\n  - No `unwrap()` in production code\n  - No `expect()` in production code\n  - No `panic!()` or `todo!()`\n  - All fallible operations return `Result`\n- [x] I have added tests that prove my fix is effective or my feature\nworks\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [x] I have updated the documentation accordingly\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes\n- [ ] I have updated relevant examples in the `examples/` directory\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Tests added/modified:**\n\n-\n`sessions::coordinated_drop_trace::tests::{recorder_derives_ordered_observable_transitions,\nrecorder_overflow_is_terminal,\nrecorder_records_rejection_without_changing_state}`\n-\n`sessions::builder::tests::{coordinated_drop_trace_capacity_accepts_semantic_session_bound,\ncoordinated_drop_trace_capacity_rejects_zero_and_above_semantic_bound}`\n-\n`simulation::coordinated_drop_trace_validation::export_runtime_coordinated_drop_traces_for_tlc`\n\n**Evidence:**\n\n- `python3 scripts/verification/verify-coordinated-drop-traces.py` → the\nmerged runtime trace\naccepted; the derived mutation rejected under `AuthorityLocked`; the\nsame mutation accepted under\n  `ProvisionalCounts`; `Coordinated-drop trace contract: PASS`.\n- `TLA_TOOLS_JAR=... ./scripts/verification/verify-tla.sh\nCoordinatedDropTraceContract` → PASS.\n- Full `./scripts/verification/verify-tla.sh` → 31 passed, 0 failed, 0\nskipped, including the existing `SyncHandshakeV1TraceContract` (before\nthe merged-trace follow-up; the target contract was re-run after the\nfollow-up and passes).\n- `cargo fmt --all -- --check` → clean.\n- `cargo clippy --workspace --all-targets --features\nhot-join,tokio,json,sync-send,paranoid,trace-validation,violation-census`\n→ no findings in changed files (pre-existing `large_stack_arrays`\nfindings in `tests/sessions/desync_harvest.rs` are outside this change\nand reproduce on `main`).\n- `cargo nextest run --workspace --features tokio,json,trace-validation`\n→ 3839 passed, 77 skipped in 37.7s.\n- `python3 scripts/ci/agent-preflight.py --full --auto-fix` (run via\n`.venv/bin/python`) → all checks passed.\n- `python3 scripts/docs/check-links.py` → 0 errors.\n- `python3 scripts/api/public_api_census.py --check` → 2940 symbols; the\nhidden verification surface is recorded in\n`docs/api/public-api-snapshot.tsv`.\n- `.venv/bin/python -m pytest\nscripts/tests/test_verify_coordinated_drop_traces.py -q` → 10 passed\n(schema, manifest, prepare-identity/count consistency,\nprovisional-after-lock, participant-commit-without-certificate,\ncounted-without-lock, provisional-promotion, rendering, exit-code drift,\nparse-error drift).\n\n## Related Issues\n\nCloses #577. Relates to #573, #580, and the existing\n`SyncHandshakeV1Trace` gate.",
+          "timestamp": "2026-11-28T05:25:49Z",
+          "tree_id": "0f0c89a4a07d9964e0c436eb1453ab2e5bf921e7",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/c3fb569504b4508f5c8a85b74367b34ff4affac2"
+        },
+        "date": 1795844237466,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 39276,
+            "range": "± 778",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 24613,
+            "range": "± 454",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1091,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1244,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 2778,
+            "range": "± 196",
             "unit": "ns/iter"
           }
         ]
