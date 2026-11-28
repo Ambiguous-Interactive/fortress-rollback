@@ -475,13 +475,28 @@ def run_tlc(
         for artifact in TLA_DIR.glob(f"{module_name}_TTrace_*"):
             artifact.unlink(missing_ok=True)
 
-    accepted = (
-        result.returncode == 0
-        and "Model checking completed. No error has been found." in output
+    tool_errors = (
+        "Parsing or semantic analysis failed",
+        "Fatal errors while parsing",
+        "Unexpected exception",
+        "Tool failed",
+        "Unable to access jarfile",
     )
-    rejected = (
-        "Error: Temporal property EventuallyTraceConsumed was violated." in output
-    )
+    if any(marker in output for marker in tool_errors):
+        raise fail(
+            f"{name} [{fix_mode}]: TLC tool/parse failure\n" + output[-4000:]
+        )
+    if "states left on queue" in output and re.search(
+        r"[1-9][0-9,]* states left on queue", output
+    ):
+        raise fail(
+            f"{name} [{fix_mode}]: TLC left states on the queue\n" + output[-4000:]
+        )
+
+    success_line = "Model checking completed. No error has been found."
+    expected_failure = "Error: Temporal property EventuallyTraceConsumed was violated."
+    accepted = result.returncode == 0 and success_line in output
+    rejected = result.returncode == 13 and expected_failure in output
     if expected_accept and not accepted:
         raise fail(
             f"{name} [{fix_mode}]: expected TLC acceptance (exit {result.returncode})\n"
@@ -489,7 +504,8 @@ def run_tlc(
         )
     if not expected_accept and not rejected:
         raise fail(
-            f"{name} [{fix_mode}]: expected the trace-consumption violation\n"
+            f"{name} [{fix_mode}]: expected exit 13 with the trace-consumption "
+            f"violation (exit {result.returncode})\n"
             + output[-4000:]
         )
     print(f"  {name} [{fix_mode}] {'accepted' if expected_accept else 'rejected'} "
