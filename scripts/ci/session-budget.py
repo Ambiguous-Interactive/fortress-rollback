@@ -157,6 +157,52 @@ def _create_lock_directory(lock_dir: Path) -> bool:
         ) from exc
 
 
+def _inode(stat_result: os.stat_result) -> tuple[int, int]:
+    """Return the device/inode identity of a filesystem entry."""
+    return (stat_result.st_dev, stat_result.st_ino)
+
+
+def _lock_directory_identity(lock_dir: Path) -> tuple[int, int] | None:
+    """Capture the lock directory identity immediately after creating it."""
+    try:
+        return _inode(lock_dir.stat())
+    except OSError:
+        return None
+
+
+def _discard_owned_lock(
+    lock_dir: Path,
+    directory_identity: tuple[int, int] | None,
+    owner: Path | None = None,
+    owner_identity: tuple[int, int] | None = None,
+) -> None:
+    """Remove a lock directory this caller created but could not publish.
+
+    A reaper can rename the directory between creation and publication and a
+    replacement owner can occupy the same path. Inode identity keeps that
+    replacement intact. Cleanup failures are ignored because the normal
+    stale-lock path still recovers an empty directory.
+    """
+    if directory_identity is None:
+        return
+    try:
+        if _inode(lock_dir.stat()) != directory_identity:
+            return
+    except OSError:
+        return
+    if owner is not None:
+        try:
+            if owner_identity is None or _inode(owner.stat()) != owner_identity:
+                return
+            owner.unlink()
+        except OSError:
+            return
+    try:
+        lock_dir.rmdir()
+    except OSError:
+        return
+
+
 @contextmanager
 def _state_lock(
     path: Path, timeout: float = LOCK_TIMEOUT_SECONDS
@@ -181,6 +227,7 @@ def _state_lock(
         if time.monotonic() >= deadline:
             raise deadline_error()
         if _create_lock_directory(lock_dir):
+            directory_identity = _lock_directory_identity(lock_dir)
             try:
                 handle = os.open(
                     owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
@@ -198,12 +245,45 @@ def _state_lock(
                 last_filesystem_error = exc
                 time.sleep(0.01)
                 continue
+            except OSError as exc:
+                # The directory is ours, so remove it when it is still the one
+                # we created; a reaper-replaced directory is left untouched.
+                _discard_owned_lock(lock_dir, directory_identity)
+                raise BudgetError(
+                    f"cannot create the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
+            try:
+                owner_identity = _inode(os.fstat(handle))
             except OSError:
-                # Do not remove lock_dir here: a reaper may have moved our
-                # directory and a replacement owner may now occupy the path.
-                raise
-            with os.fdopen(handle, "w", encoding="utf-8") as created:
-                created.write(token)
+                owner_identity = None
+            try:
+                owner_file = os.fdopen(handle, "w", encoding="utf-8")
+            except OSError as exc:
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+                _discard_owned_lock(
+                    lock_dir, directory_identity, owner, owner_identity
+                )
+                raise BudgetError(
+                    f"cannot write the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
+            try:
+                with owner_file as created:
+                    created.write(token)
+            except OSError as exc:
+                # A fresh empty or partial owner would block the next session
+                # for the whole stale threshold. Remove only our own entry.
+                _discard_owned_lock(
+                    lock_dir, directory_identity, owner, owner_identity
+                )
+                raise BudgetError(
+                    f"cannot write the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
             break
 
         last_filesystem_error = None
@@ -227,7 +307,11 @@ def _state_lock(
             stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
             try:
                 os.rename(lock_dir, stale)
-            except OSError:
+            except OSError as exc:
+                # A persistent rename failure must back off instead of
+                # spinning on one core until the deadline.
+                last_filesystem_error = exc
+                time.sleep(0.01)
                 continue
             try:
                 renamed_owner = (stale / "owner").read_text(encoding="utf-8")

@@ -482,6 +482,138 @@ def test_lock_ownerless_dangling_path_sleeps_before_retrying(
     assert clock[0] >= 0.05
 
 
+def test_lock_stale_reap_rename_failure_sleeps_before_retrying(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    owner = lock_dir / "owner"
+    owner.write_text("stale", encoding="utf-8")
+    old = time.time() - 120
+    os.utime(owner, (old, old))
+    clock = [0.0]
+    sleeps: list[float] = []
+    calls = 0
+    real_rename = os.rename
+
+    def monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        # Without a sleep the fake clock never advances; fail instead of
+        # hanging the suite.
+        if calls > 1000:
+            raise AssertionError("stale-reap retry spun without sleeping")
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    def failing_rename(
+        source: str | os.PathLike[str], destination: str | os.PathLike[str]
+    ) -> None:
+        if Path(source) == lock_dir:
+            raise PermissionError(13, "Permission denied", str(source))
+        real_rename(source, destination)
+
+    monkeypatch.setattr(session_budget.time, "monotonic", monotonic)
+    monkeypatch.setattr(session_budget.time, "sleep", sleep)
+    monkeypatch.setattr(session_budget.os, "rename", failing_rename)
+
+    with pytest.raises(session_budget.BudgetError, match="cannot acquire") as excinfo:
+        with session_budget._state_lock(path, timeout=0.05):
+            pass
+
+    # A persistent rename failure must back off instead of spinning on one
+    # core, and the deadline error must name the carried cause.
+    assert sleeps
+    assert clock[0] >= 0.05
+    assert "Permission denied" in str(excinfo.value)
+    assert lock_dir.exists()
+    assert owner.read_text(encoding="utf-8") == "stale"
+
+
+def test_lock_owner_open_failure_is_a_budget_error_and_removes_its_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    owner = lock_dir / "owner"
+    real_open = os.open
+
+    def failing_open(
+        target: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if Path(target) == owner:
+            raise PermissionError(13, "Permission denied", str(target))
+        return real_open(target, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(session_budget.os, "open", failing_open)
+
+    with pytest.raises(
+        session_budget.BudgetError, match="session budget lock owner"
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert str(owner) in str(excinfo.value)
+    assert "Permission denied" in str(excinfo.value)
+    assert not lock_dir.exists()
+
+
+def test_lock_owner_write_failure_removes_the_owned_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    owner = lock_dir / "owner"
+    real_fdopen = os.fdopen
+
+    class FailingOwnerWrite:
+        def __init__(self, handle: int) -> None:
+            self.handle = handle
+
+        def __enter__(self) -> "FailingOwnerWrite":
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            os.close(self.handle)
+            return False
+
+        def write(self, _data: str) -> int:
+            raise OSError(28, "No space left on device")
+
+    def failing_fdopen(
+        handle: int, *args: object, **kwargs: object
+    ) -> FailingOwnerWrite:
+        return FailingOwnerWrite(handle)
+
+    monkeypatch.setattr(session_budget.os, "fdopen", failing_fdopen)
+
+    with pytest.raises(
+        session_budget.BudgetError, match="session budget lock owner"
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert str(owner) in str(excinfo.value)
+    assert "No space left on device" in str(excinfo.value)
+    # A fresh empty owner must not block the next session for the whole stale
+    # threshold; the directory created by this acquisition is removed.
+    assert not owner.exists()
+    assert not lock_dir.exists()
+
+    monkeypatch.setattr(session_budget.os, "fdopen", real_fdopen)
+    with session_budget._state_lock(path, timeout=0.1) as fence:
+        fence()
+    assert not lock_dir.exists()
+
+
 def test_write_state_fence_rejects_a_lost_lock(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     lock_dir = path.with_name(f"{path.name}.lock")
