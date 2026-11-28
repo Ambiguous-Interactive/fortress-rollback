@@ -553,6 +553,236 @@ def test_normalize_rejects_a_projection_mismatch() -> None:
         trace_verifier.normalize(_case(rows), {7: 0})
 
 
+def _row(session: int, action: dict[str, Any], **state: object) -> dict[str, Any]:
+    return {"session": session, "action": action, "state": _state(**state)}
+
+
+def _prepare_action() -> dict[str, Any]:
+    return {
+        "kind": "PrepareAdmitted",
+        "operation": _operation(),
+        "participants": 3,
+        "targets": 1,
+    }
+
+
+def test_normalize_clears_the_producing_sessions_committed_projection() -> None:
+    counted_both = [True, True, False, False]
+    counted_one = [True, False, False, False]
+    rows = [
+        _row(1, _prepare_action(), active=True, phase="Inventory", localParticipant=1),
+        _row(
+            1,
+            {"kind": "PhaseChanged", "phase": "Ready"},
+            active=True,
+            phase="Ready",
+            localParticipant=1,
+        ),
+        _row(
+            1,
+            {"kind": "CutSelected", "cut": 3},
+            active=True,
+            phase="Ready",
+            cut=3,
+            localParticipant=1,
+        ),
+        _row(
+            1,
+            {"kind": "DigestLocked", "cut": 3, "digest": 7},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=1,
+        ),
+        _row(
+            0,
+            {"kind": "ReadyCounted", "participant": 0, "cut": 3,
+             "digest": 7, "authority": True},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=0,
+            counted=counted_one,
+        ),
+        _row(
+            1,
+            {"kind": "ReadyCounted", "participant": 1, "cut": 3,
+             "digest": 7, "authority": False},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=1,
+            counted=[False, True, False, False],
+        ),
+        _row(
+            0,
+            {"kind": "ReadyCounted", "participant": 1, "cut": 3,
+             "digest": 7, "authority": False},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=0,
+            counted=counted_both,
+        ),
+        _row(
+            1,
+            {"kind": "ReadyCounted", "participant": 0, "cut": 3,
+             "digest": 7, "authority": True},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=1,
+            counted=counted_both,
+        ),
+        _row(
+            0,
+            {"kind": "PhaseChanged", "phase": "Committed"},
+            active=True,
+            phase="Committed",
+            cut=3,
+            digest=7,
+            localParticipant=0,
+            counted=counted_both,
+        ),
+        _row(
+            0,
+            {"kind": "CommitApplied", "cut": 3, "digest": 7},
+            active=True,
+            phase="Committed",
+            cut=3,
+            digest=7,
+            localParticipant=0,
+            counted=counted_both,
+            committed=True,
+        ),
+        _row(
+            1,
+            {"kind": "CommitApplied", "cut": 3, "digest": 7},
+            active=True,
+            phase="Committed",
+            cut=3,
+            digest=7,
+            localParticipant=1,
+            counted=counted_both,
+            committed=True,
+        ),
+        _row(
+            1,
+            {"kind": "TargetFrozen", "handle": 3, "cut": 3},
+            active=True,
+            phase="Committed",
+            cut=3,
+            digest=7,
+            localParticipant=1,
+            counted=counted_both,
+            committed=True,
+            frozen=[False, False, False, True],
+        ),
+        _row(1, {"kind": "AttemptCleared"}, frozen=[False, False, False, True]),
+    ]
+
+    normalized = trace_verifier.normalize(_case(rows), {7: 0})
+
+    assert normalized[-1]["action"] == "AttemptCleared"
+    state = normalized[-1]["state"]
+    assert state["committed"][1] is None
+    assert state["committed"][0] == 0
+    assert state["cutDigest"][1] is None
+    assert state["transcript"][1] == {p: None for p in trace_verifier.PARTICIPANTS}
+    assert state["provisional"][1] == {p: None for p in trace_verifier.PARTICIPANTS}
+    assert state["frozen"] == [3]
+
+
+def test_normalize_rejects_a_clear_without_a_producing_session() -> None:
+    rows = [{"action": {"kind": "AttemptCleared"}, "state": _state()}]
+    with pytest.raises(
+        trace_verifier.TraceError, match="must carry its producing session"
+    ):
+        trace_verifier.normalize(_case(rows), {})
+
+
+def test_validate_runtime_traces_requires_the_committed_clear() -> None:
+    committed = dict(
+        active=True,
+        phase="Committed",
+        cut=3,
+        digest=7,
+        localParticipant=0,
+        committed=True,
+        frozen=[False, False, False, True],
+    )
+    rows = [
+        _row(
+            0,
+            _prepare_action(),
+            active=True,
+            phase="Inventory",
+            localParticipant=0,
+            participantCount=3,
+            targetCount=1,
+        ),
+        _row(
+            0,
+            {"kind": "PhaseChanged", "phase": "Ready"},
+            active=True,
+            phase="Ready",
+            localParticipant=0,
+        ),
+        _row(
+            0,
+            {"kind": "CutSelected", "cut": 3},
+            active=True,
+            phase="Ready",
+            cut=3,
+            localParticipant=0,
+        ),
+        _row(
+            0,
+            {"kind": "DigestLocked", "cut": 3, "digest": 7},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=0,
+        ),
+        _row(
+            0,
+            {"kind": "ReadyCounted", "participant": 0, "cut": 3,
+             "digest": 7, "authority": True},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=0,
+            counted=[True, False, False, False],
+        ),
+        _row(
+            0,
+            {"kind": "ReadyCounted", "participant": 1, "cut": 3,
+             "digest": 7, "authority": False},
+            active=True,
+            phase="Ready",
+            cut=3,
+            digest=7,
+            localParticipant=0,
+            counted=[True, True, False, False],
+        ),
+        _row(0, {"kind": "CommitApplied", "cut": 3, "digest": 7}, **committed),
+        _row(0, {"kind": "TargetFrozen", "handle": 3, "cut": 3}, **committed),
+    ]
+    with pytest.raises(
+        trace_verifier.TraceError, match="missing required runtime events"
+    ):
+        trace_verifier.validate_runtime_traces(
+            {"runtime-drop.ndjson": _case(rows)}
+        )
+
+
 def test_normalize_rejects_a_cut_selection_mismatch() -> None:
     rows: list[dict[str, Any]] = [
         {

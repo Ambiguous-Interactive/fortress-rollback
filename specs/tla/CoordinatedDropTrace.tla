@@ -12,9 +12,12 @@
 (* DiscardMismatchedProvisional, Certify, and Accept. Prepare, inventory,   *)
 (* backfill, and freeze are boundary events: they constrain ordering and    *)
 (* the trace-only variables but leave the digest-gate state unchanged.      *)
-(* Cut selection and backfill content remain CoordinatedPeerDrop.tla       *)
-(* obligations; this module checks the #529/#530 digest gate and the        *)
-(* commit/freeze boundary around one operation.                            *)
+(* AttemptCleared resets the clearing participant's attempt-local          *)
+(* digest-gate slice and the trace-only variables; committed target fences *)
+(* survive. Cut selection and backfill content remain                       *)
+(* CoordinatedPeerDrop.tla obligations; this module checks the #529/#530    *)
+(* digest gate and the commit, freeze, and clear boundary around one        *)
+(* operation.                                                              *)
 (***************************************************************************)
 
 EXTENDS CoordinatedReadyDigest, Sequences
@@ -73,6 +76,20 @@ FreezeTarget(p) ==
     /\ UNCHANGED <<localDigest, cutDigest, provisional, transcript, committed,
                      network, witness>>
 
+\* A committed attempt is terminal and the session later clears it. The
+\* recorder resets every attempt-local projection field; the network is not
+\* observable and the session-global frozen target set survives.
+ClearAttempt(p) ==
+    /\ cutDigest' = [cutDigest EXCEPT ![p] = NONE]
+    /\ provisional' = [provisional EXCEPT ![p] = [q \in PARTICIPANTS |-> NONE]]
+    /\ transcript' = [transcript EXCEPT ![p] = [q \in PARTICIPANTS |-> NONE]]
+    /\ committed' = [committed EXCEPT ![p] = NONE]
+    /\ UNCHANGED <<localDigest, network, witness>>
+    /\ dropPhase' = "None"
+    /\ traceCut' = 0
+    /\ backfilled' = 0
+    /\ frozen' = frozen
+
 TraceAction(row) ==
     CASE row.action = "PrepareAdmitted" -> Boundary
       [] row.action = "PrepareRejected" -> Boundary
@@ -81,7 +98,7 @@ TraceAction(row) ==
       [] row.action = "DigestLocked" -> Boundary
       [] row.action = "BackfillInstalled" -> Boundary
       [] row.action = "TargetFrozen" -> FreezeTarget(row.peer)
-      [] row.action = "AttemptCleared" -> Boundary
+      [] row.action = "AttemptCleared" -> ClearAttempt(row.peer)
       [] row.action = "SendReady" -> SendReady(row.peer, row.to)
       [] row.action = "MarkReady" -> MarkReady(row.peer)
       [] row.action = "DeliverReady" -> DeliverReady(row.peer, row.to)

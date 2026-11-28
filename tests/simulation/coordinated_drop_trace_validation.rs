@@ -193,6 +193,36 @@ fn export_runtime_coordinated_drop_traces_for_tlc() {
     assert_eq!(dropped, 0b0111, "all survivors must commit the removal");
     collect_new(&sessions, &mut cursors, &mut ordered);
 
+    // A committed attempt stays active until the survivor acknowledgements
+    // complete, then the session clears it. Keep polling so the merged trace
+    // carries the committed-then-cleared transition the wrapper must model.
+    let mut cleared = 0_u8;
+    for _ in 0..160 {
+        for (handle, session) in sessions.sessions.iter_mut().enumerate().take(TARGET) {
+            session.poll_remote_clients();
+            let trace = session
+                .coordinated_drop_trace()
+                .expect("trace recorder was enabled")
+                .expect("trace recorder did not overflow");
+            if trace
+                .iter()
+                .any(|event| matches!(event.action, CoordinatedDropTraceAction::AttemptCleared))
+            {
+                cleared |= 1_u8 << handle;
+            }
+        }
+        collect_new(&sessions, &mut cursors, &mut ordered);
+        sessions.clock.advance(Duration::from_millis(1));
+        if cleared == 0b0111 {
+            break;
+        }
+    }
+    assert_eq!(
+        cleared, 0b0111,
+        "all survivors must clear the committed attempt"
+    );
+    collect_new(&sessions, &mut cursors, &mut ordered);
+
     let traces: [Vec<CoordinatedDropTraceEvent>; TARGET] =
         std::array::from_fn(|handle| collect(&sessions.sessions[handle]));
     for (handle, trace) in traces.iter().enumerate() {
@@ -222,6 +252,19 @@ fn export_runtime_coordinated_drop_traces_for_tlc() {
                 phase: CoordinatedDropTracePhase::Committed
             }
         )));
+        let last = trace.last().expect("trace has a final event");
+        assert_eq!(
+            last.action,
+            CoordinatedDropTraceAction::AttemptCleared,
+            "survivor {handle} trace must end with the committed attempt clear"
+        );
+        assert!(!last.state.active);
+        assert!(!last.state.committed);
+        assert_eq!(last.state.cut, None);
+        assert_eq!(last.state.digest, None);
+        assert!(!last.state.counted.iter().any(|counted| *counted));
+        assert!(!last.state.provisional.iter().any(|held| *held));
+        assert!(last.state.frozen[3]);
     }
     assert!(
         traces.iter().flatten().any(|event| matches!(

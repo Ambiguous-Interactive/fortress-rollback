@@ -961,17 +961,20 @@ fallback transition is `CoordinatorFailover.tla`.
 this gate. The opt-in `trace-validation` recorder in
 `src/sessions/coordinated_drop_trace.rs` projects a bounded post-poll snapshot,
 and `tests/simulation/coordinated_drop_trace_validation.rs` produces three
-traces from a deterministic three-survivor SimNet drop. Each trace row is
-constrained through the real `CoordinatedReadyDigest` Ready/commit actions;
-prepare, cut selection, backfill, phase, and freeze rows are explicit boundary
-actions that leave the digest-gate state unchanged. The wrapper
+traces from a deterministic three-survivor SimNet drop, polling through each
+survivor's committed clear. Each trace row is constrained through the real
+`CoordinatedReadyDigest` Ready/commit actions; prepare, cut selection, backfill,
+phase, and freeze rows are explicit boundary actions that leave the digest-gate
+state unchanged, and the committed clear resets that session's attempt-local
+digest-gate slice while keeping the session-global frozen targets. The wrapper
 `verify-coordinated-drop-traces.py` accepts all three runtime traces, rejects a
 derived non-authority Ready counted without a locked digest under
 `AuthorityLocked`, and accepts the same mutation under the pre-#530
 `ProvisionalCounts` control. That control is the red evidence that the
 mutation is not rejected merely because it differs from the runtime trace.
-Known gaps: one successful operation, no backfill-forcing loss, no failover or
-abort trace, and retransmission/poll order are not modeled. See
+Known gaps: one successful operation through its committed clear, no
+backfill-forcing loss, no failover, abort, or repeated-operation trace, and
+retransmission/poll order are not modeled. See
 `specs/tla/traces/coordinated-drop-v1/README.md`.
 
 The Rust bookkeeping is the extracted `ReadyTranscripts`
