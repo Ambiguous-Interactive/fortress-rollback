@@ -309,7 +309,11 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
             model["provisional"][receiver][peer] = None
             push("PromoteProvisional", receiver, **{"from": peer})
             return
-        mark_ready(peer, digest)
+        if model["transcript"][peer][peer] is None:
+            raise fail(
+                f"{case.path}: received Ready from participant {peer} "
+                "before its observed MarkReady"
+            )
         model["network"][peer][receiver] = digest
         push("SendReady", peer, to=receiver)
         if authority or model["cutDigest"][receiver] is not None:

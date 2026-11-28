@@ -299,6 +299,23 @@ def test_normalize_rejects_a_counted_ready_without_a_lock() -> None:
                 active=True,
                 phase="Ready",
                 cut=3,
+                digest=7,
+                localParticipant=1,
+                counted=[False, True, False, False],
+            ),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 7,
+                "authority": False,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                cut=3,
                 localParticipant=0,
                 counted=[False, True, False, False],
             ),
@@ -328,6 +345,23 @@ def test_normalize_uses_promotion_for_a_provisional_that_counts() -> None:
         {
             "action": {"kind": "CutSelected", "cut": 3},
             "state": _state(active=True, phase="Ready", cut=3, localParticipant=0),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 7,
+                "authority": False,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                cut=3,
+                digest=7,
+                localParticipant=1,
+                counted=[False, True, False, False],
+            ),
         },
         {
             "action": {
