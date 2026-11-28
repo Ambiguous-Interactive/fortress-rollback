@@ -158,24 +158,74 @@ def validate_runtime_traces(cases: dict[str, TraceCase]) -> None:
             "ReadyCounted",
             "CommitApplied",
             "TargetFrozen",
+            "AttemptCleared",
         }
         missing = required - names
         if missing:
             raise fail(f"{case.path}: missing required runtime events: {sorted(missing)}")
-        last = case.rows[-1]["state"]
-        if not last["committed"] or 3 not in {
-            index for index, frozen in enumerate(last["frozen"]) if frozen
+        committed_rows = [row for row in case.rows if row["state"]["committed"]]
+        if not committed_rows:
+            raise fail(f"{case.path}: trace never records a committed attempt")
+        committed = committed_rows[-1]["state"]
+        if not committed["committed"] or 3 not in {
+            index for index, frozen in enumerate(committed["frozen"]) if frozen
         }:
-            raise fail(f"{case.path}: last row must commit and freeze target 3")
-        if last["cut"] is None or last["digest"] is None:
-            raise fail(f"{case.path}: last row must carry a cut and digest")
+            raise fail(f"{case.path}: committed row must commit and freeze target 3")
+        if committed["cut"] is None or committed["digest"] is None:
+            raise fail(f"{case.path}: committed row must carry a cut and digest")
+        if case.rows[-1]["action"].get("kind") != "AttemptCleared":
+            raise fail(f"{case.path}: trace must end with a cleared attempt")
+
+        last_by_session: dict[int, dict[str, Any]] = {}
+        for row in case.rows:
+            session = row.get("session")
+            if type(session) is int and session in PARTICIPANTS:
+                last_by_session[session] = row
+        for session in PARTICIPANTS:
+            produced = [
+                row for row in case.rows if row.get("session") == session
+            ]
+            if not any(row["state"]["committed"] for row in produced):
+                raise fail(
+                    f"{case.path}: session {session} must commit before clearing"
+                )
+            last_row = last_by_session.get(session)
+            if last_row is None:
+                raise fail(f"{case.path}: session {session} has no recorded rows")
+            if last_row["action"].get("kind") != "AttemptCleared":
+                raise fail(
+                    f"{case.path}: session {session} must end with a cleared attempt"
+                )
+            state = last_row["state"]
+            if (
+                state["active"]
+                or state["phase"] is not None
+                or state["localParticipant"] != 0
+                or state["authority"] != 0
+                or state["quorum"] != 0
+                or state["participantCount"] != 0
+                or state["targetCount"] != 0
+                or state["committed"]
+                or state["cut"] is not None
+                or state["digest"] is not None
+                or any(state["counted"])
+                or any(state["provisional"])
+            ):
+                raise fail(
+                    f"{case.path}: session {session} clear projection must reset "
+                    "attempt-local state"
+                )
+            if len(state["frozen"]) <= 3 or not state["frozen"][3]:
+                raise fail(
+                    f"{case.path}: session {session} clear must keep frozen target 3"
+                )
         authority_ready = [
             row
             for row in case.rows
             if row["action"].get("kind") == "ReadyCounted"
             and row["state"]["localParticipant"] == AUTHORITY
         ]
-        quorum = last["quorum"]
+        quorum = committed["quorum"]
         if len(authority_ready) < quorum:
             raise fail(
                 f"{case.path}: authority trace must observe a strict-majority "
@@ -310,6 +360,24 @@ def initial_model() -> dict[str, Any]:
     }
 
 
+def event_local(event: dict[str, Any]) -> int:
+    """Return the participant whose local projection an event records.
+
+    A clear resets the recorder's ``localParticipant`` field to zero, so the
+    merged producer's ``session`` index attributes that row instead. Every
+    other event carries the observed local participant directly.
+    """
+    if event["action"].get("kind") == "AttemptCleared":
+        session = event.get("session")
+        if type(session) is not int or session not in PARTICIPANTS:
+            raise fail("AttemptCleared row must carry its producing session")
+        return session
+    local = event["state"]["localParticipant"]
+    if type(local) is not int or local not in PARTICIPANTS:
+        raise fail("event state must carry a valid local participant")
+    return local
+
+
 def assert_runtime_projection(
     case: TraceCase,
     event: dict[str, Any],
@@ -318,7 +386,7 @@ def assert_runtime_projection(
 ) -> None:
     """Compare the local modeled slice with the recorded post-event projection."""
     state = event["state"]
-    local = state["localParticipant"]
+    local = event_local(event)
     for participant in PARTICIPANTS:
         expected_counted = bool(state["counted"][participant])
         actual_counted = model["transcript"][local][participant] is not None
@@ -448,7 +516,7 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
         action = row["action"]
         kind = action.get("kind")
         event = row
-        local = event["state"]["localParticipant"]
+        local = event_local(event)
         if kind == "PrepareAdmitted":
             model["dropPhase"] = "Inventory"
             push("PrepareAdmitted", action["operation"]["coordinator"])
@@ -511,7 +579,17 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
                 model["frozen"].append(action["handle"])
             push("TargetFrozen", local)
         elif kind == "AttemptCleared":
+            # The recorder resets every attempt-local projection field after a
+            # committed attempt clears; committed target fences are
+            # session-global and survive. The digest-gate network is not
+            # observable by the recorder, so it is left unchanged.
+            model["cutDigest"][local] = None
+            model["provisional"][local] = {p: None for p in PARTICIPANTS}
+            model["transcript"][local] = {p: None for p in PARTICIPANTS}
+            model["committed"][local] = None
             model["dropPhase"] = "None"
+            model["traceCut"] = 0
+            model["backfilled"] = 0
             push("AttemptCleared", local)
         elif kind == "Activated":
             continue

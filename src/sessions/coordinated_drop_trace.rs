@@ -120,7 +120,8 @@ pub enum CoordinatedDropTraceAction {
     CommitApplied { cut: Frame, digest: u64 },
     /// This endpoint committed a target fence at a cut.
     TargetFrozen { handle: u16, cut: Frame },
-    /// The active attempt cleared without a recorded commit.
+    /// The active attempt cleared. Attempt-local state resets, including any
+    /// applied commit; the session-global committed target fences survive.
     AttemptCleared,
 }
 
@@ -668,10 +669,17 @@ mod tests {
         assert!(!event.state.active);
         assert_eq!(event.state.operation, None);
         assert_eq!(event.state.phase, None);
+        assert_eq!(event.state.local_participant, 0);
+        assert_eq!(event.state.authority, 0);
+        assert_eq!(event.state.quorum, 0);
+        assert_eq!(event.state.participant_count, 0);
+        assert_eq!(event.state.target_count, 0);
         assert_eq!(event.state.cut, None);
         assert_eq!(event.state.digest, None);
+        assert_eq!(event.state.backfill_installed, 0);
         assert!(!event.state.committed);
         assert!(!event.state.counted.iter().any(|counted| *counted));
+        assert!(!event.state.provisional.iter().any(|held| *held));
         assert!(event.state.frozen[3]);
         assert_eq!(event.state.frozen_cut[3], 3);
     }
