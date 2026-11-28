@@ -284,7 +284,10 @@ def test_lock_retries_when_a_reaper_moves_the_directory_before_owner_publication
         dir_fd: int | None = None,
     ) -> int:
         nonlocal reaped
-        if Path(target) == owner and not reaped:
+        owner_target = (
+            dir_fd is not None and str(target) == "owner"
+        ) or Path(target) == owner
+        if owner_target and not reaped:
             reaped = True
             # A reaper observed the previous stale lock and renames the
             # directory after this writer's mkdir but before its owner
@@ -318,7 +321,10 @@ def test_lock_owner_publication_retry_is_deadline_bounded(
         *,
         dir_fd: int | None = None,
     ) -> int:
-        if Path(target) == owner:
+        owner_target = (
+            dir_fd is not None and str(target) == "owner"
+        ) or Path(target) == owner
+        if owner_target:
             shutil.rmtree(lock_dir, ignore_errors=True)
             raise FileNotFoundError(2, "No such file or directory", str(target))
         return real_open(target, flags, mode, dir_fd=dir_fd)
@@ -357,18 +363,17 @@ def test_lock_does_not_steal_a_competing_owner_after_a_reap(
         dir_fd: int | None = None,
     ) -> int:
         nonlocal reaped
-        if Path(target) == owner and not reaped:
+        owner_target = (
+            dir_fd is not None and str(target) == "owner"
+        ) or Path(target) == owner
+        if owner_target and not reaped:
             reaped = True
             shutil.rmtree(lock_dir, ignore_errors=True)
-            try:
-                real_open(target, flags, mode, dir_fd=dir_fd)
-            except FileNotFoundError as exc:
-                # A competing session wins the free path before our retry.
-                # The retry must wait for the live owner instead of stealing it.
-                lock_dir.mkdir()
-                (lock_dir / "owner").write_text("competitor", encoding="utf-8")
-                raise exc
-            raise AssertionError("expected the owner publication to fail")
+            # A competing session wins the free path before our retry.
+            # The retry must wait for the live owner instead of stealing it.
+            lock_dir.mkdir()
+            (lock_dir / "owner").write_text("competitor", encoding="utf-8")
+            raise FileNotFoundError(2, "No such file or directory", str(target))
         return real_open(target, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(session_budget.os, "open", competing_open)
@@ -534,7 +539,7 @@ def test_lock_stale_reap_rename_failure_sleeps_before_retrying(
     assert owner.read_text(encoding="utf-8") == "stale"
 
 
-def test_lock_owner_open_failure_is_a_budget_error_and_removes_its_directory(
+def test_lock_owner_open_failure_is_a_budget_error_and_retires_the_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "budget.json"
@@ -549,7 +554,7 @@ def test_lock_owner_open_failure_is_a_budget_error_and_removes_its_directory(
         *,
         dir_fd: int | None = None,
     ) -> int:
-        if Path(target) == owner:
+        if (dir_fd is not None and str(target) == "owner") or Path(target) == owner:
             raise PermissionError(13, "Permission denied", str(target))
         return real_open(target, flags, mode, dir_fd=dir_fd)
 
@@ -563,10 +568,21 @@ def test_lock_owner_open_failure_is_a_budget_error_and_removes_its_directory(
 
     assert str(owner) in str(excinfo.value)
     assert "Permission denied" in str(excinfo.value)
+    if os.unlink in os.supports_dir_fd and os.utime in os.supports_fd:
+        # The pinned directory is retired, not removed: the normal stale path
+        # reclaims it and no other writer's directory can be touched.
+        assert not owner.exists()
+        assert lock_dir.exists()
+        assert lock_dir.stat().st_mtime == 0
+
+    monkeypatch.setattr(session_budget.os, "open", real_open)
+    monkeypatch.setattr(session_budget, "LOCK_STALE_SECONDS", 0.05)
+    with session_budget._state_lock(path, timeout=1.0) as fence:
+        fence()
     assert not lock_dir.exists()
 
 
-def test_lock_owner_write_failure_removes_the_owned_directory(
+def test_lock_owner_write_failure_retires_the_owned_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "budget.json"
@@ -603,13 +619,18 @@ def test_lock_owner_write_failure_removes_the_owned_directory(
 
     assert str(owner) in str(excinfo.value)
     assert "No space left on device" in str(excinfo.value)
-    # A fresh empty owner must not block the next session for the whole stale
-    # threshold; the directory created by this acquisition is removed.
-    assert not owner.exists()
-    assert not lock_dir.exists()
+    # A fresh empty or partial owner must not block the next session for the
+    # whole stale threshold. The owner is unlinked through the pinned
+    # directory descriptor and the directory is marked stale; it is not
+    # removed by path.
+    if os.unlink in os.supports_dir_fd and os.utime in os.supports_fd:
+        assert not owner.exists()
+        assert lock_dir.exists()
+        assert lock_dir.stat().st_mtime == 0
 
     monkeypatch.setattr(session_budget.os, "fdopen", real_fdopen)
-    with session_budget._state_lock(path, timeout=0.1) as fence:
+    monkeypatch.setattr(session_budget, "LOCK_STALE_SECONDS", 0.05)
+    with session_budget._state_lock(path, timeout=1.0) as fence:
         fence()
     assert not lock_dir.exists()
 
@@ -674,7 +695,11 @@ def test_lock_owner_open_failure_leaves_a_replacement_lock(
         dir_fd: int | None = None,
     ) -> int:
         nonlocal replaced
-        if Path(target) == owner and not replaced:
+        owner_target = (
+            (dir_fd is not None and str(target) == "owner")
+            or Path(target) == owner
+        )
+        if owner_target and not replaced:
             replaced = True
             # A reaper moves our fresh directory and a competitor creates a
             # new lock at the same path before publishing its owner, then our
@@ -692,11 +717,14 @@ def test_lock_owner_open_failure_leaves_a_replacement_lock(
         with session_budget._state_lock(path, timeout=0.1):
             pass
 
-    # Cleanup must never remove a lock directory that now belongs to another
-    # writer, even when that writer has not published its owner yet.
+    # Cleanup is pinned to the directory descriptor opened before the reaper
+    # moved it: the competitor's replacement stays untouched and fresh.
     assert lock_dir.is_dir()
     assert not (lock_dir / "owner").exists()
+    assert lock_dir.stat().st_mtime > 0
     assert moved.exists()
+    if os.utime in os.supports_fd:
+        assert moved.stat().st_mtime == 0
 
 
 def test_write_state_fence_rejects_a_lost_lock(tmp_path: Path) -> None:

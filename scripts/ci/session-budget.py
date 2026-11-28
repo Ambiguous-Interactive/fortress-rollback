@@ -158,50 +158,43 @@ def _create_lock_directory(lock_dir: Path) -> bool:
         ) from exc
 
 
-def _inode(stat_result: os.stat_result) -> tuple[int, int]:
-    """Return the device/inode identity of a filesystem entry."""
-    return (stat_result.st_dev, stat_result.st_ino)
+def _open_lock_directory(lock_dir: Path) -> int | None:
+    """Pin the lock directory this caller just created.
 
-
-def _lock_directory_identity(lock_dir: Path) -> tuple[int, int] | None:
-    """Capture the lock directory identity immediately after creating it."""
+    Cleanup relative to this descriptor can never target a replacement that a
+    reaper swaps in at the path. Platforms without directory-relative unlink
+    (Windows) return ``None`` and leave a failed publication to the normal
+    stale-lock path.
+    """
+    if os.unlink not in os.supports_dir_fd:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
     try:
-        return _inode(lock_dir.stat())
+        return os.open(lock_dir, flags)
     except OSError:
         return None
 
 
-def _discard_owned_lock(
-    lock_dir: Path,
-    directory_identity: tuple[int, int] | None,
-    owner: Path | None = None,
-    owner_identity: tuple[int, int] | None = None,
-) -> None:
-    """Remove a lock directory this caller created but could not publish.
+def _retire_owned_lock(directory_fd: int) -> None:
+    """Make a created-but-unpublished lock immediately reapable.
 
-    A reaper can rename the directory between creation and publication and a
-    replacement owner can occupy the same path. Inode identity keeps that
-    replacement intact. Cleanup failures are ignored because the normal
-    stale-lock path still recovers an empty directory.
+    The owner entry is removed relative to the pinned directory, and the
+    directory mtime is zeroed through the same descriptor. The empty directory
+    is left for the normal stale-lock reaper, so cleanup never removes a path
+    that may now belong to another writer.
     """
-    if directory_identity is None:
-        return
     try:
-        if _inode(lock_dir.stat()) != directory_identity:
-            return
+        os.unlink("owner", dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
     except OSError:
         return
-    if owner is not None:
-        try:
-            if owner_identity is None or _inode(owner.stat()) != owner_identity:
-                return
-            owner.unlink()
-        except OSError:
-            return
-    try:
-        lock_dir.rmdir()
-    except OSError:
+    if os.utime not in os.supports_fd:
         return
+    try:
+        os.utime(directory_fd, (0, 0))
+    except OSError:
+        pass
 
 
 @contextmanager
@@ -228,12 +221,22 @@ def _state_lock(
         if time.monotonic() >= deadline:
             raise deadline_error()
         if _create_lock_directory(lock_dir):
-            directory_identity = _lock_directory_identity(lock_dir)
+            directory_fd = _open_lock_directory(lock_dir)
             try:
-                handle = os.open(
-                    owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-                )
+                if directory_fd is None:
+                    handle = os.open(
+                        owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                    )
+                else:
+                    handle = os.open(
+                        "owner",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=directory_fd,
+                    )
             except FileExistsError:
+                if directory_fd is not None:
+                    os.close(directory_fd)
                 last_filesystem_error = None
                 time.sleep(0.01)
                 continue
@@ -243,21 +246,21 @@ def _state_lock(
                 # instead of failing the budget update; the JS lock retries
                 # ENOENT for the same window. Keep the cause so a persistent
                 # failure is not reported as contention.
+                if directory_fd is not None:
+                    os.close(directory_fd)
                 last_filesystem_error = exc
                 time.sleep(0.01)
                 continue
             except OSError as exc:
-                # The directory is ours, so remove it when it is still the one
-                # we created; a reaper-replaced directory is left untouched.
-                _discard_owned_lock(lock_dir, directory_identity)
+                # A descriptor-relative retirement only touches the directory
+                # this caller created; a reaper replacement is never touched.
+                if directory_fd is not None:
+                    _retire_owned_lock(directory_fd)
+                    os.close(directory_fd)
                 raise BudgetError(
                     f"cannot create the session budget lock owner at "
                     f"{owner}: {exc}"
                 ) from exc
-            try:
-                owner_identity = _inode(os.fstat(handle))
-            except OSError:
-                owner_identity = None
             try:
                 owner_file = os.fdopen(handle, "w", encoding="utf-8")
             except OSError as exc:
@@ -265,9 +268,9 @@ def _state_lock(
                     os.close(handle)
                 except OSError:
                     pass
-                _discard_owned_lock(
-                    lock_dir, directory_identity, owner, owner_identity
-                )
+                if directory_fd is not None:
+                    _retire_owned_lock(directory_fd)
+                    os.close(directory_fd)
                 raise BudgetError(
                     f"cannot write the session budget lock owner at "
                     f"{owner}: {exc}"
@@ -276,15 +279,17 @@ def _state_lock(
                 with owner_file as created:
                     created.write(token)
             except OSError as exc:
-                # A fresh empty or partial owner would block the next session
-                # for the whole stale threshold. Remove only our own entry.
-                _discard_owned_lock(
-                    lock_dir, directory_identity, owner, owner_identity
-                )
+                # Retire only the owner and directory this caller created so
+                # the next session does not wait out the stale threshold.
+                if directory_fd is not None:
+                    _retire_owned_lock(directory_fd)
+                    os.close(directory_fd)
                 raise BudgetError(
                     f"cannot write the session budget lock owner at "
                     f"{owner}: {exc}"
                 ) from exc
+            if directory_fd is not None:
+                os.close(directory_fd)
             break
 
         last_filesystem_error = None
