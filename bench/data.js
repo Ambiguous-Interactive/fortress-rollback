@@ -1,62 +1,8 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795823978575,
+  "lastUpdate": 1795825909100,
   "repoUrl": "https://github.com/Ambiguous-Interactive/fortress-rollback",
   "entries": {
     "Fortress Rollback Benchmarks": [
-      {
-        "commit": {
-          "author": {
-            "email": "wallstop@wallstopstudios.com",
-            "name": "Eli Pinkerton",
-            "username": "wallstop"
-          },
-          "committer": {
-            "email": "noreply@github.com",
-            "name": "GitHub",
-            "username": "web-flow"
-          },
-          "distinct": false,
-          "id": "f6d42bf589f883b26cdfe865704533f1da47c40d",
-          "message": "test: pin rejected-operation journal dedup and bound (#480)\n\n## Summary\n\nFollow-up to #479: main mutation CI reported three missed mutants in\n`coordinated_drop_note_rejected` (the duplicate-operation check and the\none-entry-per-player journal bound). This adds a direct test that:\n\n- re-noting an existing rejected operation does not add a duplicate;\n- distinct rejected operations are retained;\n- inserting more than `num_players` operations keeps exactly\n`num_players`, evicting the oldest first.\n\nManual mutation check: replacing the duplicate check with `!=`, the trim\n`>` with `>=`, and the trim `>` with `==` each makes this test fail.\n\n## Verification\n\n- `cargo test --features hot-join --lib\nrejected_operation_journal_deduplicates_and_stays_bounded`: pass on\nclean source; fails under all three mutants.\n- `cargo clippy --workspace --all-targets --features tokio,json`: clean.\n\nRefs: #477, #479",
-          "timestamp": "2026-11-18T14:30:43Z",
-          "tree_id": "a327b686e3cb7d0992e4875e9603a63a1f33f439",
-          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/f6d42bf589f883b26cdfe865704533f1da47c40d"
-        },
-        "date": 1795013034063,
-        "tool": "cargo",
-        "benches": [
-          {
-            "name": "Message serialization/round_trip_input_msg",
-            "value": 37876,
-            "range": "± 1999",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_serialize",
-            "value": 22451,
-            "range": "± 701",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_deserialize",
-            "value": 641,
-            "range": "± 97",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "Message serialization/input_encode_into_buffer",
-            "value": 845,
-            "range": "± 26",
-            "unit": "ns/iter"
-          },
-          {
-            "name": "SyncLayer/256_frame_save_advance",
-            "value": 6649,
-            "range": "± 230",
-            "unit": "ns/iter"
-          }
-        ]
-      },
       {
         "commit": {
           "author": {
@@ -2699,6 +2645,60 @@ window.BENCHMARK_DATA = {
             "name": "SyncLayer/256_frame_save_advance",
             "value": 2855,
             "range": "± 407",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "wallstop@wallstopstudios.com",
+            "name": "Eli Pinkerton",
+            "username": "wallstop"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ccf6c079fe33502350da9c487dfd3fa882c89683",
+          "message": "fix(deps): pin godot 0.5.5 for the wasm32 Emscripten fixture (#617)\n\n## Description\n\nRestores a green `main` after #603 bumped `godot` to 0.5.6.\n\nTwo independent regressions came from that merge:\n\n1. **wasm32 build.** godot-core 0.5.6 added Rust-side `Variant`\nmarshalling with an unconditional\n`repr(C, align(8))` layout. On a 32-bit target, `OpaqueVariant` is\n`align(4)`, so\n`static_assert_eq_size_align!(RustVariant, OpaqueVariant)` fails to\ncompile:\n`error[E0080]: evaluation panicked` (exit 101). The\n`variant-ffi-marshal` feature does not gate\nthe const assert, so there is no feature escape. `Godot Emscripten\nBrowser` passed on 6f792c6\n(godot 0.5.5) and fails on 66010d2 (0.5.6); the merge-group run failed\nthe same job before the\n   queue merged.\n2. **License contract.** `supply-chain/deny-godot-licenses.toml` moved\nto 0.5.6, but\n\n`scripts/tests/test_ci_security_workflow.py::test_license_exceptions_are_exact_and_lockfile_scoped`\nstill encodes 0.5.5, so `CI - Documentation` failed on every\ndocs-triggering commit after #603.\n\nThis change pins the fixture back to `godot = \"=0.5.5\"`, downgrades the\ngodot family in the fixture\nlockfile (keeping the smallvec bump from #603), restores the 0.5.5\nMPL-2.0 exceptions, ignores\ngodot-family patch updates in dependabot until a wasm32-safe release\nexists, and makes\n`CI - Documentation` trigger on `supply-chain/**` so the license\ncontract test runs when the deny\nconfig changes.\n\nTracking: #615. The ruleset required-check gap that let these merge is\nfiled as #616.\n\n## Type of Change\n\n- [x] 🐛 Bug fix (non-breaking change that fixes an issue)\n- [ ] ✨ New feature (non-breaking change that adds functionality)\n- [ ] 💥 Breaking change (fix or feature that would cause existing\nfunctionality to change)\n- [ ] 📚 Documentation (changes to documentation only)\n- [ ] ♻️ Refactor (code change that neither fixes a bug nor adds a\nfeature)\n- [ ] 🧪 Test (adding or updating tests)\n- [x] 🔧 CI/Build (changes to CI configuration or build process)\n\n## Verification Impact\n\n- [x] `none` — no mapped production path or symbol changed\n\n`python3 scripts/verification/model-impact.py affected --base\norigin/main` →\n`No mapped verification impact (base origin/main).` (exit 0)\n\n- [ ] Any new or changed proof has a RED mutation or a non-vacuity\nwitness (state which below)\n\n## Checklist\n\n### Required\n\n- [x] I have read the [CONTRIBUTING guide](../docs/contributing.md)\n- [x] I have followed the **zero-panic policy**: no production Rust code\nchanged.\n- [x] I have added tests that prove my fix is effective or my feature\nworks — the existing wasm32\nfixture compile check and the lockfile-scoped license contract test are\nthe oracles; the\n  dependency revert is the differential.\n- [x] I have run `cargo fmt && cargo clippy --workspace --all-targets\n--features tokio,json` with no warnings\n- [x] I have run `cargo nextest run` and all tests pass\n\n### If Applicable\n\n- [ ] I have updated the documentation accordingly — not\nuser-observable.\n- [ ] I have added an entry to `CHANGELOG.md` for user-facing changes —\ndependency pin in a test\n  workspace; excluded by the changelog policy.\n- [ ] I have updated relevant examples in the `examples/` directory\n- [x] My changes generate no new compiler warnings\n\n## Testing\n\n**Red (before the change):**\n\n```text\ncargo +nightly-2026-08-26 check --manifest-path tests/godot-emscripten/Cargo.toml \\\n  --locked --target wasm32-unknown-emscripten\n→ error[E0080]: evaluation panicked: assertion failed: size_of::<RustVariant>() == ...\n  godot-core-0.5.6/src/builtin/variant/rust_variant.rs:31\n  error: could not compile `godot-core` (lib) due to 1 previous error; exit 101\n\n.venv/bin/python -m pytest \\\n  scripts/tests/test_ci_security_workflow.py::test_license_exceptions_are_exact_and_lockfile_scoped -q\n→ 1 failed; Left contains 7 more items: {'godot-bindings@0.5.6': ['MPL-2.0'], ...}\n```\n\n**Green (after the change):**\n\n```text\nCARGO_TARGET_DIR=/tmp/opencode/fixture-target-055 cargo +nightly-2026-08-26 check \\\n  --manifest-path tests/godot-emscripten/Cargo.toml --locked --target wasm32-unknown-emscripten\n→ Compiling godot-bindings/codegen/macros/ffi/core v0.5.5; Checking godot v0.5.5;\n  Finished dev profile in 24.03s; exit 0\n\n.venv/bin/python -m pytest \\\n  scripts/tests/test_ci_security_workflow.py::test_license_exceptions_are_exact_and_lockfile_scoped -q\n→ 1 passed\n\n.venv/bin/python -m pytest scripts/tests/test_ci_security_workflow.py \\\n  scripts/tests/test_ci_rust_workflow.py scripts/tests/test_ci_static_analysis.py \\\n  scripts/tests/test_agent_preflight.py -q\n→ 183 passed in 1.16s\n\ncargo fmt --all -- --check            → exit 0\ncargo c                               → exit 0 (9.92s)\ncargo tf                              → 3020 passed, 512 skipped in 3.375s\ncargo tfull                           → 3821 passed, 77 skipped in 37.274s\ncargo test --doc                      → 160 passed, 52 ignored in 4.37s\nRUSTDOCFLAGS=\"-D warnings\" cargo doc --no-deps --features hot-join,tokio,json,sync-send \\\n  --document-private-items            → exit 0, no warnings\nPATH=.venv/bin:$PATH python3 scripts/ci/agent-preflight.py --full --auto-fix\n                                      → 26 checks passed, exit 0\n.venv/bin/python -m pytest scripts/tests/ -q → 2521 passed, 1 skipped in 122.41s\nactionlint .github/workflows/ci-docs.yml → exit 0\n```\n\nThe browser lane itself needs emcc 4.0.20 and Godot 4.7.1, which are not\ninstalled locally; it runs\nin CI. The failing step was the wasm32 compile, which is covered by the\nclean check above, and the\nlane was green on the previous 0.5.5 main (6f792c6).\n\n**Manual testing performed:** None (CI-only lane).\n\n## Related Issues\n\n- Relates to #615 (tracking the pin and the future unpin; not closed\nhere).\n- Follow-up filed: #616 (required checks miss docs and deep Rust lanes).\n\n## Risks and Rollback\n\n- **Risk:** the Emscripten fixture stays on godot 0.5.5 until upstream\nships a wasm32-safe release;\ndependabot patch updates for the godot family are suppressed in the\nmeantime. The suppression is\nscoped to the `cargo-godot-emscripten` group and documented with a\ncomment.\n- **Rollback:** `git revert <merge commit>` restores the 0.5.6 pin and\nexceptions exactly.",
+          "timestamp": "2026-11-28T00:18:13Z",
+          "tree_id": "752ea17b8cfc8a4d4ca41ffa882ad9c99079cc71",
+          "url": "https://github.com/Ambiguous-Interactive/fortress-rollback/commit/ccf6c079fe33502350da9c487dfd3fa882c89683"
+        },
+        "date": 1795825907589,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "Message serialization/round_trip_input_msg",
+            "value": 60621,
+            "range": "± 666",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_serialize",
+            "value": 29525,
+            "range": "± 290",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_deserialize",
+            "value": 1863,
+            "range": "± 112",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "Message serialization/input_encode_into_buffer",
+            "value": 1554,
+            "range": "± 91",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "SyncLayer/256_frame_save_advance",
+            "value": 2995,
+            "range": "± 189",
             "unit": "ns/iter"
           }
         ]
