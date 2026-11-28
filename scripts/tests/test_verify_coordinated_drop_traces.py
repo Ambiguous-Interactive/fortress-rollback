@@ -534,6 +534,10 @@ def test_normalize_rejects_a_projection_mismatch() -> None:
             "state": _state(active=True, phase="Inventory", localParticipant=0),
         },
         {
+            "action": {"kind": "CutSelected", "cut": 3},
+            "state": _state(active=True, phase="Ready", cut=3, localParticipant=0),
+        },
+        {
             "action": {
                 "kind": "ReadyCounted",
                 "participant": 0,
@@ -544,6 +548,7 @@ def test_normalize_rejects_a_projection_mismatch() -> None:
             "state": _state(
                 active=True,
                 phase="Ready",
+                cut=3,
                 localParticipant=0,
                 counted=[True, False, True, False],
             ),

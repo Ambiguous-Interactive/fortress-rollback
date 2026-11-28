@@ -465,6 +465,11 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
             push("DigestLocked", local)
         elif kind == "ReadyCounted":
             participant = action["participant"]
+            if (
+                event["state"]["cut"] != action["cut"]
+                or model["traceCut"] != action["cut"]
+            ):
+                raise fail(f"{case.path}: Ready cut mismatch")
             digest = require_digest(action["digest"])
             if participant == local:
                 if model["cutDigest"][local] is not None and model["cutDigest"][local] != digest:
@@ -480,6 +485,11 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
                 )
         elif kind == "ReadyProvisional":
             participant = action["participant"]
+            if (
+                event["state"]["cut"] != action["cut"]
+                or model["traceCut"] != action["cut"]
+            ):
+                raise fail(f"{case.path}: Ready cut mismatch")
             digest = require_digest(action["digest"])
             if model["cutDigest"][local] is not None:
                 raise fail(f"{case.path}: provisional event after a locked digest")
