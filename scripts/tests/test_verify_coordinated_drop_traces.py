@@ -308,3 +308,89 @@ def test_normalize_rejects_a_counted_ready_without_a_lock() -> None:
         trace_verifier.TraceError, match="counted Ready without a locked digest"
     ):
         trace_verifier.normalize(_case(rows), {7: 0})
+
+
+def test_normalize_uses_promotion_for_a_provisional_that_counts() -> None:
+    rows: list[dict[str, Any]] = [
+        {
+            "action": {
+                "kind": "PrepareAdmitted",
+                "operation": _operation(),
+                "participants": 3,
+                "targets": 1,
+            },
+            "state": _state(active=True, phase="Inventory", localParticipant=0),
+        },
+        {
+            "action": {"kind": "PhaseChanged", "phase": "Ready"},
+            "state": _state(active=True, phase="Ready", localParticipant=0),
+        },
+        {
+            "action": {"kind": "CutSelected", "cut": 3},
+            "state": _state(active=True, phase="Ready", cut=3, localParticipant=0),
+        },
+        {
+            "action": {
+                "kind": "ReadyProvisional",
+                "participant": 1,
+                "cut": 3,
+                "digest": 7,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                cut=3,
+                localParticipant=0,
+                provisional=[False, True, False, False],
+            ),
+        },
+        {
+            "action": {"kind": "DigestLocked", "cut": 3, "digest": 7},
+            "state": _state(
+                active=True, phase="Ready", cut=3, digest=7, localParticipant=0,
+                provisional=[False, True, False, False],
+            ),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 0,
+                "cut": 3,
+                "digest": 7,
+                "authority": True,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                cut=3,
+                digest=7,
+                localParticipant=0,
+                counted=[True, False, False, False],
+            ),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 7,
+                "authority": False,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                cut=3,
+                digest=7,
+                localParticipant=0,
+                counted=[True, True, False, False],
+            ),
+        },
+    ]
+    normalized = trace_verifier.normalize(_case(rows), {7: 0})
+    actions = [row["action"] for row in normalized]
+    assert "PromoteProvisional" in actions
+    promote_index = actions.index("PromoteProvisional")
+    assert all(
+        row["action"] != "SendReady" or row.get("to") != 0
+        for row in normalized[promote_index:]
+    )
