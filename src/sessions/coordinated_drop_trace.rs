@@ -292,10 +292,11 @@ impl CoordinatedDropTraceRecorder {
         let mut next = self.previous;
 
         if observed.operation != next.operation {
+            // A new operation starts from an empty attempt projection and a
+            // cleared operation ends it; only the session-global frozen-target
+            // set survives either transition.
+            reset_attempt_local(&mut next);
             if let Some(operation) = observed.operation {
-                // A new operation starts from an empty attempt projection;
-                // only the session-global frozen-target set survives.
-                reset_attempt_local(&mut next);
                 next.operation = Some(operation);
                 next.active = true;
                 next.local_participant = observed.local_participant;
@@ -312,9 +313,6 @@ impl CoordinatedDropTraceRecorder {
                     &next,
                 );
             } else {
-                reset_attempt_local(&mut next);
-                next.active = false;
-                next.operation = None;
                 self.push(CoordinatedDropTraceAction::AttemptCleared, &next);
             }
         }
@@ -649,6 +647,35 @@ mod tests {
         ));
         assert!(!trace[0].state.active);
     }
+    #[test]
+    fn recorder_clears_attempt_local_state_but_keeps_frozen_targets() {
+        let mut recorder = CoordinatedDropTraceRecorder::try_new(16).unwrap();
+        let mut active = active_state();
+        active.phase = Some(CoordinatedDropTracePhase::Committed);
+        active.cut = Some(Frame::new(3));
+        active.digest = Some(7);
+        active.counted[0] = true;
+        active.committed = true;
+        active.frozen[3] = true;
+        active.frozen_cut[3] = 3;
+        recorder.observe(&active);
+
+        recorder.observe(&CoordinatedDropTraceState::empty());
+
+        let trace = recorder.result().unwrap();
+        let event = trace.last().expect("clear transition is recorded");
+        assert_eq!(event.action, CoordinatedDropTraceAction::AttemptCleared);
+        assert!(!event.state.active);
+        assert_eq!(event.state.operation, None);
+        assert_eq!(event.state.phase, None);
+        assert_eq!(event.state.cut, None);
+        assert_eq!(event.state.digest, None);
+        assert!(!event.state.committed);
+        assert!(!event.state.counted.iter().any(|counted| *counted));
+        assert!(event.state.frozen[3]);
+        assert_eq!(event.state.frozen_cut[3], 3);
+    }
+
     #[test]
     fn recorder_resets_attempt_local_state_for_a_new_operation() {
         let mut recorder = CoordinatedDropTraceRecorder::try_new(16).unwrap();
