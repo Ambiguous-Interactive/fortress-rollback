@@ -349,6 +349,8 @@ def assert_runtime_projection(
             or actual_digest != digests[expected_digest]
         ):
             raise fail(f"{case.path}: locked digest mismatch for participant {local}")
+    if state["cut"] is not None and model["traceCut"] != state["cut"]:
+        raise fail(f"{case.path}: cut projection mismatch for participant {local}")
     if event["action"].get("kind") == "TargetFrozen":
         handle = event["action"].get("handle")
         if (

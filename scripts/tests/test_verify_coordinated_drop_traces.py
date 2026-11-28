@@ -288,6 +288,10 @@ def test_normalize_rejects_a_counted_ready_without_a_lock() -> None:
             "state": _state(active=True, phase="Inventory", localParticipant=0),
         },
         {
+            "action": {"kind": "CutSelected", "cut": 3},
+            "state": _state(active=True, phase="Ready", cut=3, localParticipant=0),
+        },
+        {
             "action": {
                 "kind": "ReadyCounted",
                 "participant": 1,
@@ -546,4 +550,24 @@ def test_normalize_rejects_a_projection_mismatch() -> None:
         },
     ]
     with pytest.raises(trace_verifier.TraceError, match="counted projection mismatch"):
+        trace_verifier.normalize(_case(rows), {7: 0})
+
+
+def test_normalize_rejects_a_cut_selection_mismatch() -> None:
+    rows: list[dict[str, Any]] = [
+        {
+            "action": {
+                "kind": "PrepareAdmitted",
+                "operation": _operation(),
+                "participants": 3,
+                "targets": 1,
+            },
+            "state": _state(active=True, phase="Inventory", localParticipant=0),
+        },
+        {
+            "action": {"kind": "CutSelected", "cut": 2},
+            "state": _state(active=True, phase="Ready", cut=3, localParticipant=0),
+        },
+    ]
+    with pytest.raises(trace_verifier.TraceError, match="cut projection mismatch"):
         trace_verifier.normalize(_case(rows), {7: 0})
