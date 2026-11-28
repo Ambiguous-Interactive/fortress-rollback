@@ -385,8 +385,11 @@ where
     /// Operation-identified, non-retracting graceful-drop barrier (D14).
     coordinated_drop: CoordinatedDropState<T::Address>,
     /// Opt-in bounded recorder for coordinated-drop trace validation.
+    ///
+    /// Boxed so enabling the feature does not inflate every session that does
+    /// not activate a recorder.
     #[cfg(feature = "trace-validation")]
-    coordinated_drop_trace: Option<CoordinatedDropTraceRecorder>,
+    coordinated_drop_trace: Option<Box<CoordinatedDropTraceRecorder>>,
     /// Cumulative count of accepted current-history donor announcements
     /// (participants that became able to donate after their inventory report).
     /// Doc-hidden diagnostic only; saturating.
@@ -11396,7 +11399,7 @@ impl<T: Config> P2PSession<T> {
             .into());
         }
         let recorder = CoordinatedDropTraceRecorder::try_new(capacity)?;
-        self.coordinated_drop_trace = Some(recorder);
+        self.coordinated_drop_trace = Some(Box::new(recorder));
         Ok(())
     }
 
@@ -11413,7 +11416,7 @@ impl<T: Config> P2PSession<T> {
     ) -> Option<Result<&[CoordinatedDropTraceEvent], CoordinatedDropTraceOverflow>> {
         self.coordinated_drop_trace
             .as_ref()
-            .map(CoordinatedDropTraceRecorder::result)
+            .map(|recorder| recorder.result())
     }
 
     /// Projects the current coordinated-drop state into the trace projection.
