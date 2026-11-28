@@ -146,12 +146,12 @@ def validate_runtime_traces(cases: dict[str, TraceCase]) -> None:
             for row in case.rows
             if row["action"].get("kind") == "ReadyCounted"
             and row["state"]["localParticipant"] == AUTHORITY
-            and row["action"].get("participant") != AUTHORITY
         ]
-        if len(authority_ready) < 2:
+        quorum = last["quorum"]
+        if len(authority_ready) < quorum:
             raise fail(
                 f"{case.path}: authority trace must observe a strict-majority "
-                f"Ready quorum, saw {len(authority_ready)} remote reports"
+                f"Ready quorum ({len(authority_ready)} < {quorum})"
             )
 
 
