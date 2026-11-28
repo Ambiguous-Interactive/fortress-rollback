@@ -2,7 +2,7 @@
 //!
 //! This module is compiled only for the opt-in `trace-validation` feature. It
 //! does not observe individual wire deliveries: the session publishes one
-//! compact post-poll snapshot, and [`CoordinatedDropTraceRecorder`] derives the
+//! compact post-poll snapshot, and `CoordinatedDropTraceRecorder` derives the
 //! ordered observable transitions from the difference against the previous
 //! snapshot. The recorder reserves its complete capacity on activation and
 //! never allocates while the session is running.
