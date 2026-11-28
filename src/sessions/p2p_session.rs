@@ -11433,13 +11433,7 @@ impl<T: Config> P2PSession<T> {
             state.target_count = u16::try_from(active.targets.len()).unwrap_or(u16::MAX);
             state.cut = active.cut;
             state.digest = active.ready.digest();
-            state.backfill_installed = u16::try_from(
-                active
-                    .backfill_chunks
-                    .len()
-                    .saturating_add(active.relayed_backfill.len()),
-            )
-            .unwrap_or(u16::MAX);
+            state.backfill_installed = active.next_backfill_chunk;
             state.committed = active.phase == CoordinatedDropPhase::Committed;
             for (participant, cut, digest) in active.ready.locked_transcripts() {
                 let index = usize::from(participant);
