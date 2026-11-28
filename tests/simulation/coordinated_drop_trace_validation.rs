@@ -112,14 +112,45 @@ fn collect(session: &P2PSession<StubConfig>) -> Vec<CoordinatedDropTraceEvent> {
         .to_vec()
 }
 
+#[derive(Clone, Copy, Debug)]
+struct OrderedEvent {
+    session: usize,
+    event: CoordinatedDropTraceEvent,
+}
+
+fn collect_new(
+    sessions: &Sessions,
+    cursors: &mut [usize; NUM_PLAYERS],
+    ordered: &mut Vec<OrderedEvent>,
+) {
+    for (session_index, (session, cursor)) in
+        sessions.sessions.iter().zip(cursors.iter_mut()).enumerate()
+    {
+        let trace = session
+            .coordinated_drop_trace()
+            .expect("trace recorder was enabled")
+            .expect("trace recorder did not overflow");
+        assert!(*cursor <= trace.len(), "trace cursor must remain monotonic");
+        ordered.extend(trace[*cursor..].iter().copied().map(|event| OrderedEvent {
+            session: session_index,
+            event,
+        }));
+        *cursor = trace.len();
+    }
+}
+
 #[test]
 fn export_runtime_coordinated_drop_traces_for_tlc() {
     let mut sessions = build_sessions().expect("four-player sessions build");
     synchronize(&mut sessions);
     let mut stubs: [GameStub; NUM_PLAYERS] = std::array::from_fn(|_| GameStub::new());
+    let mut cursors = [0_usize; NUM_PLAYERS];
+    let mut ordered = Vec::new();
+    collect_new(&sessions, &mut cursors, &mut ordered);
 
     for value in 0..4_u32 {
         poll_all(&mut sessions, 3);
+        collect_new(&sessions, &mut cursors, &mut ordered);
         for handle in 0..NUM_PLAYERS {
             advance(
                 &mut sessions.sessions[handle],
@@ -131,6 +162,7 @@ fn export_runtime_coordinated_drop_traces_for_tlc() {
         }
     }
     poll_all(&mut sessions, 6);
+    collect_new(&sessions, &mut cursors, &mut ordered);
 
     // Three survivors request the same target removal. The target stops
     // advancing so the barrier can commit without its participation.
@@ -139,6 +171,7 @@ fn export_runtime_coordinated_drop_traces_for_tlc() {
             .remove_player(PlayerHandle::new(TARGET))
             .expect("survivor removes the target");
     }
+    collect_new(&sessions, &mut cursors, &mut ordered);
 
     let mut dropped = 0_u8;
     for _ in 0..160 {
@@ -151,12 +184,14 @@ fn export_runtime_coordinated_drop_traces_for_tlc() {
                 dropped |= 1 << handle;
             }
         }
+        collect_new(&sessions, &mut cursors, &mut ordered);
         sessions.clock.advance(Duration::from_millis(1));
         if dropped == 0b0111 {
             break;
         }
     }
     assert_eq!(dropped, 0b0111, "all survivors must commit the removal");
+    collect_new(&sessions, &mut cursors, &mut ordered);
 
     let traces: [Vec<CoordinatedDropTraceEvent>; TARGET] =
         std::array::from_fn(|handle| collect(&sessions.sessions[handle]));
@@ -201,30 +236,27 @@ fn export_runtime_coordinated_drop_traces_for_tlc() {
     };
     let output_dir = std::path::Path::new(&output_dir);
     assert!(output_dir.is_dir(), "trace output directory exists");
-    for (handle, trace) in traces.iter().enumerate() {
-        write_trace(
-            &output_dir.join(format!("runtime-drop-p{}.ndjson", handle + 1)),
-            trace,
-        );
-    }
+    write_trace(&output_dir.join("runtime-drop.ndjson"), &ordered);
 }
 
-fn write_trace(path: &std::path::Path, events: &[CoordinatedDropTraceEvent]) {
+fn write_trace(path: &std::path::Path, events: &[OrderedEvent]) {
     let mut encoded = String::new();
     encoded.push_str(
         &serde_json::json!({
             "schema": 1,
-            "trace": path.file_stem().and_then(|stem| stem.to_str()).unwrap_or("trace"),
+            "trace": "runtime-drop",
             "expect": "accept",
-            "description": "Runtime SimNet coordinated drop with three survivors.",
+            "description": "Merged runtime SimNet coordinated drop from three survivors.",
         })
         .to_string(),
     );
     encoded.push('\n');
-    for (step, event) in events.iter().enumerate() {
+    for (step, ordered) in events.iter().enumerate() {
+        let event = ordered.event;
         encoded.push_str(
             &serde_json::json!({
                 "step": step,
+                "session": ordered.session,
                 "action": trace_action_json(event.action),
                 "state": {
                     "active": event.state.active,

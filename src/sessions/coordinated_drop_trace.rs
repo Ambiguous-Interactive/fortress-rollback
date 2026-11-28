@@ -224,6 +224,27 @@ pub(crate) struct CoordinatedDropTraceRecorder {
     previous: CoordinatedDropTraceState,
 }
 
+fn reset_attempt_local(state: &mut CoordinatedDropTraceState) {
+    state.active = false;
+    state.operation = None;
+    state.phase = None;
+    state.local_participant = 0;
+    state.authority = 0;
+    state.quorum = 0;
+    state.participant_count = 0;
+    state.target_count = 0;
+    state.counted = [false; COORDINATED_DROP_TRACE_PLAYERS];
+    state.counted_cut = [0; COORDINATED_DROP_TRACE_PLAYERS];
+    state.counted_digest = [0; COORDINATED_DROP_TRACE_PLAYERS];
+    state.provisional = [false; COORDINATED_DROP_TRACE_PLAYERS];
+    state.provisional_cut = [0; COORDINATED_DROP_TRACE_PLAYERS];
+    state.provisional_digest = [0; COORDINATED_DROP_TRACE_PLAYERS];
+    state.cut = None;
+    state.digest = None;
+    state.backfill_installed = 0;
+    state.committed = false;
+}
+
 impl CoordinatedDropTraceRecorder {
     /// Reserve the complete logical capacity before the session starts.
     pub(crate) fn try_new(capacity: usize) -> Result<Self, FortressError> {
@@ -272,6 +293,9 @@ impl CoordinatedDropTraceRecorder {
 
         if observed.operation != next.operation {
             if let Some(operation) = observed.operation {
+                // A new operation starts from an empty attempt projection;
+                // only the session-global frozen-target set survives.
+                reset_attempt_local(&mut next);
                 next.operation = Some(operation);
                 next.active = true;
                 next.local_participant = observed.local_participant;
@@ -288,9 +312,9 @@ impl CoordinatedDropTraceRecorder {
                     &next,
                 );
             } else {
+                reset_attempt_local(&mut next);
                 next.active = false;
                 next.operation = None;
-                next.phase = None;
                 self.push(CoordinatedDropTraceAction::AttemptCleared, &next);
             }
         }
@@ -624,5 +648,45 @@ mod tests {
             CoordinatedDropTraceAction::PrepareRejected { targets: 1, .. }
         ));
         assert!(!trace[0].state.active);
+    }
+    #[test]
+    fn recorder_resets_attempt_local_state_for_a_new_operation() {
+        let mut recorder = CoordinatedDropTraceRecorder::try_new(16).unwrap();
+        let mut first = active_state();
+        first.phase = Some(CoordinatedDropTracePhase::Committed);
+        first.cut = Some(Frame::new(3));
+        first.digest = Some(7);
+        first.counted[0] = true;
+        first.committed = true;
+        first.frozen[3] = true;
+        first.frozen_cut[3] = 3;
+        recorder.observe(&first);
+
+        let mut second = active_state();
+        second.operation = Some(CoordinatedDropTraceOperation {
+            sequence: 2,
+            ..operation()
+        });
+        second.frozen = first.frozen;
+        second.frozen_cut = first.frozen_cut;
+        recorder.observe(&second);
+
+        let trace = recorder.result().unwrap();
+        let event = trace
+            .iter()
+            .find(|event| {
+                matches!(
+                    event.action,
+                    CoordinatedDropTraceAction::PrepareAdmitted { operation, .. }
+                        if operation.sequence == 2
+                )
+            })
+            .expect("second operation admission is recorded");
+        let state = event.state;
+        assert_eq!(state.cut, None);
+        assert_eq!(state.digest, None);
+        assert!(!state.committed);
+        assert!(!state.counted.iter().any(|counted| *counted));
+        assert!(state.frozen[3]);
     }
 }

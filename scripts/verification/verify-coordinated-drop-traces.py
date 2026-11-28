@@ -26,11 +26,7 @@ AUTHORITY = 0
 NONE = 2
 MAX_CUT = 3
 MAX_BACKFILL = 8
-TRACE_FILES = (
-    "runtime-drop-p1.ndjson",
-    "runtime-drop-p2.ndjson",
-    "runtime-drop-p3.ndjson",
-)
+TRACE_FILES = ("runtime-drop.ndjson",)
 HEADER_KEYS = {"schema", "trace", "expect", "description"}
 STATE_KEYS = {
     "active",
@@ -145,6 +141,18 @@ def validate_runtime_traces(cases: dict[str, TraceCase]) -> None:
             raise fail(f"{case.path}: last row must commit and freeze target 3")
         if last["cut"] is None or last["digest"] is None:
             raise fail(f"{case.path}: last row must carry a cut and digest")
+        authority_ready = [
+            row
+            for row in case.rows
+            if row["action"].get("kind") == "ReadyCounted"
+            and row["state"]["localParticipant"] == AUTHORITY
+            and row["action"].get("participant") != AUTHORITY
+        ]
+        if len(authority_ready) < 2:
+            raise fail(
+                f"{case.path}: authority trace must observe a strict-majority "
+                f"Ready quorum, saw {len(authority_ready)} remote reports"
+            )
 
 
 def collect_digest_map(cases: dict[str, TraceCase]) -> dict[int, int]:
@@ -247,11 +255,6 @@ def initial_model() -> dict[str, Any]:
 
 def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
     model = initial_model()
-    local = next(
-        row["state"]["localParticipant"]
-        for row in case.rows
-        if row["action"].get("kind") == "PrepareAdmitted"
-    )
     rows: list[dict[str, Any]] = [
         {"action": "Init", "state": copy.deepcopy(model)}
     ]
@@ -267,12 +270,6 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
                 index for index, frozen in enumerate(trace_state["frozen"]) if frozen
             ]
         return state
-
-    def ensure_authority_quorum(digest: int) -> None:
-        mark_ready(AUTHORITY, digest)
-        for participant in PARTICIPANTS:
-            if participant != AUTHORITY:
-                deliver(participant, AUTHORITY, digest, False)
 
     def push(action: str, peer: int | None = None, **extra: Any) -> None:
         row: dict[str, Any] = {"action": action}
@@ -294,8 +291,23 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
         model["transcript"][peer][peer] = digest
         push("MarkReady", peer)
 
-    def deliver(peer: int, receiver: int, digest: int, authority: bool) -> None:
+    def deliver(
+        peer: int,
+        receiver: int,
+        digest: int,
+        authority: bool,
+        *,
+        expect_counted: bool,
+    ) -> None:
         if model["transcript"][receiver][peer] is not None:
+            return
+        provisional = model["provisional"][receiver][peer]
+        if provisional is not None:
+            if provisional != digest or model["cutDigest"][receiver] != digest:
+                raise fail(f"{case.path}: provisional digest conflict for participant {peer}")
+            model["transcript"][receiver][peer] = digest
+            model["provisional"][receiver][peer] = None
+            push("PromoteProvisional", receiver, **{"from": peer})
             return
         mark_ready(peer, digest)
         model["network"][peer][receiver] = digest
@@ -307,17 +319,18 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
                 raise fail(f"{case.path}: conflicting digest for participant {peer}")
             model["transcript"][receiver][peer] = digest
             model["provisional"][receiver][peer] = None
-            action = "DeliverReady"
+        elif expect_counted:
+            raise fail(f"{case.path}: counted Ready without a locked digest")
         else:
             model["provisional"][receiver][peer] = digest
-            action = "DeliverReady"
         model["network"][peer][receiver] = None
-        push(action, peer, to=receiver)
+        push("DeliverReady", peer, to=receiver)
 
     for row in case.rows:
         action = row["action"]
         kind = action.get("kind")
         event = row
+        local = event["state"]["localParticipant"]
         if kind == "PrepareAdmitted":
             model["dropPhase"] = "Inventory"
             push("PrepareAdmitted", action["operation"]["coordinator"])
@@ -340,13 +353,19 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
                     raise fail(f"{case.path}: local MarkReady digest conflict")
                 mark_ready(local, digest)
             else:
-                deliver(participant, local, digest, action["authority"])
+                deliver(
+                    participant,
+                    local,
+                    digest,
+                    action["authority"],
+                    expect_counted=True,
+                )
         elif kind == "ReadyProvisional":
             participant = action["participant"]
             digest = require_digest(action["digest"])
             if model["cutDigest"][local] is not None:
                 raise fail(f"{case.path}: provisional event after a locked digest")
-            deliver(participant, local, digest, False)
+            deliver(participant, local, digest, False, expect_counted=False)
         elif kind == "ReadyDiscarded":
             participant = action["participant"]
             if model["provisional"][local][participant] is None:
@@ -358,14 +377,15 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
             push("BackfillInstalled", local)
         elif kind == "CommitApplied":
             digest = require_digest(event["state"]["digest"])
-            ensure_authority_quorum(digest)
             if local == AUTHORITY:
                 model["committed"][AUTHORITY] = digest
                 push("Certify", AUTHORITY)
             else:
                 if model["committed"][AUTHORITY] is None:
-                    model["committed"][AUTHORITY] = digest
-                    push("Certify", AUTHORITY)
+                    raise fail(
+                        f"{case.path}: participant commit without an observed "
+                        "authority certificate"
+                    )
                 model["committed"][local] = digest
                 push("Accept", local)
         elif kind == "TargetFrozen":

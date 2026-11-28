@@ -79,7 +79,7 @@ def _write_trace(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text("\n".join(encoded) + "\n", encoding="utf-8")
 
 
-def test_manifest_requires_all_three_runtime_traces() -> None:
+def test_manifest_requires_the_merged_runtime_trace() -> None:
     case = _case([])
     with pytest.raises(trace_verifier.TraceError, match="manifest mismatch"):
         trace_verifier.validate_runtime_traces({"runtime-drop-p1.ndjson": case})
@@ -212,3 +212,99 @@ def test_run_tlc_fails_on_a_parse_error_even_with_the_property_line(
         trace_verifier.run_tlc(
             "parse", rows, Path("missing.jar"), "AuthorityLocked", 1, False
         )
+
+
+def test_normalize_rejects_participant_commit_without_authority_certificate() -> None:
+    rows: list[dict[str, Any]] = [
+        {
+            "action": {
+                "kind": "PrepareAdmitted",
+                "operation": _operation(),
+                "participants": 3,
+                "targets": 1,
+            },
+            "state": _state(active=True, phase="Inventory", localParticipant=1),
+        },
+        {
+            "action": {"kind": "PhaseChanged", "phase": "Ready"},
+            "state": _state(active=True, phase="Ready", localParticipant=1),
+        },
+        {
+            "action": {"kind": "CutSelected", "cut": 3},
+            "state": _state(active=True, phase="Ready", cut=3, localParticipant=1),
+        },
+        {
+            "action": {"kind": "DigestLocked", "cut": 3, "digest": 7},
+            "state": _state(
+                active=True, phase="Ready", cut=3, digest=7, localParticipant=1
+            ),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 7,
+                "authority": False,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                cut=3,
+                digest=7,
+                localParticipant=1,
+                counted=[False, True, False, False],
+            ),
+        },
+        {
+            "action": {"kind": "CommitApplied", "cut": 3, "digest": 7},
+            "state": _state(
+                active=True,
+                phase="Committed",
+                cut=3,
+                digest=7,
+                localParticipant=1,
+                counted=[False, True, False, False],
+                committed=True,
+            ),
+        },
+    ]
+    with pytest.raises(
+        trace_verifier.TraceError,
+        match="participant commit without an observed authority certificate",
+    ):
+        trace_verifier.normalize(_case(rows), {7: 0})
+
+
+def test_normalize_rejects_a_counted_ready_without_a_lock() -> None:
+    rows: list[dict[str, Any]] = [
+        {
+            "action": {
+                "kind": "PrepareAdmitted",
+                "operation": _operation(),
+                "participants": 3,
+                "targets": 1,
+            },
+            "state": _state(active=True, phase="Inventory", localParticipant=0),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 7,
+                "authority": False,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                cut=3,
+                localParticipant=0,
+                counted=[False, True, False, False],
+            ),
+        },
+    ]
+    with pytest.raises(
+        trace_verifier.TraceError, match="counted Ready without a locked digest"
+    ):
+        trace_verifier.normalize(_case(rows), {7: 0})
