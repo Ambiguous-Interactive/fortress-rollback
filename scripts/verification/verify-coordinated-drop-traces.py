@@ -184,17 +184,46 @@ def validate_runtime_traces(cases: dict[str, TraceCase]) -> None:
 
 
 def collect_digest_map(cases: dict[str, TraceCase]) -> dict[int, int]:
-    digests = sorted(
-        {
-            state["digest"]
-            for case in cases.values()
-            for row in case.rows
-            if (state := row["state"])["digest"] is not None
-        }
-    )
-    if not digests or len(digests) > 2:
-        raise fail(f"runtime trace must expose one or two digests, found {digests}")
-    return {digest: index for index, digest in enumerate(digests)}
+    digests: set[int] = set()
+    for case in cases.values():
+        for row in case.rows:
+            value = row["state"]["digest"]
+            if value is None:
+                continue
+            if type(value) is not int or not 0 <= value <= 2**64 - 1:
+                raise fail(
+                    f"{case.path}: digest must be null or a u64, found {value!r}"
+                )
+            digests.add(value)
+    ordered = sorted(digests)
+    if not ordered or len(ordered) > 2:
+        raise fail(f"runtime trace must expose one or two digests, found {ordered}")
+    return {digest: index for index, digest in enumerate(ordered)}
+
+
+def local_digest_map(case: TraceCase, digests: dict[int, int]) -> dict[int, int]:
+    """Use each reporter's recorded Ready digest as its local-history evidence."""
+    local = {participant: 0 for participant in PARTICIPANTS}
+    seen: dict[int, int] = {}
+    for row in case.rows:
+        action = row["action"]
+        kind = action.get("kind")
+        if kind not in {"ReadyCounted", "ReadyProvisional"}:
+            continue
+        participant = action.get("participant")
+        if participant not in PARTICIPANTS:
+            continue
+        value = action.get("digest")
+        if value is None or value not in digests:
+            raise fail(f"{case.path}: Ready action has an unknown digest")
+        digest = digests[value]
+        if participant in seen and seen[participant] != digest:
+            raise fail(
+                f"{case.path}: participant {participant} reported conflicting local digests"
+            )
+        seen[participant] = digest
+        local[participant] = digest
+    return local
 
 
 def tla_nested(mapping: dict[int, dict[int, Any]]) -> str:
@@ -281,8 +310,58 @@ def initial_model() -> dict[str, Any]:
     }
 
 
+def assert_runtime_projection(
+    case: TraceCase,
+    event: dict[str, Any],
+    model: dict[str, Any],
+    digests: dict[int, int],
+) -> None:
+    """Compare the local modeled slice with the recorded post-event projection."""
+    state = event["state"]
+    local = state["localParticipant"]
+    for participant in PARTICIPANTS:
+        expected_counted = bool(state["counted"][participant])
+        actual_counted = model["transcript"][local][participant] is not None
+        if actual_counted != expected_counted:
+            raise fail(
+                f"{case.path}: counted projection mismatch for local participant "
+                f"{local}, reporter {participant}"
+            )
+        expected_provisional = bool(state["provisional"][participant])
+        actual_provisional = model["provisional"][local][participant] is not None
+        if actual_provisional != expected_provisional:
+            raise fail(
+                f"{case.path}: provisional projection mismatch for local participant "
+                f"{local}, reporter {participant}"
+            )
+    if (model["committed"][local] is not None) != bool(state["committed"]):
+        raise fail(f"{case.path}: committed projection mismatch for participant {local}")
+    if event["action"].get("kind") != "DigestLocked":
+        expected_digest = state["digest"]
+        actual_digest = model["cutDigest"][local]
+        if expected_digest is None:
+            if actual_digest is not None:
+                raise fail(
+                    f"{case.path}: unexpected locked digest for participant {local}"
+                )
+        elif (
+            actual_digest is None
+            or actual_digest != digests[expected_digest]
+        ):
+            raise fail(f"{case.path}: locked digest mismatch for participant {local}")
+    if event["action"].get("kind") == "TargetFrozen":
+        handle = event["action"].get("handle")
+        if (
+            type(handle) is not int
+            or not 0 <= handle < len(state["frozen"])
+            or not state["frozen"][handle]
+        ):
+            raise fail(f"{case.path}: frozen projection mismatch")
+
+
 def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
     model = initial_model()
+    model["localDigest"] = local_digest_map(case, digests)
     rows: list[dict[str, Any]] = [
         {"action": "Init", "state": copy.deepcopy(model)}
     ]
@@ -327,7 +406,12 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
         *,
         expect_counted: bool,
     ) -> None:
-        if model["transcript"][receiver][peer] is not None:
+        existing = model["transcript"][receiver][peer]
+        if existing is not None:
+            if existing != digest:
+                raise fail(
+                    f"{case.path}: conflicting duplicate Ready digest for participant {peer}"
+                )
             return
         provisional = model["provisional"][receiver][peer]
         if provisional is not None:
@@ -431,6 +515,7 @@ def normalize(case: TraceCase, digests: dict[int, int]) -> list[dict[str, Any]]:
             continue
         else:
             raise fail(f"{case.path}: unsupported action {kind!r}")
+        assert_runtime_projection(case, event, model, digests)
     return rows
 
 

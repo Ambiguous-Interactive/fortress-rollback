@@ -400,6 +400,7 @@ def test_normalize_uses_promotion_for_a_provisional_that_counts() -> None:
                 digest=7,
                 localParticipant=0,
                 counted=[True, False, False, False],
+                provisional=[False, True, False, False],
             ),
         },
         {
@@ -455,3 +456,94 @@ def test_validate_runtime_traces_rejects_inconsistent_prepare_metadata() -> None
         trace_verifier.TraceError, match="disagree on operation identity"
     ):
         trace_verifier.validate_runtime_traces({"runtime-drop.ndjson": case})
+
+
+def test_collect_digest_map_rejects_a_non_integer_digest() -> None:
+    case = _case([{"action": {"kind": "PrepareAdmitted"}, "state": _state(digest=[])}])
+    with pytest.raises(trace_verifier.TraceError, match="digest must be null or a u64"):
+        trace_verifier.collect_digest_map({"runtime-drop.ndjson": case})
+
+
+def test_local_digests_follow_each_reporters_recorded_ready() -> None:
+    rows: list[dict[str, Any]] = [
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 8,
+                "authority": False,
+            },
+            "state": _state(active=True, phase="Ready"),
+        }
+    ]
+    local = trace_verifier.local_digest_map(_case(rows), {7: 0, 8: 1})
+    assert local[0] == 0
+    assert local[1] == 1
+
+
+def test_normalize_rejects_a_conflicting_duplicate_ready_digest() -> None:
+    rows: list[dict[str, Any]] = [
+        {
+            "action": {
+                "kind": "PrepareAdmitted",
+                "operation": _operation(),
+                "participants": 3,
+                "targets": 1,
+            },
+            "state": _state(active=True, phase="Inventory", localParticipant=0),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 7,
+                "authority": False,
+            },
+            "state": _state(active=True, phase="Ready", localParticipant=0),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 1,
+                "cut": 3,
+                "digest": 8,
+                "authority": False,
+            },
+            "state": _state(active=True, phase="Ready", localParticipant=0),
+        },
+    ]
+    with pytest.raises(trace_verifier.TraceError, match="conflicting"):
+        trace_verifier.normalize(_case(rows), {7: 0, 8: 1})
+
+
+def test_normalize_rejects_a_projection_mismatch() -> None:
+    rows: list[dict[str, Any]] = [
+        {
+            "action": {
+                "kind": "PrepareAdmitted",
+                "operation": _operation(),
+                "participants": 3,
+                "targets": 1,
+            },
+            "state": _state(active=True, phase="Inventory", localParticipant=0),
+        },
+        {
+            "action": {
+                "kind": "ReadyCounted",
+                "participant": 0,
+                "cut": 3,
+                "digest": 7,
+                "authority": True,
+            },
+            "state": _state(
+                active=True,
+                phase="Ready",
+                localParticipant=0,
+                counted=[True, False, True, False],
+            ),
+        },
+    ]
+    with pytest.raises(trace_verifier.TraceError, match="counted projection mismatch"):
+        trace_verifier.normalize(_case(rows), {7: 0})

@@ -68,6 +68,11 @@ Boundary ==
     UNCHANGED <<localDigest, cutDigest, provisional, transcript, committed,
                  network, witness>>
 
+FreezeTarget(p) ==
+    /\ committed[p] # NONE
+    /\ UNCHANGED <<localDigest, cutDigest, provisional, transcript, committed,
+                     network, witness>>
+
 TraceAction(row) ==
     CASE row.action = "PrepareAdmitted" -> Boundary
       [] row.action = "PrepareRejected" -> Boundary
@@ -75,7 +80,7 @@ TraceAction(row) ==
       [] row.action = "CutSelected" -> Boundary
       [] row.action = "DigestLocked" -> Boundary
       [] row.action = "BackfillInstalled" -> Boundary
-      [] row.action = "TargetFrozen" -> Boundary
+      [] row.action = "TargetFrozen" -> FreezeTarget(row.peer)
       [] row.action = "AttemptCleared" -> Boundary
       [] row.action = "SendReady" -> SendReady(row.peer, row.to)
       [] row.action = "MarkReady" -> MarkReady(row.peer)
