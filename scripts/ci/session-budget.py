@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -157,6 +158,45 @@ def _create_lock_directory(lock_dir: Path) -> bool:
         ) from exc
 
 
+def _open_lock_directory(lock_dir: Path) -> int | None:
+    """Pin the lock directory this caller just created.
+
+    Cleanup relative to this descriptor can never target a replacement that a
+    reaper swaps in at the path. Platforms without directory-relative unlink
+    (Windows) return ``None`` and leave a failed publication to the normal
+    stale-lock path.
+    """
+    if os.unlink not in os.supports_dir_fd:
+        return None
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    try:
+        return os.open(lock_dir, flags)
+    except OSError:
+        return None
+
+
+def _retire_owned_lock(directory_fd: int) -> None:
+    """Make a created-but-unpublished lock immediately reapable.
+
+    The owner entry is removed relative to the pinned directory, and the
+    directory mtime is zeroed through the same descriptor. The empty directory
+    is left for the normal stale-lock reaper, so cleanup never removes a path
+    that may now belong to another writer.
+    """
+    try:
+        os.unlink("owner", dir_fd=directory_fd)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        return
+    if os.utime not in os.supports_fd:
+        return
+    try:
+        os.utime(directory_fd, (0, 0))
+    except OSError:
+        pass
+
+
 @contextmanager
 def _state_lock(
     path: Path, timeout: float = LOCK_TIMEOUT_SECONDS
@@ -181,11 +221,22 @@ def _state_lock(
         if time.monotonic() >= deadline:
             raise deadline_error()
         if _create_lock_directory(lock_dir):
+            directory_fd = _open_lock_directory(lock_dir)
             try:
-                handle = os.open(
-                    owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
-                )
+                if directory_fd is None:
+                    handle = os.open(
+                        owner, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+                    )
+                else:
+                    handle = os.open(
+                        "owner",
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=directory_fd,
+                    )
             except FileExistsError:
+                if directory_fd is not None:
+                    os.close(directory_fd)
                 last_filesystem_error = None
                 time.sleep(0.01)
                 continue
@@ -195,20 +246,57 @@ def _state_lock(
                 # instead of failing the budget update; the JS lock retries
                 # ENOENT for the same window. Keep the cause so a persistent
                 # failure is not reported as contention.
+                if directory_fd is not None:
+                    os.close(directory_fd)
                 last_filesystem_error = exc
                 time.sleep(0.01)
                 continue
-            except OSError:
-                # Do not remove lock_dir here: a reaper may have moved our
-                # directory and a replacement owner may now occupy the path.
-                raise
-            with os.fdopen(handle, "w", encoding="utf-8") as created:
-                created.write(token)
+            except OSError as exc:
+                # A descriptor-relative retirement only touches the directory
+                # this caller created; a reaper replacement is never touched.
+                if directory_fd is not None:
+                    _retire_owned_lock(directory_fd)
+                    os.close(directory_fd)
+                raise BudgetError(
+                    f"cannot create the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
+            try:
+                owner_file = os.fdopen(handle, "w", encoding="utf-8")
+            except OSError as exc:
+                try:
+                    os.close(handle)
+                except OSError:
+                    pass
+                if directory_fd is not None:
+                    _retire_owned_lock(directory_fd)
+                    os.close(directory_fd)
+                raise BudgetError(
+                    f"cannot write the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
+            try:
+                with owner_file as created:
+                    created.write(token)
+            except OSError as exc:
+                # Retire only the owner and directory this caller created so
+                # the next session does not wait out the stale threshold.
+                if directory_fd is not None:
+                    _retire_owned_lock(directory_fd)
+                    os.close(directory_fd)
+                raise BudgetError(
+                    f"cannot write the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
+            if directory_fd is not None:
+                os.close(directory_fd)
             break
 
         last_filesystem_error = None
         try:
-            modified = owner.stat().st_mtime
+            # Inspect the entry itself: a symlink to a regular file is still a
+            # corrupted lock entry and must fail closed.
+            owner_metadata = owner.lstat()
         except FileNotFoundError:
             try:
                 modified = lock_dir.stat().st_mtime
@@ -219,15 +307,40 @@ def _state_lock(
                 last_filesystem_error = exc
                 time.sleep(0.01)
                 continue
+            except OSError as exc:
+                raise BudgetError(
+                    f"cannot inspect the session budget lock at "
+                    f"{lock_dir}: {exc}"
+                ) from exc
+        except OSError as exc:
+            raise BudgetError(
+                f"cannot inspect the session budget lock owner at "
+                f"{owner}: {exc}"
+            ) from exc
+        else:
+            if not stat.S_ISREG(owner_metadata.st_mode):
+                raise BudgetError(
+                    f"session budget lock owner at {owner} is not a regular file"
+                )
+            modified = owner_metadata.st_mtime
         if time.time() - modified > LOCK_STALE_SECONDS:
             try:
                 observed_owner = owner.read_text(encoding="utf-8")
             except FileNotFoundError:
                 observed_owner = None
+            except (OSError, UnicodeError) as exc:
+                raise BudgetError(
+                    f"cannot read the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
             stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
             try:
                 os.rename(lock_dir, stale)
-            except OSError:
+            except OSError as exc:
+                # A persistent rename failure must back off instead of
+                # spinning on one core until the deadline.
+                last_filesystem_error = exc
+                time.sleep(0.01)
                 continue
             try:
                 renamed_owner = (stale / "owner").read_text(encoding="utf-8")
@@ -235,12 +348,15 @@ def _state_lock(
             except FileNotFoundError:
                 renamed_owner = None
                 renamed_modified = None
-            except OSError:
+            except (OSError, UnicodeError) as exc:
                 try:
                     os.rename(stale, lock_dir)
                 except OSError:
                     pass
-                raise
+                raise BudgetError(
+                    f"cannot inspect the replacement session budget lock at "
+                    f"{stale}: {exc}"
+                ) from exc
             if renamed_owner != observed_owner or (
                 renamed_modified is not None
                 and time.time() - renamed_modified <= LOCK_STALE_SECONDS
