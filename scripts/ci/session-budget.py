@@ -8,6 +8,7 @@ import json
 import os
 import secrets
 import shutil
+import stat
 import sys
 import tempfile
 import threading
@@ -288,7 +289,7 @@ def _state_lock(
 
         last_filesystem_error = None
         try:
-            modified = owner.stat().st_mtime
+            owner_metadata = owner.stat()
         except FileNotFoundError:
             try:
                 modified = lock_dir.stat().st_mtime
@@ -309,6 +310,12 @@ def _state_lock(
                 f"cannot inspect the session budget lock owner at "
                 f"{owner}: {exc}"
             ) from exc
+        else:
+            if not stat.S_ISREG(owner_metadata.st_mode):
+                raise BudgetError(
+                    f"session budget lock owner at {owner} is not a regular file"
+                )
+            modified = owner_metadata.st_mtime
         if time.time() - modified > LOCK_STALE_SECONDS:
             try:
                 observed_owner = owner.read_text(encoding="utf-8")

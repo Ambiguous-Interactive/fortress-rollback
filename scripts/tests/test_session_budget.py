@@ -624,14 +624,14 @@ def test_lock_owner_directory_is_a_budget_error(tmp_path: Path) -> None:
     os.utime(owner, (old, old))
 
     with pytest.raises(
-        session_budget.BudgetError, match="cannot read the session budget lock owner"
+        session_budget.BudgetError, match="is not a regular file"
     ) as excinfo:
         with session_budget._state_lock(path, timeout=0.1):
             pass
 
-    # A corrupted owner entry must be actionable, not a raw traceback.
+    # A corrupted owner entry must be actionable, not a raw traceback or a
+    # misleading contention timeout.
     assert str(owner) in str(excinfo.value)
-    assert isinstance(excinfo.value.__cause__, OSError)
     assert lock_dir.exists()
 
 
