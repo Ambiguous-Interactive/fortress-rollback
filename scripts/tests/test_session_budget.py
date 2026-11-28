@@ -614,6 +614,91 @@ def test_lock_owner_write_failure_removes_the_owned_directory(
     assert not lock_dir.exists()
 
 
+def test_lock_owner_directory_is_a_budget_error(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    owner = lock_dir / "owner"
+    owner.mkdir()
+    old = time.time() - 120
+    os.utime(owner, (old, old))
+
+    with pytest.raises(
+        session_budget.BudgetError, match="cannot read the session budget lock owner"
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    # A corrupted owner entry must be actionable, not a raw traceback.
+    assert str(owner) in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, OSError)
+    assert lock_dir.exists()
+
+
+def test_lock_corrupt_owner_bytes_are_a_budget_error(tmp_path: Path) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    lock_dir.mkdir()
+    owner = lock_dir / "owner"
+    owner.write_bytes(b"\xff\xfe\xfd")
+    old = time.time() - 120
+    os.utime(owner, (old, old))
+
+    with pytest.raises(
+        session_budget.BudgetError, match="cannot read the session budget lock owner"
+    ) as excinfo:
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    assert str(owner) in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, UnicodeError)
+    assert lock_dir.exists()
+
+
+def test_lock_owner_open_failure_leaves_a_replacement_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "budget.json"
+    lock_dir = path.with_name(f"{path.name}.lock")
+    owner = lock_dir / "owner"
+    moved = lock_dir.with_name(f"{lock_dir.name}.moved")
+    real_open = os.open
+    real_rename = os.rename
+    replaced = False
+
+    def reaping_open(
+        target: str | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal replaced
+        if Path(target) == owner and not replaced:
+            replaced = True
+            # A reaper moves our fresh directory and a competitor creates a
+            # new lock at the same path before publishing its owner, then our
+            # owner publication fails.
+            real_rename(lock_dir, moved)
+            lock_dir.mkdir()
+            raise PermissionError(13, "Permission denied", str(target))
+        return real_open(target, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(session_budget.os, "open", reaping_open)
+
+    with pytest.raises(
+        session_budget.BudgetError, match="session budget lock owner"
+    ):
+        with session_budget._state_lock(path, timeout=0.1):
+            pass
+
+    # Cleanup must never remove a lock directory that now belongs to another
+    # writer, even when that writer has not published its owner yet.
+    assert lock_dir.is_dir()
+    assert not (lock_dir / "owner").exists()
+    assert moved.exists()
+
+
 def test_write_state_fence_rejects_a_lost_lock(tmp_path: Path) -> None:
     path = tmp_path / "budget.json"
     lock_dir = path.with_name(f"{path.name}.lock")

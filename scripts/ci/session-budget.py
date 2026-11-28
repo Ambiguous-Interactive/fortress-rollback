@@ -299,11 +299,26 @@ def _state_lock(
                 last_filesystem_error = exc
                 time.sleep(0.01)
                 continue
+            except OSError as exc:
+                raise BudgetError(
+                    f"cannot inspect the session budget lock at "
+                    f"{lock_dir}: {exc}"
+                ) from exc
+        except OSError as exc:
+            raise BudgetError(
+                f"cannot inspect the session budget lock owner at "
+                f"{owner}: {exc}"
+            ) from exc
         if time.time() - modified > LOCK_STALE_SECONDS:
             try:
                 observed_owner = owner.read_text(encoding="utf-8")
             except FileNotFoundError:
                 observed_owner = None
+            except (OSError, UnicodeError) as exc:
+                raise BudgetError(
+                    f"cannot read the session budget lock owner at "
+                    f"{owner}: {exc}"
+                ) from exc
             stale = lock_dir.with_name(f"{lock_dir.name}.stale.{token}")
             try:
                 os.rename(lock_dir, stale)
@@ -319,12 +334,15 @@ def _state_lock(
             except FileNotFoundError:
                 renamed_owner = None
                 renamed_modified = None
-            except OSError:
+            except (OSError, UnicodeError) as exc:
                 try:
                     os.rename(stale, lock_dir)
                 except OSError:
                     pass
-                raise
+                raise BudgetError(
+                    f"cannot inspect the replacement session budget lock at "
+                    f"{stale}: {exc}"
+                ) from exc
             if renamed_owner != observed_owner or (
                 renamed_modified is not None
                 and time.time() - renamed_modified <= LOCK_STALE_SECONDS
