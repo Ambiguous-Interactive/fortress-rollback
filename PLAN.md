@@ -8,7 +8,7 @@
 
 ## In progress
 
-- [ ] #619 Cover the remaining session lease read/fence error paths. Claimed: session-ses_ddf9ac51cffeEO0b2tSr2bKDuU 2026-11-28T04:23Z. Expires: 2026-11-28T07:23Z. Exit: regression tests fail on the pre-follow-up code for the renamed-owner re-read/stat and `fence()` non-UTF-8 paths, then pass with the mapping; item 3 stays under #557.
+_None._
 
 ## Future
 
